@@ -1,0 +1,9 @@
+# Exclure l'espace utilisateur du suivi Git au début
+content-agents/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+.DS_Store
+dist/

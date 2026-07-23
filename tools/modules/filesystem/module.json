@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "filesystem",
+  "name": "Filesystem",
+  "description": "Outils bornés pour lire, lister, écrire et mettre à la corbeille.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {"name": "read", "description": "Lire un fichier avec pagination.", "risk_tags": ["read"]},
+    {"name": "list", "description": "Lister un dossier de façon déterministe.", "risk_tags": ["read"]},
+    {"name": "write", "description": "Créer ou remplacer un fichier.", "risk_tags": ["write"]},
+    {"name": "delete", "description": "Déplacer un fichier ou dossier vers la corbeille de session.", "risk_tags": ["destructive"]}
+  ],
+  "enabled": true
+}

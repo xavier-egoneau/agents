@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "datetime",
+  "name": "Date et heure",
+  "description": "Expose l'heure UTC courante sans accès externe.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {"name": "utc_now", "description": "Retourner la date et l'heure UTC.", "risk_tags": ["read"]}
+  ],
+  "enabled": true
+}

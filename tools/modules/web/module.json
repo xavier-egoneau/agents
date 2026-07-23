@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "web",
+  "name": "Web research",
+  "description": "Recherche, scraping, code public, documentation et crawl via Ketch.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {
+      "name": "web",
+      "description": "Interroger une surface web stateless avec une sortie JSON bornée.",
+      "risk_tags": ["network", "external"]
+    }
+  ],
+  "enabled": true
+}
