@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "id": "data",
+  "name": "Structured data",
+  "description": "Interrogation bornée de JSON, CSV et SQLite.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {"name": "json_query", "description": "Interroger un document JSON par chemin.", "category": "data", "risk_tags": ["read"], "timeout_seconds": 30},
+    {"name": "csv_query", "description": "Filtrer et projeter un fichier CSV.", "category": "data", "risk_tags": ["read"], "timeout_seconds": 30},
+    {"name": "sql_query", "description": "Exécuter une requête SQLite strictement en lecture seule.", "category": "data", "risk_tags": ["read"], "timeout_seconds": 30},
+    {"name": "sql_execute", "description": "Exécuter une mutation SQLite explicite.", "category": "data", "risk_tags": ["write"], "timeout_seconds": 30}
+  ],
+  "enabled": true
+}

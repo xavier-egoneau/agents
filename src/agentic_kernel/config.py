@@ -14,6 +14,43 @@ from .errors import ConfigurationError
 from .models import AgentConfig, ProviderRegistry, SkillConfig
 
 
+NATIVE_RPPL_COMMANDS: dict[str, dict[str, str]] = {
+    "/compact": {
+        "description": "Compacter manuellement le contexte de la session.",
+        "prompt": (
+            "Effectue maintenant la compaction manuelle du contexte, puis réponds "
+            "uniquement avec un bref bilan indiquant ce qui a été préservé."
+        ),
+    },
+    "/context": {
+        "description": "Afficher l’état mesuré du contexte de la session.",
+        "prompt": "",
+    },
+    "/model-context": {
+        "description": "Définir la fenêtre du modèle actif, en tokens.",
+        "prompt": "",
+    },
+    "/reprise": {
+        "description": "Reprendre où l’agent en était dans la session courante.",
+        "prompt": (
+            "Reprends où tu en étais dans cette session. Appuie-toi sur le plan, "
+            "les traces, les artefacts et l’état réel du workspace. Ne rejoue pas "
+            "les actions déjà terminées. Identifie la dernière étape inachevée, "
+            "vérifie ses préconditions puis poursuis jusqu’au prochain résultat "
+            "utile. S’il n’existe rien à reprendre, explique-le clairement."
+        ),
+    },
+    "/secret": {
+        "description": "Enregistrer localement un secret sans l’envoyer au modèle.",
+        "prompt": "",
+    },
+    "/secret_list": {
+        "description": "Lister les noms des secrets disponibles, jamais leurs valeurs.",
+        "prompt": "",
+    },
+}
+
+
 def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
     if not text.startswith("---\n"):
         raise ConfigurationError("agent definition must start with YAML front matter")
@@ -67,7 +104,7 @@ class ProjectConfig:
         self._validate_agent_graph(result)
         return result
 
-    def skills(self) -> dict[str, SkillConfig]:
+    def skills(self, workspace: Path | str | None = None) -> dict[str, SkillConfig]:
         """Discover AMK skills from the project's explicit skill directory only.
 
         OpenAI and Claude skill packages remain format-compatible, but must be
@@ -75,31 +112,113 @@ class ProjectConfig:
         This prevents unrelated user-level skills from leaking into a project.
         """
         result: dict[str, SkillConfig] = {}
-        root = self.content_root / "skills"
-        for path in sorted(root.glob("*/SKILL.md")):
-            header, body = split_front_matter(path.read_text(encoding="utf-8"))
-            name = header.get("name") or path.parent.name
-            description = header.get("description")
-            if not description:
-                raise ConfigurationError(f"skill {path} is missing description")
-            raw_tools = header.get("allowed-tools", [])
-            allowed_tools = _string_list(raw_tools)
-            try:
-                skill = SkillConfig.model_validate(
-                    {
-                        **header,
-                        "name": name,
-                        "description": description,
-                        "instructions": body,
-                        "source": str(path),
-                        "root": str(path.parent),
-                        "allowed_tools": allowed_tools,
-                    }
-                )
-            except ValidationError as exc:
-                raise ConfigurationError(f"invalid skill {path}: {exc}") from exc
-            result.setdefault(skill.name, skill)
+        roots = [self.content_root / "skills"]
+        if workspace is not None:
+            local = Path(workspace).expanduser().resolve()
+            roots.extend(
+                [
+                    local / "content-agents" / "skills",
+                    local / ".amk" / "skills",
+                    local / ".agents" / "skills",
+                    local / ".claude" / "skills",
+                    local / ".codex" / "skills",
+                ]
+            )
+        seen_roots: set[Path] = set()
+        for root in roots:
+            resolved_root = root.resolve()
+            if resolved_root in seen_roots:
+                continue
+            seen_roots.add(resolved_root)
+            for path in sorted(root.glob("*/SKILL.md")):
+                skill = self._skill_from_markdown(path)
+                # Global skills load first; a project-local definition with the
+                # same name deliberately shadows it for that workspace.
+                result[skill.name] = skill
         return result
+
+    def _skill_from_markdown(self, path: Path) -> SkillConfig:
+        header, body = split_front_matter(path.read_text(encoding="utf-8"))
+        name = header.get("name") or path.parent.name
+        description = header.get("description")
+        if not description:
+            raise ConfigurationError(f"skill {path} is missing description")
+        raw_tools = header.get("allowed-tools", [])
+        allowed_tools = _string_list(raw_tools)
+        try:
+            skill = SkillConfig.model_validate(
+                {
+                    **header,
+                    "name": name,
+                    "description": description,
+                    "instructions": body,
+                    "source": str(path),
+                    "root": str(path.parent),
+                    "allowed_tools": allowed_tools,
+                }
+            )
+        except ValidationError as exc:
+            raise ConfigurationError(f"invalid skill {path}: {exc}") from exc
+        return skill
+
+    def commands(self, workspace: Path | str | None = None) -> list[dict[str, str]]:
+        """Discover global then project-local slash/RPPL commands."""
+        by_command: dict[str, dict[str, str]] = {
+            command: {
+                "command": command,
+                "description": definition["description"],
+                "kind": "native",
+                "skill": "",
+                "source": "kernel",
+            }
+            for command, definition in NATIVE_RPPL_COMMANDS.items()
+        }
+        for skill in self.skills(workspace).values():
+            metadata = skill.model_extra or {}
+            amk = metadata.get("amk")
+            cody = metadata.get("cody")
+            raw = metadata.get("commands")
+            if isinstance(amk, dict):
+                raw = amk.get("commands", raw)
+            if isinstance(cody, dict):
+                raw = cody.get("commands", raw)
+            descriptions = (
+                amk.get("command_descriptions", {})
+                if isinstance(amk, dict)
+                else {}
+            )
+            for value in _string_list(raw):
+                command = "/" + value.strip().lstrip("/").lower()
+                if command == "/":
+                    continue
+                by_command[command] = {
+                    "command": command,
+                    "description": str(descriptions.get(command, skill.description)),
+                    "kind": "skill",
+                    "skill": skill.name,
+                    "source": skill.source,
+                }
+        return [by_command[key] for key in sorted(by_command)]
+
+    def resolve_command(
+        self, prompt: str, workspace: Path | str | None = None
+    ) -> dict[str, str] | None:
+        prefix = prompt.lstrip().split(maxsplit=1)[0].lower() if prompt.strip() else ""
+        return next(
+            (item for item in self.commands(workspace) if item["command"] == prefix),
+            None,
+        )
+
+    @staticmethod
+    def expand_native_command(prompt: str, command: str) -> str:
+        definition = NATIVE_RPPL_COMMANDS.get(command)
+        if definition is None:
+            return prompt
+        stripped = prompt.lstrip()
+        suffix = stripped[len(command):].strip()
+        return definition["prompt"] + (
+            f"\n\nPrécision de l’utilisateur : {suffix}" if suffix else ""
+        )
 
     def build_skills_index(self) -> dict[str, Any]:
         skills = self.skills()

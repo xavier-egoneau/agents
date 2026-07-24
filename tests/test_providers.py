@@ -1,6 +1,6 @@
-import pytest
 import httpx
-from pydantic_ai.models.openai import OpenAIChatModel
+import pytest
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 
 from agentic_kernel.errors import AuthenticationError
 from agentic_kernel.models import ProviderRegistry
@@ -48,6 +48,34 @@ def test_missing_api_key_explains_both_sources(monkeypatch) -> None:
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     with pytest.raises(AuthenticationError, match="providers.json api_key"):
         ProviderFactory(registry("api_key")).build("provider")
+
+
+def test_codex_requests_are_explicitly_not_stored() -> None:
+    class Credential:
+        access = "access-token"
+
+        def __getitem__(self, key: str) -> str:
+            assert key == "account_id"
+            return "account-id"
+
+    class OAuth:
+        def access_token(self, provider_id: str) -> Credential:
+            assert provider_id == "openai-codex"
+            return Credential()
+
+    codex_registry = ProviderRegistry(
+        default_provider="codex",
+        providers=[{
+            "id": "codex", "kind": "openai-codex",
+            "connection_type": "auth", "model": "gpt-5.5",
+        }],
+    )
+    model = ProviderFactory(
+        codex_registry, oauth=OAuth()  # type: ignore[arg-type]
+    ).build("codex")
+
+    assert isinstance(model, OpenAIResponsesModel)
+    assert model.settings["openai_store"] is False
 
 
 @pytest.mark.asyncio

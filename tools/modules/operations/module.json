@@ -1,0 +1,25 @@
+{
+  "schema_version": 2,
+  "id": "operations",
+  "name": "Operations",
+  "description": "Plans structurés, checkpoints et observabilité en lecture seule.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {"name": "plan_create", "description": "Créer un plan structuré.", "category": "planning", "risk_tags": ["write"], "timeout_seconds": 15},
+    {"name": "plan_update", "description": "Mettre à jour une étape d'un plan.", "category": "planning", "risk_tags": ["write"], "timeout_seconds": 15},
+    {"name": "plan_status", "description": "Lire un plan structuré.", "category": "planning", "risk_tags": ["read"], "timeout_seconds": 15},
+    {"name": "plan_ready", "description": "Calculer les tâches prêtes selon le graphe de dépendances.", "category": "planning", "risk_tags": ["read"], "timeout_seconds": 15},
+    {"name": "evaluate_result", "description": "Évaluer un résultat avec des critères explicites.", "category": "evaluation", "risk_tags": ["read"], "timeout_seconds": 15},
+    {"name": "session_status", "description": "Résumer l'état de la session courante.", "category": "session", "risk_tags": ["read"], "timeout_seconds": 15},
+    {"name": "checkpoint_create", "description": "Créer un checkpoint explicite de session.", "category": "session", "risk_tags": ["write"], "timeout_seconds": 15, "persistent": true},
+    {"name": "trace_query", "description": "Interroger les traces d'audit bornées de la session.", "category": "observability", "risk_tags": ["read"], "timeout_seconds": 15},
+    {"name": "metrics_summary", "description": "Agréger les métriques d'outils de la session.", "category": "observability", "risk_tags": ["read"], "timeout_seconds": 15}
+    ,{"name": "cron_list", "description": "Lister les cronjobs persistants et leur état.", "category": "scheduler", "risk_tags": ["read"], "timeout_seconds": 15}
+    ,{"name": "cron_create", "description": "Créer un cronjob persistant dans le workspace courant.", "category": "scheduler", "risk_tags": ["write"], "timeout_seconds": 15, "persistent": true}
+    ,{"name": "cron_set_enabled", "description": "Activer ou mettre en pause un cronjob.", "category": "scheduler", "risk_tags": ["write"], "timeout_seconds": 15, "persistent": true}
+    ,{"name": "cron_delete", "description": "Supprimer une définition de cronjob.", "category": "scheduler", "risk_tags": ["destructive"], "timeout_seconds": 15, "persistent": true}
+  ],
+  "enabled": true
+}

@@ -8,14 +8,39 @@ from pathlib import Path
 import anthropic
 import httpx
 from openai import AsyncOpenAI
+from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.settings import ModelSettings
 
 from .auth import OAuthManager
 from .errors import AuthenticationError, ConfigurationError
 from .models import ConnectionType, ProviderConfig, ProviderRegistry
+
+
+class CodexResponsesModel(OpenAIResponsesModel):
+    """Responses adapter for ChatGPT's Codex endpoint.
+
+    That endpoint only accepts streamed requests. Kernel callers may still use
+    ``Agent.run``: the adapter consumes the provider stream and returns the same
+    complete Pydantic AI response contract.
+    """
+
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        async with self.request_stream(
+            messages, model_settings, model_request_parameters
+        ) as streamed:
+            async for _ in streamed:
+                pass
+        return streamed.get()
 
 
 class ProviderFactory:
@@ -67,8 +92,13 @@ class ProviderFactory:
                     base_url="https://chatgpt.com/backend-api/codex",
                     default_headers={"chatgpt-account-id": credential["account_id"]},
                 )
-                return OpenAIResponsesModel(
-                    model_name, provider=OpenAIProvider(openai_client=client)
+                return CodexResponsesModel(
+                    model_name,
+                    provider=OpenAIProvider(openai_client=client),
+                    # ChatGPT's Codex endpoint is deliberately stateless from
+                    # the API's perspective. AMK owns persistence locally and
+                    # resends the validated history when an ASK is resumed.
+                    settings={"openai_store": False},
                 )
             client = anthropic.AsyncAnthropic(
                 auth_token=credential.access,

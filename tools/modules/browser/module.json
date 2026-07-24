@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "id": "browser",
+  "name": "Browser",
+  "description": "Navigation web stateful avec rendu JavaScript via Playwright.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {"name": "browser_open", "description": "Ouvrir ou naviguer une page dans un navigateur stateful.", "category": "browser", "risk_tags": ["network", "external"], "timeout_seconds": 60, "cancellable": true, "persistent": true},
+    {"name": "browser_snapshot", "description": "Observer le texte et les éléments interactifs de la page.", "category": "browser", "risk_tags": ["read"], "timeout_seconds": 30, "cancellable": true, "persistent": true},
+    {"name": "browser_click", "description": "Cliquer un élément visible de la page.", "category": "browser", "risk_tags": ["network", "external"], "timeout_seconds": 30, "cancellable": true, "persistent": true},
+    {"name": "browser_type", "description": "Saisir du texte dans un champ visible.", "category": "browser", "risk_tags": ["network", "external"], "timeout_seconds": 30, "cancellable": true, "persistent": true},
+    {"name": "browser_screenshot", "description": "Capturer la page et partager l'image comme artefact.", "category": "browser", "risk_tags": ["read"], "timeout_seconds": 30, "cancellable": true, "persistent": true},
+    {"name": "browser_close", "description": "Fermer une page ou le navigateur de la session.", "category": "browser", "risk_tags": ["read"], "timeout_seconds": 15, "cancellable": true, "persistent": true}
+  ],
+  "enabled": true
+}

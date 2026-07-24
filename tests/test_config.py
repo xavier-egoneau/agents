@@ -103,3 +103,20 @@ def test_does_not_discover_skills_outside_content_agents(project: Path) -> None:
         encoding="utf-8",
     )
     assert "unrelated" not in ProjectConfig(project).skills()
+
+
+def test_native_reprise_command_is_always_available(project: Path) -> None:
+    config = ProjectConfig(project)
+    command = config.resolve_command("/reprise vérifie d'abord le serveur", project)
+    assert command is not None
+    assert command["kind"] == "native"
+    expanded = config.expand_native_command(
+        "/reprise vérifie d'abord le serveur", "/reprise"
+    )
+    assert "Ne rejoue pas" in expanded
+    assert "vérifie d'abord le serveur" in expanded
+    commands = {item["command"] for item in config.commands(project)}
+    assert {
+        "/compact", "/context", "/model-context", "/reprise", "/secret",
+        "/secret_list",
+    } <= commands

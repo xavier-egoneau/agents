@@ -54,7 +54,7 @@ class ModuleRegistry:
         return ModuleIndex(modules=manifests)
 
     def build_index(self) -> ModuleIndex:
-        index = self.discover()
+        index = self._resolved_index()
         self.tools_root.mkdir(parents=True, exist_ok=True)
         temporary = self.index_path.with_suffix(".json.tmp")
         temporary.write_text(
@@ -65,7 +65,7 @@ class ModuleRegistry:
         return index
 
     def check_index(self) -> ModuleIndex:
-        expected = self.discover()
+        expected = self._resolved_index()
         try:
             actual = ModuleIndex.model_validate_json(self.index_path.read_text(encoding="utf-8"))
         except (OSError, ValidationError) as exc:
@@ -76,6 +76,32 @@ class ModuleRegistry:
             if manifest.enabled:
                 self._load_one(manifest)
         return actual
+
+    def _resolved_index(self) -> ModuleIndex:
+        """Build the public catalog from manifests plus executable schemas."""
+        discovered = self.discover()
+        manifests: list[ModuleManifest] = []
+        for manifest in discovered.modules:
+            instance = self._load_one(manifest)
+            runtime_tools: dict[str, Any] = {}
+            for toolset in instance.toolsets():
+                tools = getattr(toolset, "tools", None)
+                if isinstance(tools, dict):
+                    runtime_tools.update(tools)
+            descriptors = []
+            for descriptor in manifest.tools:
+                runtime = runtime_tools.get(descriptor.name)
+                schema = getattr(runtime, "function_schema", None)
+                descriptors.append(descriptor.model_copy(update={
+                    "input_schema": descriptor.input_schema
+                    or dict(getattr(schema, "json_schema", {}) or {}),
+                    "output_schema": descriptor.output_schema
+                    or dict(getattr(schema, "return_schema", {}) or {}),
+                    "timeout_seconds": descriptor.timeout_seconds
+                    or getattr(runtime, "timeout", None),
+                }))
+            manifests.append(manifest.model_copy(update={"tools": descriptors}))
+        return ModuleIndex(modules=manifests)
 
     def load(self, ids: list[str]) -> list[KernelModule]:
         index = self.check_index()

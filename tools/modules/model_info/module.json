@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "id": "model_info",
+  "name": "Model context information",
+  "description": "Référence persistante des fenêtres de contexte des modèles.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {"name": "model_context_status", "description": "Lire la fenêtre de contexte connue du modèle actif.", "category": "model", "risk_tags": ["read"], "timeout_seconds": 10},
+    {"name": "model_context_store", "description": "Enregistrer la fenêtre confirmée du modèle actif.", "category": "model", "risk_tags": ["write"], "timeout_seconds": 10, "persistent": true}
+  ],
+  "enabled": true
+}

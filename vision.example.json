@@ -1,0 +1,13 @@
+{
+  "base_url": "http://127.0.0.1:8081/v1",
+  "model": "gemma-4-E2B-it",
+  "model_path": null,
+  "hf_repo": "ggml-org/gemma-4-E2B-it-GGUF:Q4_0",
+  "mmproj_path": null,
+  "server_binary": "llama-server",
+  "port": 8081,
+  "timeout_seconds": 180,
+  "startup_timeout_seconds": 1800,
+  "max_tokens": 2048,
+  "llama_args": ["-ngl", "99"]
+}

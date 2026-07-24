@@ -6,11 +6,15 @@ import remarkGfm from "remark-gfm";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   Bot,
+  CalendarClock,
+  ChevronDown,
   ChevronRight,
   FolderOpen,
+  GitBranch,
   MessageSquarePlus,
   PlugZap,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 
 type Agent = {
@@ -23,6 +27,26 @@ type Agent = {
 };
 
 type Skill = { name: string; description: string };
+type SlashCommand = {
+  command: string;
+  description: string;
+  kind: string;
+  skill: string;
+  source: string;
+};
+type PlanStep = {
+  id: string;
+  title: string;
+  status: "pending" | "in_progress" | "completed" | "blocked" | "failed";
+  dependencies: string[];
+  parallelizable: boolean;
+  note?: string | null;
+};
+type CurrentPlan = {
+  plan_id: string;
+  title: string;
+  steps: PlanStep[];
+};
 type Catalog = {
   default_provider: string;
   agents: Agent[];
@@ -43,6 +67,16 @@ type Message = {
   content: string;
   meta?: string;
   error?: boolean;
+  runId?: string;
+  artifacts?: RunArtifact[];
+};
+
+type RunArtifact = {
+  artifact_id: string;
+  name: string;
+  media_type: string;
+  kind: string;
+  bytes?: number;
 };
 
 type Approval = {
@@ -53,6 +87,8 @@ type Approval = {
   reason: string;
   justification: string;
   risks: string[];
+  run_id?: string;
+  created_at?: string;
 };
 
 type Workspace = {
@@ -67,6 +103,16 @@ type ComposerImage = {
   name: string;
   mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
   dataUrl: string;
+};
+
+type ContextStatus = {
+  provider_id: string;
+  model: string | null;
+  context_window_tokens: number | null;
+  estimated_history_tokens: number;
+  estimated_ratio: number | null;
+  compaction_threshold_ratio: number;
+  compaction_count: number;
 };
 
 type ManagedResource = {
@@ -96,6 +142,110 @@ type ManagedProvider = {
   timeout_seconds?: number;
   auth_help_url?: string;
 };
+
+type CronJob = {
+  id: string;
+  name: string;
+  schedule: string;
+  prompt: string;
+  workspace: string;
+  agent_id: string;
+  skills: string[];
+  security_mode: "safe" | "limited" | "power";
+  provider_id: string | null;
+  model: string | null;
+  reasoning: "minimal" | "low" | "medium" | "high" | "xhigh" | null;
+  enabled: boolean;
+  auto_resume: boolean;
+  session_id: string;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_status: string | null;
+  last_error: string | null;
+  last_retryable: boolean;
+  in_flight: boolean;
+};
+
+type CronFrequencyKind = "minutes" | "hours" | "daily" | "weekly" | "yearly";
+type CronEditor = CronJob & {
+  creating: boolean;
+  frequency_kind: CronFrequencyKind;
+  frequency_interval: number;
+  frequency_time: string;
+  frequency_weekday: number;
+  frequency_month: number;
+  frequency_monthday: number;
+};
+
+function parseCronFrequency(schedule: string): Pick<CronEditor,
+  "frequency_kind" | "frequency_interval" | "frequency_time" |
+  "frequency_weekday" | "frequency_month" | "frequency_monthday"> {
+  const parts = schedule.trim().split(/\s+/);
+  const defaults = {
+    frequency_kind: "daily" as CronFrequencyKind,
+    frequency_interval: 1,
+    frequency_time: "09:00",
+    frequency_weekday: 1,
+    frequency_month: 1,
+    frequency_monthday: 1,
+  };
+  if (parts.length !== 5) return defaults;
+  const [minute, hour, monthday, month, weekday] = parts;
+  if (minute.startsWith("*/") && hour === "*" && monthday === "*" && month === "*" && weekday === "*") {
+    return { ...defaults, frequency_kind: "minutes", frequency_interval: Number(minute.slice(2)) || 1 };
+  }
+  if (minute === "0" && hour.startsWith("*/") && monthday === "*" && month === "*" && weekday === "*") {
+    return { ...defaults, frequency_kind: "hours", frequency_interval: Number(hour.slice(2)) || 1 };
+  }
+  const time = `${String(Number(hour)).padStart(2, "0")}:${String(Number(minute)).padStart(2, "0")}`;
+  if (monthday === "*" && month === "*" && weekday === "*") {
+    return { ...defaults, frequency_kind: "daily", frequency_time: time };
+  }
+  if (monthday === "*" && month === "*" && weekday !== "*") {
+    return { ...defaults, frequency_kind: "weekly", frequency_time: time, frequency_weekday: Number(weekday) };
+  }
+  if (monthday !== "*" && month !== "*" && weekday === "*") {
+    return {
+      ...defaults, frequency_kind: "yearly", frequency_time: time,
+      frequency_monthday: Number(monthday), frequency_month: Number(month),
+    };
+  }
+  return defaults;
+}
+
+function cronEditorFromJob(job: CronJob, creating = false): CronEditor {
+  return { ...job, creating, ...parseCronFrequency(job.schedule) };
+}
+
+function scheduleFromEditor(editor: CronEditor): string {
+  const [hour = "9", minute = "0"] = editor.frequency_time.split(":");
+  if (editor.frequency_kind === "minutes") return `*/${Math.max(1, editor.frequency_interval)} * * * *`;
+  if (editor.frequency_kind === "hours") return `0 */${Math.max(1, editor.frequency_interval)} * * *`;
+  if (editor.frequency_kind === "weekly") return `${Number(minute)} ${Number(hour)} * * ${editor.frequency_weekday}`;
+  if (editor.frequency_kind === "yearly") {
+    return `${Number(minute)} ${Number(hour)} ${editor.frequency_monthday} ${editor.frequency_month} *`;
+  }
+  return `${Number(minute)} ${Number(hour)} * * *`;
+}
+
+function describeCron(editor: CronEditor): string {
+  const days = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
+  const months = ["janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+  if (editor.frequency_kind === "minutes") return `Toutes les ${editor.frequency_interval} minute(s)`;
+  if (editor.frequency_kind === "hours") return `Toutes les ${editor.frequency_interval} heure(s)`;
+  if (editor.frequency_kind === "weekly") return `Chaque ${days[editor.frequency_weekday]} à ${editor.frequency_time}`;
+  if (editor.frequency_kind === "yearly") {
+    return `Tous les ans, le ${editor.frequency_monthday} ${months[editor.frequency_month - 1]} à ${editor.frequency_time}`;
+  }
+  return `Tous les jours à ${editor.frequency_time}`;
+}
+
+function compactTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${Math.round(value / 1_000)}k`;
+  return String(value);
+}
 
 const codexAuthHelpUrl = "https://learn.chatgpt.com/docs/auth?surface=cli";
 const codexApiUrl = "https://chatgpt.com/backend-api/codex";
@@ -166,7 +316,15 @@ type SessionSummary = {
   output: string | null;
   errors: { message: string }[];
   event_count: number;
-  messages?: { role: "user" | "assistant"; content: string; error?: boolean }[];
+  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test";
+  cron_job_id?: string | null;
+  messages?: {
+    role: "user" | "assistant";
+    content: string;
+    error?: boolean;
+    run_id?: string;
+    artifacts?: RunArtifact[];
+  }[];
   events?: TraceEvent[];
 };
 
@@ -174,7 +332,8 @@ const visibleTraceTypes = new Set([
   "session.started", "agent.started", "agent.retrying", "agent.completed", "agent.failed",
   "tool.proposed", "guardian.reviewed", "approval.requested", "approval.resolved",
   "tool.started", "tool.completed", "tool.failed", "tool.trashed", "session.completed",
-  "security.changed",
+  "security.changed", "context.pre_compaction_snapshot", "context.compacted",
+  "context.inspected", "context.window_updated", "context.window_update_failed",
 ]);
 
 function traceLabel(event: TraceEvent) {
@@ -195,6 +354,13 @@ function traceLabel(event: TraceEvent) {
     "tool.trashed": "Élément déplacé dans la corbeille",
     "session.completed": "Réponse terminée",
     "security.changed": `Permissions · ${String(event.payload.security_mode || "")}`,
+    "context.pre_compaction_snapshot": "Préservation du contexte complet",
+    "context.compacted": event.payload.manual
+      ? "Compaction manuelle terminée"
+      : "Compaction automatique terminée",
+    "context.inspected": "Mesure du contexte",
+    "context.window_updated": "Fenêtre de contexte enregistrée",
+    "context.window_update_failed": "Fenêtre de contexte invalide",
   };
   return labels[event.type] || event.type;
 }
@@ -209,14 +375,30 @@ function traceState(event: TraceEvent, isLast: boolean, live: boolean) {
   return "done";
 }
 
+function traceEventsForRun(events: TraceEvent[], rootRunId?: string) {
+  if (!rootRunId) return [];
+  const included = new Set([rootRunId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const event of events) {
+      if (event.parent_run_id && included.has(event.parent_run_id) && !included.has(event.run_id)) {
+        included.add(event.run_id);
+        changed = true;
+      }
+    }
+  }
+  return events.filter((event) => included.has(event.run_id));
+}
+
 function ProcessTrace({
-  events, live, expanded, onExpandedChange,
+  events, live,
 }: {
   events: TraceEvent[];
   live: boolean;
-  expanded: boolean;
-  onExpandedChange: (expanded: boolean) => void;
 }) {
+  const [expanded, setExpanded] = useState(live);
+  useEffect(() => setExpanded(live), [live]);
   const visible = events.filter((event) => visibleTraceTypes.has(event.type));
   if (visible.length === 0) return null;
   return (
@@ -225,7 +407,7 @@ function ProcessTrace({
         type="button"
         className="trace-toggle"
         aria-expanded={expanded}
-        onClick={() => onExpandedChange(!expanded)}
+        onClick={() => setExpanded((current) => !current)}
       >
         <strong>Processus</strong>
         <span className="trace-summary">
@@ -281,6 +463,34 @@ function MarkdownMessage({ content }: { content: string }) {
   );
 }
 
+function MessageArtifacts({
+  sessionId, artifacts,
+}: {
+  sessionId: string | null;
+  artifacts?: RunArtifact[];
+}) {
+  if (!sessionId || !artifacts?.length) return null;
+  return (
+    <div className="message-artifacts">
+      {artifacts.map((artifact) => {
+        const source = `/api/kernel/artifacts/${encodeURIComponent(sessionId)}/${encodeURIComponent(artifact.artifact_id)}`;
+        return artifact.kind === "image" || artifact.media_type.startsWith("image/") ? (
+          <figure key={artifact.artifact_id}>
+            <a href={source} target="_blank" rel="noreferrer">
+              <img src={source} alt={artifact.name} loading="lazy" />
+            </a>
+            <figcaption>{artifact.name}</figcaption>
+          </figure>
+        ) : (
+          <a key={artifact.artifact_id} href={source} download={artifact.name}>
+            {artifact.name}
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
 const starterPrompts = [
   "Cartographie les risques et les inconnues de ce projet.",
   "Propose trois sous-tâches indépendantes et délègue-les.",
@@ -302,18 +512,20 @@ export default function Home() {
   const [workspaceError, setWorkspaceError] = useState("");
   const [pickingWorkspace, setPickingWorkspace] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(new Set());
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
-  const [traceExpanded, setTraceExpanded] = useState(false);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [approvalProgress, setApprovalProgress] = useState("");
   const [securityMode, setSecurityMode] = useState<"safe" | "limited" | "power">("limited");
   const [providerId, setProviderId] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
   const [reasoning, setReasoning] = useState<"minimal" | "low" | "medium" | "high" | "xhigh">("medium");
   const [composerImages, setComposerImages] = useState<ComposerImage[]>([]);
+  const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
   const [attachmentError, setAttachmentError] = useState("");
   const [stopRequested, setStopRequested] = useState(false);
-  const [managementModal, setManagementModal] = useState<"projects" | "agents" | "skills" | "providers" | null>(null);
+  const [managementModal, setManagementModal] = useState<"projects" | "agents" | "skills" | "providers" | "crons" | null>(null);
   const [managedResources, setManagedResources] = useState<ManagedResource[]>([]);
   const [resourceEditor, setResourceEditor] = useState<ResourceEditor | null>(null);
   const [managementError, setManagementError] = useState("");
@@ -326,13 +538,28 @@ export default function Home() {
   const [codexConnected, setCodexConnected] = useState(false);
   const [codexAuthLoading, setCodexAuthLoading] = useState(false);
   const [composerPreferencesReady, setComposerPreferencesReady] = useState(false);
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
+  const [commandSelection, setCommandSelection] = useState(0);
+  const [currentPlan, setCurrentPlan] = useState<CurrentPlan | null>(null);
+  const [planExpanded, setPlanExpanded] = useState(true);
+  const [cronJobs, setCronJobs] = useState<CronJob[]>([]);
+  const [cronEditor, setCronEditor] = useState<CronEditor | null>(null);
+  const [cronTestApprovals, setCronTestApprovals] = useState<Approval[]>([]);
+  const [cronTestMessage, setCronTestMessage] = useState("");
+  const railContent = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
   const runningSessionId = useRef<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
+  const sessionSnapshots = useRef(new Map<string, Map<string, string>>());
   const discoveredProviders = useRef(new Set<string>());
   const restoredComposerPreferences = useRef<ComposerPreferences | null>(null);
   const composerPreferencesApplied = useRef(false);
   const lastComposerAgent = useRef<string | null>(null);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
 
   useEffect(() => {
     try {
@@ -411,10 +638,81 @@ export default function Home() {
     () => catalog?.agents.find((agent) => agent.id === agentId),
     [catalog, agentId],
   );
+  const activeProvider = useMemo(
+    () => catalog?.providers.find((provider) => provider.id === providerId),
+    [catalog, providerId],
+  );
   const activeWorkspaceInfo = useMemo(
     () => workspaces.find((workspace) => workspace.path === activeWorkspace),
     [workspaces, activeWorkspace],
   );
+  const commandMatches = useMemo(() => {
+    const value = prompt.trimStart();
+    if (!value.startsWith("/") || value.includes(" ")) return [];
+    const query = value.toLowerCase();
+    return slashCommands.filter((item) => item.command.startsWith(query));
+  }, [prompt, slashCommands]);
+
+  useEffect(() => {
+    if (!activeWorkspace) return;
+    fetch(`/api/kernel/commands?workspace=${encodeURIComponent(activeWorkspace)}`)
+      .then((response) => response.ok ? response.json() : [])
+      .then((items: SlashCommand[]) => setSlashCommands(items))
+      .catch(() => setSlashCommands([]));
+  }, [activeWorkspace]);
+
+  const refreshPlan = useCallback(async (sessionId = activeSessionId) => {
+    if (!sessionId) {
+      setCurrentPlan(null);
+      return;
+    }
+    const response = await fetch(
+      `/api/kernel/plans/current?session_id=${encodeURIComponent(sessionId)}`,
+    );
+    if (response.ok) setCurrentPlan(await response.json());
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    void refreshPlan();
+    if (!running || !activeSessionId) return;
+    const timer = window.setInterval(() => void refreshPlan(activeSessionId), 750);
+    return () => window.clearInterval(timer);
+  }, [activeSessionId, running, refreshPlan]);
+
+  useEffect(() => {
+    if (running) setPlanExpanded(true);
+  }, [running]);
+
+  async function updatePlanStep(step: PlanStep, completed: boolean) {
+    if (!currentPlan) return;
+    const response = await fetch(
+      `/api/kernel/plans/${encodeURIComponent(currentPlan.plan_id)}/steps/${encodeURIComponent(step.id)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status: completed ? "completed" : "pending" }),
+      },
+    );
+    if (response.ok) {
+      const data: { steps: PlanStep[] } = await response.json();
+      setCurrentPlan({ ...currentPlan, steps: data.steps });
+    }
+  }
+
+  async function deleteCurrentPlan() {
+    if (!currentPlan) return;
+    const response = await fetch(
+      `/api/kernel/plans/${encodeURIComponent(currentPlan.plan_id)}`,
+      { method: "DELETE" },
+    );
+    if (response.ok) setCurrentPlan(null);
+  }
+
+  function chooseCommand(command: SlashCommand) {
+    setPrompt(`${command.command} `);
+    setCommandSelection(0);
+    requestAnimationFrame(() => textarea.current?.focus());
+  }
 
   useEffect(() => {
     if (!catalog || !activeAgent || !composerPreferencesReady) return;
@@ -546,12 +844,70 @@ export default function Home() {
   const refreshSessions = useCallback(async (workspace = activeWorkspace) => {
     if (!workspace) return;
     const response = await fetch(`/api/kernel/sessions?workspace=${encodeURIComponent(workspace)}`);
-    if (response.ok) setSessions(await response.json());
+    if (!response.ok) return;
+    const nextSessions: SessionSummary[] = await response.json();
+    const previous = sessionSnapshots.current.get(workspace);
+    const nextSnapshot = new Map(
+      nextSessions.map((session) => [session.session_id, session.updated_at]),
+    );
+    sessionSnapshots.current.set(workspace, nextSnapshot);
+    if (previous) {
+      const changed = nextSessions
+        .filter((session) => previous.get(session.session_id) !== session.updated_at)
+        .map((session) => session.session_id);
+      if (changed.length) {
+        setUnreadSessionIds((current) => {
+          const updated = new Set(current);
+          changed.forEach((id) => {
+            if (id !== activeSessionIdRef.current) updated.add(id);
+          });
+          return updated;
+        });
+        if (
+          activeSessionIdRef.current
+          && changed.includes(activeSessionIdRef.current)
+        ) {
+          void openSession(activeSessionIdRef.current);
+        }
+      }
+    }
+    setSessions(nextSessions);
   }, [activeWorkspace]);
 
   useEffect(() => {
     void refreshSessions(activeWorkspace);
+    if (!activeWorkspace) return;
+    const timer = window.setInterval(
+      () => void refreshSessions(activeWorkspace),
+      2500,
+    );
+    return () => window.clearInterval(timer);
   }, [activeWorkspace, refreshSessions]);
+
+  const refreshContextStatus = useCallback(async () => {
+    if (!providerId) {
+      setContextStatus(null);
+      return;
+    }
+    const params = new URLSearchParams({ provider_id: providerId });
+    if (selectedModel) params.set("model", selectedModel);
+    if (activeSessionId) params.set("session_id", activeSessionId);
+    const response = await fetch(`/api/kernel/context-status?${params.toString()}`);
+    if (response.ok) setContextStatus(await response.json());
+  }, [activeSessionId, providerId, selectedModel]);
+
+  useEffect(() => {
+    void refreshContextStatus();
+    const timer = window.setInterval(() => void refreshContextStatus(), 5000);
+    return () => window.clearInterval(timer);
+  }, [refreshContextStatus]);
+
+  useEffect(() => {
+    // A project switch changes the entire sidebar context. Do not retain a
+    // scroll offset from the previous project, otherwise the active-project
+    // card can appear clipped or entirely missing.
+    railContent.current?.scrollTo({ top: 0 });
+  }, [activeWorkspace]);
 
   useEffect(() => {
     if (!managementModal) return;
@@ -561,6 +917,23 @@ export default function Home() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [managementModal]);
+
+  const refreshCrons = useCallback(async () => {
+    const response = await fetch("/api/kernel/crons");
+    if (!response.ok) throw new Error("Impossible de charger les cronjobs");
+    setCronJobs(await response.json());
+  }, []);
+
+  useEffect(() => {
+    setManagementError("");
+    void refreshCrons().catch((error) => {
+      if (managementModal === "crons") {
+        setManagementError(error instanceof Error ? error.message : "Erreur");
+      }
+    });
+    const timer = window.setInterval(() => void refreshCrons().catch(() => undefined), 2000);
+    return () => window.clearInterval(timer);
+  }, [managementModal, refreshCrons]);
 
   useEffect(() => {
     if (managementModal !== "providers") return;
@@ -868,14 +1241,233 @@ export default function Home() {
     }
   }
 
+  async function resumeSession(sessionId: string) {
+    setManagementError("");
+    setRunning(true);
+    setActiveSessionId(sessionId);
+    runningSessionId.current = sessionId;
+    try {
+      const response = await fetch(`/api/kernel/runs/${sessionId}/resume`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Reprise impossible");
+      await openSession(sessionId);
+      await refreshSessions();
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : "Reprise impossible");
+    } finally {
+      setRunning(false);
+      runningSessionId.current = null;
+    }
+  }
+
+  function createCron() {
+    setCronEditor(cronEditorFromJob({
+      id: "", name: "Nouvelle routine", schedule: "0 9 * * *", prompt: "",
+      workspace: activeWorkspace, agent_id: agentId, skills: selectedSkills,
+      security_mode: securityMode, provider_id: providerId || null,
+      model: selectedModel || null, reasoning, enabled: false, auto_resume: true,
+      session_id: "", next_run_at: null, last_run_at: null, last_status: null,
+      last_error: null, in_flight: false,
+      last_retryable: false,
+    }, true));
+    setCronTestApprovals([]);
+    setCronTestMessage("");
+  }
+
+  async function saveCron() {
+    if (!cronEditor) return;
+    setSavingResource(true);
+    setManagementError("");
+    const body = {
+      name: cronEditor.name, schedule: scheduleFromEditor(cronEditor), prompt: cronEditor.prompt,
+      workspace: cronEditor.workspace, agent_id: cronEditor.agent_id,
+      skills: cronEditor.skills, security_mode: cronEditor.security_mode,
+      provider_id: cronEditor.provider_id, model: cronEditor.model,
+      reasoning: cronEditor.reasoning, enabled: cronEditor.enabled,
+      auto_resume: cronEditor.auto_resume,
+    };
+    try {
+      const response = await fetch(
+        `/api/kernel/crons${cronEditor.creating ? "" : `/${cronEditor.id}`}`,
+        {
+          method: cronEditor.creating ? "POST" : "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Enregistrement impossible");
+      await refreshCrons();
+      if (cronEditor.creating) {
+        setCronEditor(cronEditorFromJob(data as CronJob));
+        setCronTestMessage("Routine enregistrée et inactive. Teste-la avant de l’activer.");
+      } else {
+        setCronEditor(null);
+      }
+    } catch (error) {
+      setManagementError(error instanceof Error ? error.message : "Enregistrement impossible");
+    } finally {
+      setSavingResource(false);
+    }
+  }
+
+  async function deleteCron(id: string) {
+    if (!window.confirm("Supprimer ce cronjob ? Son historique de session sera conservé.")) return;
+    const response = await fetch(`/api/kernel/crons/${id}`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await response.json();
+      setManagementError(data.detail || "Suppression impossible");
+      return;
+    }
+    await refreshCrons();
+  }
+
+  async function runCronNow(id: string) {
+    const response = await fetch(`/api/kernel/crons/${id}/run`, { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) {
+      setManagementError(data.detail || "Lancement impossible");
+      return;
+    }
+    await refreshCrons();
+  }
+
+  async function toggleCron(job: CronJob, enabled: boolean) {
+    const body = {
+      name: job.name, schedule: job.schedule, prompt: job.prompt,
+      workspace: job.workspace, agent_id: job.agent_id, skills: job.skills,
+      security_mode: job.security_mode, provider_id: job.provider_id,
+      model: job.model, reasoning: job.reasoning, enabled,
+      auto_resume: job.auto_resume,
+    };
+    const response = await fetch(`/api/kernel/crons/${job.id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setManagementError(data.detail || "Modification impossible");
+      return;
+    }
+    await refreshCrons();
+  }
+
+  async function refreshCronTestApprovals(sessionId: string) {
+    const response = await fetch("/api/kernel/approvals");
+    if (!response.ok) return [];
+    const pending: Approval[] = await response.json();
+    const routineApprovals = pending.filter((item) => item.session_id === sessionId);
+    setCronTestApprovals(routineApprovals);
+    return routineApprovals;
+  }
+
+  async function testCron(id: string) {
+    setSavingResource(true);
+    setCronTestMessage("Test en cours…");
+    setCronTestApprovals([]);
+    try {
+      const response = await fetch(`/api/kernel/crons/${id}/test`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Test impossible");
+      if (data.status === "approval_pending") {
+        const pending = await refreshCronTestApprovals(data.session_id);
+        setCronTestMessage(
+          `${pending.length} autorisation(s) à valider pour les prochaines exécutions.`,
+        );
+      } else if (data.status === "completed") {
+        setCronTestMessage("Test réussi. La routine est prête.");
+      } else {
+        setCronTestMessage(data.errors?.map((error: {message: string}) => error.message).join("\n")
+          || `Test terminé avec le statut ${data.status}.`);
+      }
+      await refreshCrons();
+    } catch (error) {
+      setCronTestMessage(error instanceof Error ? error.message : "Test impossible");
+    } finally {
+      setSavingResource(false);
+    }
+  }
+
+  async function resolveCronTestApprovals(approved: boolean) {
+    if (!cronEditor || cronTestApprovals.length === 0) return;
+    const current = cronTestApprovals;
+    setSavingResource(true);
+    setCronTestApprovals([]);
+    setCronTestMessage(approved ? "Autorisations enregistrées · test en reprise…" : "Refus enregistrés · test en reprise…");
+    try {
+      const response = await fetch("/api/kernel/approvals/resolve-batch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          approval_ids: current.map((approval) => approval.approval_id),
+          approved,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Résolution impossible");
+      if (data.status === "approval_pending") {
+        const pending = await refreshCronTestApprovals(cronEditor.session_id);
+        setCronTestMessage(`${pending.length} nouvelle(s) autorisation(s) à examiner.`);
+      } else if (data.status === "completed") {
+        setCronTestMessage(
+          approved
+            ? "Test réussi. Ces autorisations exactes seront réutilisées par la routine."
+            : "Test terminé après refus.",
+        );
+      } else {
+        setCronTestMessage(data.errors?.map((error: {message: string}) => error.message).join("\n")
+          || `Test terminé avec le statut ${data.status}.`);
+      }
+      await refreshCrons();
+    } catch (error) {
+      setCronTestApprovals(current);
+      setCronTestMessage(error instanceof Error ? error.message : "Résolution impossible");
+    } finally {
+      setSavingResource(false);
+    }
+  }
+
+  async function loadApprovalsForSession(sessionId: string) {
+    const approvalsResponse = await fetch("/api/kernel/approvals");
+    if (!approvalsResponse.ok) return;
+    const allPending: Approval[] = await approvalsResponse.json();
+    const sessionPending = allPending.filter((item) => item.session_id === sessionId);
+    const latestRunId = sessionPending
+      .slice()
+      .sort((left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")),
+      )[0]?.run_id;
+    setApprovals(
+      latestRunId
+        ? sessionPending.filter((item) => item.run_id === latestRunId)
+        : sessionPending,
+    );
+  }
+
   async function openSession(sessionId: string) {
     const response = await fetch(`/api/kernel/sessions/${sessionId}`);
     if (!response.ok) return;
     const session: SessionSummary = await response.json();
+    if (session.status === "approval_pending") {
+      await loadApprovalsForSession(sessionId);
+    } else {
+      setApprovals([]);
+    }
+    setUnreadSessionIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const updated = new Set(current);
+      updated.delete(sessionId);
+      return updated;
+    });
     setActiveSessionId(sessionId);
     setAgentId(session.agent_id);
     setTraceEvents(session.events || []);
-    setTraceExpanded(false);
+    setActiveRunId(null);
     const restored: Message[] = session.messages?.length
       ? session.messages.map((message, index) => ({
           id: `${sessionId}-${index}`,
@@ -885,6 +1477,8 @@ export default function Home() {
             ? session.agent_id
             : `${session.status} · session ${sessionId.slice(0, 8)}`,
           error: message.error,
+          runId: message.run_id,
+          artifacts: message.artifacts,
         }))
       : [{
           id: `${sessionId}-prompt`,
@@ -901,7 +1495,7 @@ export default function Home() {
     setActiveSessionId(null);
     setMessages([]);
     setTraceEvents([]);
-    setTraceExpanded(false);
+    setActiveRunId(null);
     setApprovals([]);
     setPrompt("");
     textarea.current?.focus();
@@ -911,6 +1505,9 @@ export default function Home() {
     const source = new EventSource(`/api/kernel/sessions/${sessionId}/events`);
     source.addEventListener("trace", (raw) => {
       const event = JSON.parse((raw as MessageEvent).data) as TraceEvent;
+      if (event.type === "session.started" && !event.parent_run_id) {
+        setActiveRunId(event.run_id);
+      }
       setTraceEvents((current) => {
         const key = `${event.timestamp}:${event.type}:${event.run_id}`;
         return current.some((item) => `${item.timestamp}:${item.type}:${item.run_id}` === key)
@@ -991,10 +1588,14 @@ export default function Home() {
     event?.preventDefault();
     const content = prompt.trim();
     if (!content || running) return;
+    const secretCommand = content.match(/^\/secret\s+(\S+)\s+[\s\S]+$/i);
+    const displayedContent = secretCommand
+      ? `/secret ${secretCommand[1]} ••••••••`
+      : content;
     const userMessage: Message = {
       id: crypto.randomUUID(),
       role: "user",
-      content,
+      content: displayedContent,
       meta: `${agentId}${selectedSkills.length ? ` · ${selectedSkills.length} skill${selectedSkills.length > 1 ? "s" : ""}` : ""}`,
     };
     const sessionId = activeSessionId || crypto.randomUUID();
@@ -1003,7 +1604,7 @@ export default function Home() {
     setStopRequested(false);
     setActiveSessionId(sessionId);
     if (!continuingSession) setTraceEvents([]);
-    setTraceExpanded(true);
+    setActiveRunId(null);
     setMessages((current) => continuingSession ? [...current, userMessage] : [userMessage]);
     setPrompt("");
     setRunning(true);
@@ -1037,11 +1638,7 @@ export default function Home() {
         data.errors?.map((error: { message: string }) => error.message).join("\n") ||
         (data.status === "cancelled" ? "Run arrêté." : "Aucun résultat retourné.");
       if (data.status === "approval_pending") {
-        const approvalsResponse = await fetch("/api/kernel/approvals");
-        if (approvalsResponse.ok) {
-          const pending: Approval[] = await approvalsResponse.json();
-          setApprovals(pending.filter((item) => item.session_id === data.session_id));
-        }
+        await loadApprovalsForSession(data.session_id);
       } else {
         setMessages((current) => [
           ...current,
@@ -1053,6 +1650,8 @@ export default function Home() {
               ? data.status
               : `${activeAgent?.model || "modèle par défaut"} · session ${data.session_id.slice(0, 8)}`,
             error: failed,
+            runId: data.run_id,
+            artifacts: data.artifacts,
           },
         ]);
       }
@@ -1065,13 +1664,14 @@ export default function Home() {
           content: error instanceof Error ? error.message : "Connexion impossible.",
           meta: "erreur de connexion",
           error: true,
+          runId: activeRunId || undefined,
         },
       ]);
     } finally {
       eventSource.close();
       await refreshSessions();
+      await refreshPlan(sessionId);
       setRunning(false);
-      setTraceExpanded(false);
       runningSessionId.current = null;
       setStopRequested(false);
       setComposerImages([]);
@@ -1085,7 +1685,6 @@ export default function Home() {
     setApprovalProgress(approved ? "Autorisation enregistrée · reprise en cours" : "Refus enregistré · reprise en cours");
     setRunning(true);
     runningSessionId.current = approval.session_id;
-    setTraceExpanded(true);
     const eventSource = startEventStream(approval.session_id);
     try {
       const response = await fetch(`/api/kernel/approvals/${approval.approval_id}/resolve`, {
@@ -1110,6 +1709,8 @@ export default function Home() {
               (approved ? "Action autorisée." : "Action refusée."),
             meta: data.status,
             error: data.status === "failed" || data.status === "timeout",
+            runId: data.run_id,
+            artifacts: data.artifacts,
           },
         ]);
       }
@@ -1128,7 +1729,6 @@ export default function Home() {
       setApprovalProgress("");
       await refreshSessions();
       setRunning(false);
-      setTraceExpanded(false);
       runningSessionId.current = null;
     }
   }
@@ -1137,7 +1737,6 @@ export default function Home() {
     if (approvals.length === 0) return;
     const previousApprovals = approvals;
     setRunning(true);
-    setTraceExpanded(true);
     const sessionId = approvals[0].session_id;
     runningSessionId.current = sessionId;
     setApprovals([]);
@@ -1188,7 +1787,6 @@ export default function Home() {
       setApprovalProgress("");
       await refreshSessions();
       setRunning(false);
-      setTraceExpanded(false);
       runningSessionId.current = null;
     }
   }
@@ -1206,7 +1804,7 @@ export default function Home() {
           </div>
         </header>
 
-        <div className="rail-content">
+        <div className="rail-content" ref={railContent}>
           <nav className="context-nav" aria-label="Contexte du run">
             <button className="context-card" onClick={() => setManagementModal("projects")}>
               <span className="context-icon" aria-hidden="true"><FolderOpen /></span>
@@ -1246,6 +1844,15 @@ export default function Home() {
               </span>
               <ChevronRight className="context-chevron" aria-hidden="true" />
             </button>
+            <button className="context-card" onClick={() => setManagementModal("crons")}>
+              <span className="context-icon" aria-hidden="true"><CalendarClock /></span>
+              <span>
+                <small>Automatisations</small>
+                <strong>{cronJobs.filter((job) => job.enabled).length} active{cronJobs.filter((job) => job.enabled).length > 1 ? "s" : ""}</strong>
+                <em>Cronjobs et reprises</em>
+              </span>
+              <ChevronRight className="context-chevron" aria-hidden="true" />
+            </button>
           </nav>
 
           <section className="rail-section history-section">
@@ -1257,7 +1864,11 @@ export default function Home() {
             {sessions.map((session) => (
               <div
                 key={session.session_id}
-                className={`session-entry ${session.session_id === activeSessionId ? "active" : ""}`}
+                className={[
+                  "session-entry",
+                  session.session_id === activeSessionId ? "active" : "",
+                  unreadSessionIds.has(session.session_id) ? "unread" : "",
+                ].filter(Boolean).join(" ")}
               >
                 <button
                   className="session-open"
@@ -1266,10 +1877,26 @@ export default function Home() {
                 >
                   <span className={`session-state ${session.status}`} />
                   <span>
-                    <strong>{session.prompt || "Session sans titre"}</strong>
+                    <strong>
+                      {session.prompt || "Session sans titre"}
+                      {session.trigger?.startsWith("cron") && (
+                        <em className="automation-chip">Routine</em>
+                      )}
+                    </strong>
                     <small>{new Date(session.updated_at).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}</small>
                   </span>
                 </button>
+                {unreadSessionIds.has(session.session_id) && (
+                  <span className="session-unread" title="Nouveau résultat" aria-label="Nouveau résultat" />
+                )}
+                <button
+                  className="session-resume"
+                  hidden={!["failed", "timeout", "partial", "cancelled"].includes(session.status)}
+                  onClick={() => void resumeSession(session.session_id)}
+                  disabled={running}
+                  aria-label="Reprendre la session"
+                  title="Reprendre à partir des traces persistées"
+                >↻</button>
                 <button
                   className="session-delete"
                   onClick={() => void deleteSession(session.session_id)}
@@ -1315,16 +1942,19 @@ export default function Home() {
                   {managementModal === "agents" && "Agents"}
                   {managementModal === "skills" && "Skills"}
                   {managementModal === "providers" && "Providers"}
+                  {managementModal === "crons" && "Automatisations"}
                 </h2>
               </div>
               <div className="modal-header-actions">
-                {(managementModal === "agents" || managementModal === "skills" || managementModal === "providers")
-                  && !resourceEditor && !providerEditor && (
+                {(managementModal === "agents" || managementModal === "skills" || managementModal === "providers" || managementModal === "crons")
+                  && !resourceEditor && !providerEditor && !cronEditor && (
                   <button
                     className="modal-add"
                     onClick={() => managementModal === "providers"
                       ? createProvider()
-                      : createResource(managementModal)}
+                      : managementModal === "crons"
+                        ? createCron()
+                        : createResource(managementModal)}
                     aria-label="Ajouter"
                   >+</button>
                 )}
@@ -1332,6 +1962,7 @@ export default function Home() {
                   setManagementModal(null);
                   setResourceEditor(null);
                   setProviderEditor(null);
+                  setCronEditor(null);
                 }} aria-label="Fermer">×</button>
               </div>
             </header>
@@ -1833,6 +2464,228 @@ export default function Home() {
                 ))}
               </div>
             )}
+
+            {managementModal === "crons" && cronEditor && (
+              <div className="resource-editor cron-editor">
+                <div className="resource-fields">
+                  <label className="field-wide">
+                    Nom
+                    <input value={cronEditor.name} onChange={(event) =>
+                      setCronEditor((current) => current && ({ ...current, name: event.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    Répétition
+                    <select value={cronEditor.frequency_kind} onChange={(event) =>
+                      setCronEditor((current) => current && ({
+                        ...current, frequency_kind: event.target.value as CronFrequencyKind,
+                      }))}>
+                      <option value="minutes">Toutes les X minutes</option>
+                      <option value="hours">Toutes les X heures</option>
+                      <option value="daily">Tous les jours</option>
+                      <option value="weekly">Toutes les semaines</option>
+                      <option value="yearly">Tous les ans</option>
+                    </select>
+                  </label>
+                  {(cronEditor.frequency_kind === "minutes" || cronEditor.frequency_kind === "hours") && (
+                    <label>
+                      Intervalle
+                      <input type="number" min="1"
+                        max={cronEditor.frequency_kind === "minutes" ? 59 : 23}
+                        value={cronEditor.frequency_interval}
+                        onChange={(event) => setCronEditor((current) => current && ({
+                          ...current, frequency_interval: Math.max(1, Number(event.target.value)),
+                        }))}
+                      />
+                    </label>
+                  )}
+                  {cronEditor.frequency_kind === "weekly" && (
+                    <label>
+                      Jour
+                      <select value={cronEditor.frequency_weekday} onChange={(event) =>
+                        setCronEditor((current) => current && ({
+                          ...current, frequency_weekday: Number(event.target.value),
+                        }))}>
+                        {["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"]
+                          .map((day, index) => <option value={index} key={day}>{day}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  {cronEditor.frequency_kind === "yearly" && (
+                    <>
+                      <label>
+                        Mois
+                        <select value={cronEditor.frequency_month} onChange={(event) =>
+                          setCronEditor((current) => current && ({
+                            ...current, frequency_month: Number(event.target.value),
+                          }))}>
+                          {["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+                            "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
+                            .map((month, index) => <option value={index + 1} key={month}>{month}</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        Jour du mois
+                        <input type="number" min="1" max="31" value={cronEditor.frequency_monthday}
+                          onChange={(event) => setCronEditor((current) => current && ({
+                            ...current, frequency_monthday: Math.min(31, Math.max(1, Number(event.target.value))),
+                          }))}
+                        />
+                      </label>
+                    </>
+                  )}
+                  {["daily", "weekly", "yearly"].includes(cronEditor.frequency_kind) && (
+                    <label>
+                      Heure
+                      <input type="time" value={cronEditor.frequency_time} onChange={(event) =>
+                        setCronEditor((current) => current && ({
+                          ...current, frequency_time: event.target.value,
+                        }))}
+                      />
+                    </label>
+                  )}
+                  <div className="field-wide cron-summary">
+                    <span>Prochaine règle</span>
+                    <strong>{describeCron(cronEditor)}</strong>
+                  </div>
+                  <label>
+                    Agent
+                    <select value={cronEditor.agent_id} onChange={(event) =>
+                      setCronEditor((current) => current && ({
+                        ...current, agent_id: event.target.value, security_mode: securityMode,
+                      }))}>
+                      {catalog?.agents.map((agent) => (
+                        <option value={agent.id} key={agent.id}>{agent.id}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="permission-inherited">
+                    <span>Permissions héritées de l’agent actif</span>
+                    <strong>{cronEditor.security_mode}</strong>
+                  </div>
+                  <label className="field-wide">
+                    Workspace
+                    <input value={cronEditor.workspace} onChange={(event) =>
+                      setCronEditor((current) => current && ({ ...current, workspace: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-wide">
+                    Demande exécutée
+                    <textarea value={cronEditor.prompt} onChange={(event) =>
+                      setCronEditor((current) => current && ({ ...current, prompt: event.target.value }))}
+                      placeholder="Décris le résultat attendu à chaque exécution…"
+                    />
+                  </label>
+                  <div className="field-wide switch-setting">
+                    <span><strong>Routine active</strong><small>Exécuter selon la fréquence choisie</small></span>
+                    <button type="button" role="switch" aria-checked={cronEditor.enabled}
+                      className={`toggle-switch ${cronEditor.enabled ? "on" : ""}`}
+                      onClick={() => setCronEditor((current) => current && ({
+                        ...current, enabled: !current.enabled,
+                      }))}><span /></button>
+                  </div>
+                  <div className="field-wide switch-setting">
+                    <span><strong>Reprise après échec</strong><small>Continuer au prochain passage après une erreur transitoire</small></span>
+                    <button type="button" role="switch" aria-checked={cronEditor.auto_resume}
+                      className={`toggle-switch ${cronEditor.auto_resume ? "on" : ""}`}
+                      onClick={() => setCronEditor((current) => current && ({
+                        ...current, auto_resume: !current.auto_resume,
+                      }))}><span /></button>
+                  </div>
+                </div>
+                <p className="cron-note">
+                  Teste la routine avant de l’activer. Les demandes ASK validées pendant le test
+                  seront mémorisées pour cette routine, uniquement pour l’action et la cible exactes.
+                </p>
+                {!cronEditor.creating && (
+                  <div className="cron-test-panel">
+                    <div>
+                      <strong>Validation avant automatisation</strong>
+                      <small>{cronTestMessage || "Lance un test pour détecter les autorisations nécessaires."}</small>
+                    </div>
+                    {cronTestApprovals.length > 0 && (
+                      <ul>
+                        {cronTestApprovals.map((approval) => (
+                          <li key={approval.approval_id}>
+                            <strong>{approval.tool_name}</strong>
+                            <span>{approval.justification}</span>
+                            {approval.path && <code>{approval.path}</code>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="cron-test-actions">
+                      {cronTestApprovals.length > 0 ? (
+                        <>
+                          <button disabled={savingResource}
+                            onClick={() => void resolveCronTestApprovals(false)}>Tout refuser</button>
+                          <button className="primary" disabled={savingResource}
+                            onClick={() => void resolveCronTestApprovals(true)}>Tout autoriser durablement</button>
+                        </>
+                      ) : (
+                        <button disabled={savingResource || cronEditor.in_flight}
+                          onClick={() => void testCron(cronEditor.id)}>
+                          {savingResource ? "Test en cours…" : "Tester la routine"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+                <div className="resource-editor-actions">
+                  <button onClick={() => setCronEditor(null)}>Annuler</button>
+                  <button className="primary" onClick={() => void saveCron()}
+                    disabled={savingResource || !cronEditor.name.trim() || !cronEditor.prompt.trim()}>
+                    {savingResource ? "Enregistrement…" : "Enregistrer"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {managementModal === "crons" && !cronEditor && (
+              <div className="management-body management-list">
+                {cronJobs.map((job) => (
+                  <div className={`cron-row ${job.enabled ? "" : "disabled"}`} key={job.id}>
+                    <button className="cron-main"
+                      onClick={() => {
+                        setCronEditor(cronEditorFromJob(job));
+                        setCronTestApprovals([]);
+                        setCronTestMessage("");
+                      }}>
+                      <span className={`row-status ${job.in_flight ? "running" : job.last_status || ""}`} />
+                      <span>
+                        <strong>{job.name}</strong>
+                        <small>{describeCron(cronEditorFromJob(job))} · {job.agent_id} · {job.workspace}</small>
+                        <em>
+                          {job.in_flight
+                            ? "En cours"
+                            : job.next_run_at
+                              ? `Prochaine exécution ${new Date(job.next_run_at).toLocaleString("fr-FR")}`
+                              : "Aucune exécution prévue"}
+                        </em>
+                        {job.last_error && <b>{job.last_error}</b>}
+                      </span>
+                    </button>
+                    <div className="cron-actions">
+                      <button type="button" role="switch" aria-checked={job.enabled}
+                        className={`mini-toggle ${job.enabled ? "on" : ""}`}
+                        onClick={() => void toggleCron(job, !job.enabled)}
+                        title={job.enabled ? "Désactiver" : "Activer"}><span /></button>
+                      <button onClick={() => void runCronNow(job.id)} disabled={job.in_flight || !job.enabled}
+                        title="Lancer maintenant">▶</button>
+                      <button onClick={() => setCronEditor(cronEditorFromJob(job))}
+                        title="Éditer">✎</button>
+                      <button onClick={() => void deleteCron(job.id)} title="Supprimer">⌫</button>
+                    </div>
+                  </div>
+                ))}
+                {cronJobs.length === 0 && (
+                  <div className="management-empty">
+                    <CalendarClock />
+                    <p>Aucune automatisation. Ajoute une routine avec le bouton +.</p>
+                  </div>
+                )}
+              </div>
+            )}
           </section>
         </div>
       )}
@@ -1883,16 +2736,13 @@ export default function Home() {
             </div>
           ) : (
             <div className="message-list" aria-live="polite">
-              {messages.map((message, index) => (
+              {messages.map((message) => (
                 <Fragment key={message.id}>
-                  {message.role === "assistant" &&
-                    index === messages.findIndex((item) => item.role === "assistant") &&
-                    traceEvents.length > 0 && (
+                  {message.role === "assistant" && message.runId &&
+                    traceEventsForRun(traceEvents, message.runId).length > 0 && (
                       <ProcessTrace
-                        events={traceEvents}
-                        live={running}
-                        expanded={traceExpanded}
-                        onExpandedChange={setTraceExpanded}
+                        events={traceEventsForRun(traceEvents, message.runId)}
+                        live={running && activeRunId === message.runId}
                       />
                     )}
                   <article className={`message ${message.role} ${message.error ? "error" : ""}`}>
@@ -1903,7 +2753,13 @@ export default function Home() {
                         <span>{message.meta}</span>
                       </div>
                       {message.role === "assistant" ? (
-                        <MarkdownMessage content={message.content} />
+                        <>
+                          <MarkdownMessage content={message.content} />
+                          <MessageArtifacts
+                            sessionId={activeSessionId}
+                            artifacts={message.artifacts}
+                          />
+                        </>
                       ) : (
                         <p>{message.content}</p>
                       )}
@@ -1911,12 +2767,12 @@ export default function Home() {
                   </article>
                 </Fragment>
               ))}
-              {messages.every((message) => message.role !== "assistant") && traceEvents.length > 0 && (
+              {running && activeRunId &&
+                !messages.some((message) => message.role === "assistant" && message.runId === activeRunId) &&
+                traceEventsForRun(traceEvents, activeRunId).length > 0 && (
                 <ProcessTrace
-                  events={traceEvents}
-                  live={running}
-                  expanded={traceExpanded}
-                  onExpandedChange={setTraceExpanded}
+                  events={traceEventsForRun(traceEvents, activeRunId)}
+                  live
                 />
               )}
               {running && (
@@ -1935,7 +2791,7 @@ export default function Home() {
               <article className="approval-card approval-batch">
                 <div>
                   <p className="eyebrow">Autorisation groupée · {approvals.length} actions</p>
-                  <strong>{approvals.length} recherches web proposées</strong>
+                  <strong>{approvals.length} actions proposées</strong>
                   <ul>
                     {approvals.map((approval) => (
                       <li key={approval.approval_id}>{approval.justification}</li>
@@ -1985,6 +2841,63 @@ export default function Home() {
           </div>
         )}
 
+        {currentPlan && (
+          <section className={`current-plan ${planExpanded ? "expanded" : ""}`}>
+            <header>
+              <div>
+                <p className="eyebrow">Plan courant</p>
+                <strong>
+                  {currentPlan.steps.filter((step) => step.status === "completed").length}
+                  {" "}tâches sur {currentPlan.steps.length} terminées
+                </strong>
+                <small>{currentPlan.title}</small>
+              </div>
+              <div className="plan-actions">
+                <button
+                  type="button"
+                  onClick={() => void deleteCurrentPlan()}
+                  aria-label="Supprimer le plan"
+                  title="Supprimer le plan"
+                ><Trash2 size={19} /></button>
+                <button
+                  type="button"
+                  onClick={() => setPlanExpanded((value) => !value)}
+                  aria-label={planExpanded ? "Replier le plan" : "Ouvrir le plan"}
+                ><ChevronDown size={22} /></button>
+              </div>
+            </header>
+            {planExpanded && (
+              <div className="plan-steps">
+                {currentPlan.steps.map((step) => (
+                  <label className={`plan-step ${step.status}`} key={step.id}>
+                    <input
+                      type="checkbox"
+                      checked={step.status === "completed"}
+                      disabled={running}
+                      onChange={(event) => void updatePlanStep(step, event.target.checked)}
+                    />
+                    <span className="plan-step-copy">
+                      <strong>{step.id} · {step.title}</strong>
+                      <small>
+                        {step.dependencies?.length
+                          ? `Dépend de ${step.dependencies.join(", ")}`
+                          : "Sans dépendance"}
+                        {step.note ? ` · ${step.note}` : ""}
+                      </small>
+                    </span>
+                    {step.parallelizable && (
+                      <span className="parallel-badge">
+                        <GitBranch size={14} /> parallélisable
+                      </span>
+                    )}
+                    {step.status === "in_progress" && <span className="step-running" />}
+                  </label>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
         <form className="composer" onSubmit={submit}>
           <input
             ref={imageInput}
@@ -2022,10 +2935,32 @@ export default function Home() {
               ))}
             </div>
           )}
+          {commandMatches.length > 0 && (
+            <div className="slash-autocomplete" role="listbox" aria-label="Commandes RPPL">
+              {commandMatches.map((command, index) => (
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={index === commandSelection}
+                  className={index === commandSelection ? "selected" : ""}
+                  key={command.command}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => chooseCommand(command)}
+                >
+                  <strong>{command.command}</strong>
+                  <span>{command.description}</span>
+                  <small>{command.skill}</small>
+                </button>
+              ))}
+            </div>
+          )}
           <textarea
             ref={textarea}
             value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
+            onChange={(event) => {
+              setPrompt(event.target.value);
+              setCommandSelection(0);
+            }}
             onPaste={(event) => {
               const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
               if (images.length) {
@@ -2034,6 +2969,25 @@ export default function Home() {
               }
             }}
             onKeyDown={(event) => {
+              if (commandMatches.length) {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setCommandSelection((value) => (value + 1) % commandMatches.length);
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setCommandSelection((value) => (
+                    value - 1 + commandMatches.length
+                  ) % commandMatches.length);
+                  return;
+                }
+                if (event.key === "Tab" || event.key === "Enter") {
+                  event.preventDefault();
+                  chooseCommand(commandMatches[commandSelection] || commandMatches[0]);
+                  return;
+                }
+              }
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 void submit();
@@ -2043,6 +2997,46 @@ export default function Home() {
             rows={2}
             aria-label="Message au kernel"
           />
+          <div
+            className={[
+              "context-meter",
+              contextStatus?.estimated_ratio == null ? "unknown" : "",
+              (contextStatus?.estimated_ratio || 0) >= 0.7 ? "critical"
+                : (contextStatus?.estimated_ratio || 0) >= 0.5 ? "warning" : "",
+            ].filter(Boolean).join(" ")}
+            title={
+              contextStatus?.context_window_tokens
+                ? `${contextStatus.estimated_history_tokens.toLocaleString("fr-FR")} tokens estimés sur ${contextStatus.context_window_tokens.toLocaleString("fr-FR")}`
+                : "Fenêtre de contexte inconnue — utilise /model-context"
+            }
+          >
+            <div className="context-meter-label">
+              <span>Contexte</span>
+              {contextStatus?.estimated_ratio != null && contextStatus.context_window_tokens ? (
+                <strong>
+                  {Math.min(100, Math.round(contextStatus.estimated_ratio * 100))} %
+                  <small>
+                    {compactTokens(contextStatus.estimated_history_tokens)}
+                    {" / "}
+                    {compactTokens(contextStatus.context_window_tokens)}
+                  </small>
+                </strong>
+              ) : (
+                <strong>Fenêtre inconnue <small>/model-context</small></strong>
+              )}
+            </div>
+            <div className="context-meter-track" aria-hidden="true">
+              <span
+                className="context-meter-fill"
+                style={{
+                  width: contextStatus?.estimated_ratio == null
+                    ? "100%"
+                    : `${Math.min(100, contextStatus.estimated_ratio * 100)}%`,
+                }}
+              />
+              <i className="context-threshold" title="Compaction automatique à 70 %" />
+            </div>
+          </div>
           {attachmentError && <small className="attachment-error">{attachmentError}</small>}
           <div className="composer-footer">
             <div className="composer-controls">
@@ -2052,7 +3046,11 @@ export default function Home() {
                 onClick={() => imageInput.current?.click()}
                 disabled={running || composerImages.length >= 4}
                 aria-label="Ajouter une image"
-                title="Ajouter une image"
+                title={
+                  activeProvider?.vision
+                    ? "Ajouter une image"
+                    : "Ajouter une image · analyse locale Gemma 4"
+                }
               >+</button>
               <label title="Niveau de permission">
                 <span className={`permission-dot ${securityMode}`} />

@@ -64,6 +64,9 @@ class ApprovalStore:
     def path_for(self, approval_id: UUID) -> Path:
         return self.root / f"{approval_id}.json"
 
+    def remove(self, approval_id: UUID) -> None:
+        self.path_for(approval_id).unlink(missing_ok=True)
+
     def remove_for_session(self, session_id: UUID) -> None:
         if not self.root.exists():
             return

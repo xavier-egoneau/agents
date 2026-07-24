@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import ipaddress
 import json
@@ -25,7 +26,9 @@ from .models import (
 )
 
 PROTECTED_PARTS = {".ssh", ".gnupg", ".aws", ".kube", ".git", ".codex"}
-SENSITIVE_NAMES = {".env", ".env.local", ".envrc", "providers.json"}
+SENSITIVE_NAMES = {
+    ".env", ".env.local", ".envrc", "providers.json", "secrets.json",
+}
 SECRET_KEYS = {"api_key", "token", "password", "secret", "authorization"}
 
 
@@ -45,6 +48,7 @@ def review_tool_call(
     risks: list[ToolRisk],
     mode: SecurityMode,
     workspace: Path,
+    trusted_read_roots: tuple[Path, ...] = (),
 ) -> GuardianDecision:
     justification = arguments.get("justification")
     if not isinstance(justification, str) or not justification.strip():
@@ -58,29 +62,62 @@ def review_tool_call(
             justification="",
             security_mode=mode,
         )
-    raw_path = arguments.get("path")
-    path = canonical_path(raw_path, workspace) if raw_path is not None else None
-    if raw_path is not None and path is None:
+    raw_paths = [
+        arguments[key] for key in ("path", "cwd", "destination")
+        if arguments.get(key) is not None
+    ]
+    paths = [canonical_path(raw, workspace) for raw in raw_paths]
+    path = paths[0] if paths else None
+    if any(candidate is None for candidate in paths):
         verdict, reason = GuardianVerdict.DENY, "The path is invalid or ambiguous."
-    elif raw_path is not None and _contains_symlink(raw_path, workspace):
+    elif any(_contains_symlink(raw, workspace) for raw in raw_paths):
         verdict, reason = GuardianVerdict.DENY, "Paths traversing symbolic links are denied."
-    elif path is not None and (set(path.parts) & PROTECTED_PARTS or path.name in SENSITIVE_NAMES):
+    elif any(
+        candidate is not None
+        and (set(candidate.parts) & PROTECTED_PARTS or candidate.name in SENSITIVE_NAMES)
+        for candidate in paths
+    ):
         verdict, reason = GuardianVerdict.DENY, "Protected or secret paths are denied."
     elif ToolRisk.SECRET in risks or ToolRisk.SYSTEM in risks:
         verdict, reason = GuardianVerdict.DENY, "Secret and system actions are denied."
     elif _targets_private_network(arguments):
         verdict, reason = GuardianVerdict.ASK, "Private or local network targets require approval."
-    elif path is not None and not _inside(path, workspace.resolve()):
+    elif (
+        paths
+        and ToolRisk.READ in risks
+        and not any(risk is not ToolRisk.READ for risk in risks)
+        and all(
+            candidate is not None
+            and any(_inside(candidate, root.resolve()) for root in trusted_read_roots)
+            for candidate in paths
+        )
+    ):
+        verdict, reason = (
+            GuardianVerdict.ALLOW,
+            "Reading a kernel-owned artifact for this session is allowed.",
+        )
+    elif any(
+        candidate is not None and not _inside(candidate, workspace.resolve())
+        for candidate in paths
+    ):
         verdict, reason = GuardianVerdict.ASK, "Actions outside the workspace require approval."
     elif ToolRisk.DESTRUCTIVE in risks:
         verdict, reason = GuardianVerdict.ASK, "Destructive actions always require approval."
+    elif ToolRisk.SCREEN in risks:
+        verdict, reason = GuardianVerdict.ASK, "Screen capture always requires approval."
+    elif ToolRisk.EXECUTE in risks:
+        verdict, reason = _review_execution(arguments, mode)
+    elif (
+        (ToolRisk.NETWORK in risks or ToolRisk.EXTERNAL in risks)
+        and str(arguments.get("method", "GET")).upper() in {"POST", "PUT", "PATCH", "DELETE"}
+    ):
+        verdict, reason = GuardianVerdict.ASK, "Mutating HTTP requests require approval."
     elif ToolRisk.WRITE in risks and mode is SecurityMode.SAFE:
         verdict, reason = GuardianVerdict.ASK, "Writes require approval in safe mode."
     elif (
         ToolRisk.WRITE in risks
         and mode is SecurityMode.LIMITED
-        and path is not None
-        and path.exists()
+        and any(candidate is not None and candidate.exists() for candidate in paths)
     ):
         verdict = GuardianVerdict.ASK
         reason = "Overwriting an existing path requires approval in limited mode."
@@ -156,10 +193,54 @@ def _contains_symlink(raw: Any, workspace: Path) -> bool:
 
 
 def action_family(risks: list[ToolRisk]) -> str:
-    for risk in (ToolRisk.DESTRUCTIVE, ToolRisk.WRITE, ToolRisk.READ, ToolRisk.NETWORK):
+    for risk in (
+        ToolRisk.DESTRUCTIVE,
+        ToolRisk.EXECUTE,
+        ToolRisk.WRITE,
+        ToolRisk.READ,
+        ToolRisk.NETWORK,
+    ):
         if risk in risks:
             return risk.value
     return "other"
+
+
+def _review_execution(
+    arguments: dict[str, Any], mode: SecurityMode
+) -> tuple[GuardianVerdict, str]:
+    program = str(arguments.get("program", "")).strip()
+    args = [str(value) for value in arguments.get("args", [])]
+    lowered = [program.casefold(), *(value.casefold() for value in args)]
+    command = " ".join(lowered)
+    destructive = (
+        program.casefold() in {"rm", "rmdir", "shred", "mkfs"}
+        or "reset --hard" in command
+        or "clean -fd" in command
+        or "--force" in lowered
+    )
+    installs = (
+        program.casefold() in {"pip", "pip3", "brew"}
+        and any(value in {"install", "uninstall"} for value in lowered)
+    ) or (
+        program.casefold() in {"npm", "pnpm", "yarn", "bun"}
+        and any(value in {"install", "add", "remove", "uninstall"} for value in lowered)
+    )
+    network_program = program.casefold() in {
+        "curl", "wget", "ssh", "scp", "nc", "ncat", "telnet"
+    }
+    if destructive:
+        return GuardianVerdict.ASK, "Potentially destructive command requires approval."
+    if mode is SecurityMode.SAFE:
+        return GuardianVerdict.ASK, "Command execution requires approval in safe mode."
+    if mode is SecurityMode.LIMITED and (installs or network_program):
+        return GuardianVerdict.ASK, "Install or network commands require approval in limited mode."
+    known = {
+        "npm", "pnpm", "yarn", "bun", "node", "python", "python3", "pytest",
+        "git", "make", "cmake", "cargo", "go", "ruff", "eslint", "tsc", "vite",
+    }
+    if mode is SecurityMode.LIMITED and program.casefold() not in known:
+        return GuardianVerdict.ASK, "Unknown executable requires approval in limited mode."
+    return GuardianVerdict.ALLOW, "Command execution allowed by the active security mode."
 
 
 def approval_scope(decision: GuardianDecision) -> str:
@@ -187,6 +268,7 @@ def redact(value: Any, key: str = "") -> Any:
 class GuardianToolset(WrapperToolset[Any]):
     agent_id: str
     risks: dict[str, list[ToolRisk]]
+    timeouts: dict[str, float | None]
 
     async def get_tools(self, ctx: RunContext[Any]) -> dict[str, ToolsetTool[Any]]:
         tools = await super().get_tools(ctx)
@@ -226,13 +308,26 @@ class GuardianToolset(WrapperToolset[Any]):
         decision = review_tool_call(
             tool_name=name, tool_call_id=call_id, agent_id=self.agent_id,
             arguments=tool_args, risks=risks, mode=deps.security_mode, workspace=deps.workspace,
+            trusted_read_roots=(
+                (
+                    deps.state_db.parent / "sessions" / "artifacts"
+                    / str(deps.session_id)
+                ),
+            ) if deps.state_db is not None else (),
         )
         deps.events.append(Event(
             session_id=deps.session_id, run_id=run_id, agent_id=self.agent_id,
             type="guardian.reviewed", payload=decision.model_dump(mode="json"),
         ))
         if decision.verdict is GuardianVerdict.DENY:
-            return {"ok": False, "denied": True, "reason": decision.reason}
+            return {
+                "ok": False,
+                "data": None,
+                "error": {"type": "denied", "message": decision.reason},
+                "metadata": {"guardian": decision.model_dump(mode="json")},
+                "denied": True,
+                "reason": decision.reason,
+            }
         if decision.verdict is GuardianVerdict.ASK and not ctx.tool_call_approved:
             if not deps.is_scope_approved(decision):
                 request = ApprovalRequest(
@@ -256,14 +351,32 @@ class GuardianToolset(WrapperToolset[Any]):
             payload={"tool_call_id": call_id, "tool": name, "path": decision.path},
         ))
         try:
-            value = await self.wrapped.call_tool(name, clean_args, ctx, tool)
+            timeout = self.timeouts.get(name)
+            if timeout is None:
+                value = await self.wrapped.call_tool(name, clean_args, ctx, tool)
+            else:
+                async with asyncio.timeout(timeout):
+                    value = await self.wrapped.call_tool(name, clean_args, ctx, tool)
         except Exception as exc:
+            error_type = (
+                "validation" if isinstance(exc, (ValueError, TypeError))
+                else "timeout" if isinstance(exc, TimeoutError)
+                else "not_found" if isinstance(exc, FileNotFoundError)
+                else "execution"
+            )
+            failure = {
+                "ok": False,
+                "data": None,
+                "error": {"type": error_type, "message": str(exc)[:4000]},
+                "metadata": {},
+            }
             deps.events.append(Event(
                 session_id=deps.session_id, run_id=run_id, agent_id=self.agent_id,
                 type="tool.failed", payload={"tool_call_id": call_id, "tool": name,
-                "duration_ms": (time.monotonic() - started) * 1000, "error": str(exc)},
+                "duration_ms": (time.monotonic() - started) * 1000,
+                "error": failure["error"]},
             ))
-            raise
+            return failure
         deps.events.append(Event(
             session_id=deps.session_id, run_id=run_id, agent_id=self.agent_id,
             type="tool.completed", payload={"tool_call_id": call_id, "tool": name,

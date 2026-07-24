@@ -2,7 +2,8 @@ const kernelUrl = process.env.AMK_KERNEL_URL || "http://127.0.0.1:8765";
 
 async function proxy(request: Request, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
-  const target = `${kernelUrl}/api/${path.join("/")}`;
+  const search = new URL(request.url).search;
+  const target = `${kernelUrl}/api/${path.join("/")}${search}`;
   const body = request.method === "GET" ? undefined : await request.text();
   try {
     const response = await fetch(target, {
@@ -25,4 +26,5 @@ async function proxy(request: Request, context: { params: Promise<{ path: string
 export const GET = proxy;
 export const POST = proxy;
 export const PUT = proxy;
+export const PATCH = proxy;
 export const DELETE = proxy;

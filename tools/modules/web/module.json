@@ -1,17 +1,18 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "web",
   "name": "Web research",
   "description": "Recherche, scraping, code public, documentation et crawl via Ketch.",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "entrypoint": "module.py:module",
   "capabilities": ["tools"],
   "tools": [
-    {
-      "name": "web",
-      "description": "Interroger une surface web stateless avec une sortie JSON bornée.",
-      "risk_tags": ["network", "external"]
-    }
+    {"name": "web_search", "description": "Rechercher sur le web public.", "category": "web", "risk_tags": ["network", "external"], "timeout_seconds": 120, "cancellable": true},
+    {"name": "web_scrape", "description": "Extraire le contenu borné d'une URL.", "category": "web", "risk_tags": ["network", "external"], "timeout_seconds": 120, "cancellable": true},
+    {"name": "web_docs", "description": "Rechercher dans la documentation publique.", "category": "web", "risk_tags": ["network", "external"], "timeout_seconds": 120, "cancellable": true},
+    {"name": "web_code_search", "description": "Rechercher dans le code source public.", "category": "web", "risk_tags": ["network", "external"], "timeout_seconds": 120, "cancellable": true},
+    {"name": "web_crawl", "description": "Crawler un site public avec profondeur bornée.", "category": "web", "risk_tags": ["network", "external"], "timeout_seconds": 120, "cancellable": true},
+    {"name": "web", "description": "Compatibilité temporaire pour l'ancien outil web multiplexé.", "category": "web", "risk_tags": ["network", "external"], "timeout_seconds": 120, "cancellable": true}
   ],
   "enabled": true
 }

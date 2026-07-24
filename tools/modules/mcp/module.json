@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "id": "mcp",
+  "name": "MCP",
+  "description": "Découverte et appels MCP via des connexions configurées hors contexte.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {"name": "mcp_search", "description": "Rechercher les tools des serveurs MCP configurés.", "category": "integration", "risk_tags": ["network", "external"], "timeout_seconds": 60, "cancellable": true},
+    {"name": "mcp_describe", "description": "Charger le schéma d'un tool MCP.", "category": "integration", "risk_tags": ["network", "external"], "timeout_seconds": 60, "cancellable": true},
+    {"name": "mcp_call", "description": "Appeler un tool MCP configuré.", "category": "integration", "risk_tags": ["network", "external"], "timeout_seconds": 120, "cancellable": true}
+  ],
+  "enabled": true
+}

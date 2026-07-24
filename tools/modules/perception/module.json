@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "id": "perception",
+  "name": "Documents and vision",
+  "description": "Extraction bornée de PDF/OCR et perception d'images.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {"name": "pdf_extract", "description": "Extraire du texte paginé d'un PDF.", "category": "document", "risk_tags": ["read"], "timeout_seconds": 60, "cancellable": true},
+    {"name": "ocr_extract", "description": "Extraire le texte d'une image avec OCR local.", "category": "document", "risk_tags": ["read"], "timeout_seconds": 60, "cancellable": true},
+    {"name": "image_inspect", "description": "Analyser localement une image avec Gemma 4.", "category": "vision", "risk_tags": ["read"], "timeout_seconds": 180, "cancellable": true},
+    {"name": "screenshot_capture", "description": "Capturer l'écran dans un artefact de session.", "category": "vision", "risk_tags": ["screen"], "timeout_seconds": 30, "cancellable": true, "persistent": true}
+  ],
+  "enabled": true
+}

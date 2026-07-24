@@ -82,6 +82,25 @@ que le chemin existe et correspond à un dossier avant de l'accepter.
 
 La CLI fournit également `amk providers list|check`, `amk auth login|logout|status` et `amk modules build-index|check`.
 
+### Secrets locaux
+
+Les commandes RPPL natives `/secret` et `/secret_list` sont interceptées par le
+kernel avant tout appel au modèle :
+
+```text
+/secret DATABASE_PASSWORD monSuperMotDePasse
+/secret_list
+```
+
+La première enregistre la paire dans `content-agents/secrets.json` avec des
+permissions `0600`. Le composer masque immédiatement la valeur et le kernel ne
+l’ajoute ni au prompt modèle, ni à l’historique JSONL, ni aux traces. La seconde
+retourne uniquement les noms disponibles. `secrets.json` est également protégé
+contre la lecture et la recherche par les tools filesystem. Les noms sont
+présentés au modèle comme références opaques; `http_request` peut par exemple
+résoudre une référence via son argument `credential_env` sans placer sa valeur
+dans les arguments ou les traces.
+
 ## Guardian et outils filesystem
 
 Chaque run possède un workspace et un niveau `safe`, `limited` ou `power` (`limited` par défaut).
@@ -118,6 +137,44 @@ uv run amk run --agent main --skill mon-skill "Exécute cette tâche"
 
 Les modules exécutables vivent sous `tools/modules/<id>/`, chacun avec un `module.json`. `tools/index.json` est généré, déterministe et vérifié avant tout chargement.
 
+Le kernel injecte à chaque run une carte légère et bornée du workspace : langages,
+gestionnaires de paquets, points d’entrée, documentation, tests et commandes connues.
+Elle respecte `.gitignore`, exclut les secrets et sert uniquement à orienter
+l’exploration; l’agent doit toujours lire les sources ciblées avant d’agir.
+
+Pour l’exploration sémantique, le module `codegraph` expose des tools autonomes pour
+la recherche de symboles, les appelants, les dépendances et l’analyse d’impact. La
+commande RPPL `/explore <question>` charge la skill correspondante, synchronise le
+cache technique local `.codegraph` si nécessaire et retombe sur la recherche
+filesystem lorsque CodeGraph ne couvre pas le projet.
+
+```bash
+npm install -g @colbymchenry/codegraph
+uv run amk modules check
+```
+
+AMK détecte également une installation sans droits administrateur dans
+`~/.local/bin/codegraph`, ou le chemin explicite fourni par `AMK_CODEGRAPH_BIN`.
+
+### Vision locale transparente
+
+Les images jointes suivent automatiquement les capacités du provider actif :
+
+- un provider déclaré avec `"vision": true` reçoit directement l’image ;
+- avec un modèle textuel, l’image devient un artefact local, `image_inspect`
+  l’analyse avec Gemma 4 E2B Q4 via `llama.cpp`, puis seule l’observation
+  textuelle bornée est envoyée au modèle principal.
+
+Le bouton image reste donc disponible avec DeepSeek. Le premier appel télécharge
+le modèle GGUF dans le cache Hugging Face local; les appels suivants réutilisent
+le modèle et le serveur loopback. `llama-server` n’écoute que sur
+`127.0.0.1:8081`. Les réglages peuvent être surchargés en copiant
+`vision.example.json` vers `content-agents/vision.json`.
+
+Le tool autonome `image_inspect(path, question, detail)` est également disponible
+pour analyser une image existante ou un screenshot, avec `detail` égal à
+`fast`, `balanced` ou `precise`.
+
 Le module `web` expose une interface unique pour cinq surfaces de recherche : `search`, `scrape`,
 `code`, `docs` et `crawl`. Il utilise le binaire stateless Ketch, force les sorties JSON, borne les
 résultats et traduit ses codes d'erreur en catégories stables. Installation opérateur :
@@ -135,6 +192,24 @@ Chaque exécution produit un journal append-only dans `content-agents/sessions/<
 
 À chaque run et à chaque reprise, le kernel ajoute aux instructions un contexte d'exécution dynamique
 avec la date, l'heure locale ISO, le fuseau horaire, le workspace/CWD actif et le niveau de sécurité.
+
+### Automatisations et reprise
+
+Le scheduler de cronjobs appartient au kernel : il reste actif tant que
+`amk web` ou `amk serve` tourne, recharge son état depuis SQLite et envoie
+chaque occurrence dans la boucle normale du kernel. Chaque routine conserve
+une seule session durable afin de ne pas encombrer l’historique.
+
+Le panel **Automatisations** permet de créer, éditer, suspendre, lancer et
+supprimer les routines. Les expressions utilisent le format cron standard à
+cinq champs et sont évaluées dans le fuseau local du serveur. Un arrêt
+transitoire peut être repris automatiquement à l’occurrence suivante; les
+échecs de configuration ou d’authentification et les demandes d’approbation
+restent bloqués pour intervention humaine.
+
+Une session `failed`, `timeout`, `partial` ou `cancelled` peut aussi être
+reprise depuis l’historique. La reprise crée un nouveau run dans la même
+session et reconstruit son contexte depuis les snapshots et traces persistés.
 
 ## Providers et secrets
 

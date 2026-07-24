@@ -42,9 +42,9 @@ test("keeps project selection and guardian approvals wired to the kernel", async
   assert.match(page, /MarkdownMessage content=\{message\.content\}/);
   assert.match(page, /api\/kernel\/sessions\?workspace=/);
   assert.match(page, /new EventSource\(`\/api\/kernel\/sessions\/\$\{sessionId\}\/events`\)/);
-  assert.match(page, /<ProcessTrace[\s\S]*?events=\{traceEvents\}[\s\S]*?live=\{running\}/);
-  assert.match(page, /expanded=\{traceExpanded\}/);
-  assert.match(page, /onExpandedChange=\{setTraceExpanded\}/);
+  assert.match(page, /traceEventsForRun\(traceEvents, message\.runId\)/);
+  assert.match(page, /activeRunId === message\.runId/);
+  assert.match(page, /useEffect\(\(\) => setExpanded\(live\), \[live\]\)/);
   assert.match(page, /Historique/);
   assert.match(page, /managementModal/);
   assert.match(page, /Configuration du contexte/);

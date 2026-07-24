@@ -21,3 +21,7 @@ async def test_global_agent_run_budget_counts_retries(tmp_path: Path) -> None:
     await deps.reserve_run()
     with pytest.raises(BudgetExceeded):
         await deps.reserve_run()
+
+
+def test_tool_heavy_runs_have_a_practical_default_budget() -> None:
+    assert BudgetConfig().max_requests_per_agent == 100

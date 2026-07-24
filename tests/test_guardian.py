@@ -55,6 +55,28 @@ def test_outside_and_protected_paths(tmp_path: Path) -> None:
     ).verdict == GuardianVerdict.DENY
 
 
+def test_kernel_owned_session_artifact_is_readable_without_ask(tmp_path: Path) -> None:
+    workspace = tmp_path / "project"
+    artifact_root = tmp_path / "content-agents" / "sessions" / "artifacts" / "session-1"
+    artifact = artifact_root / "run-1" / "screen.png"
+    workspace.mkdir()
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"png")
+
+    decision = review_tool_call(
+        tool_name="image_inspect",
+        tool_call_id="call-image",
+        agent_id="main",
+        arguments={"path": str(artifact), "justification": "Inspect generated screenshot."},
+        risks=[ToolRisk.READ],
+        mode=SecurityMode.POWER,
+        workspace=workspace,
+        trusted_read_roots=(artifact_root,),
+    )
+
+    assert decision.verdict == GuardianVerdict.ALLOW
+
+
 def test_missing_justification_is_denied(tmp_path: Path) -> None:
     decision = review_tool_call(
         tool_name="read", tool_call_id="call-1", agent_id="main",

@@ -3,9 +3,16 @@ from datetime import UTC, datetime
 from pydantic_ai import FunctionToolset
 
 
-def utc_now(justification: str = "") -> str:
+def utc_now(justification: str = "") -> dict:
     """Return the current UTC date and time as an ISO-8601 string."""
-    return datetime.now(UTC).isoformat()
+    value = datetime.now(UTC).isoformat()
+    return {
+        "ok": True,
+        "data": {"utc": value},
+        "error": None,
+        "metadata": {},
+        "utc": value,
+    }
 
 
 class DateTimeModule:

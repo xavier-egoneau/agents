@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .auth import OAuthManager
@@ -20,13 +20,16 @@ from .errors import AuthenticationError, ConfigurationError
 from .kernel import Kernel
 from .models import (
     ApprovalRequest,
+    Event,
     ImageAttachment,
     ProviderRegistry,
     RunRequest,
     RunResult,
     SecurityMode,
 )
+from .plans import PlanConflict, PlanNotFound, PlanService
 from .providers import ProviderFactory
+from .scheduler import CronJobInput, CronScheduler, CronService, SchedulerError
 
 
 class WebRunRequest(BaseModel):
@@ -42,6 +45,14 @@ class WebRunRequest(BaseModel):
     images: list[ImageAttachment] = Field(default_factory=list, max_length=4)
 
 
+class ResumeRunBody(BaseModel):
+    prompt: str | None = None
+
+
+class CronJobBody(CronJobInput):
+    pass
+
+
 class ApprovalResolveBody(BaseModel):
     approved: bool
 
@@ -53,6 +64,10 @@ class ApprovalBatchResolveBody(BaseModel):
 
 class SecurityModeBody(BaseModel):
     security_mode: SecurityMode
+
+
+class PlanStepStatusBody(BaseModel):
+    status: str = Field(pattern=r"^(pending|in_progress|completed|blocked|failed)$")
 
 
 class WorkspaceRequest(BaseModel):
@@ -91,62 +106,44 @@ def _message_text(value: object) -> str:
 
 
 def _session_messages(events: list) -> list[dict[str, object]]:
-    """Return the complete visible conversation from the latest model snapshot."""
-    snapshot_index = -1
-    raw_messages: list[dict[str, object]] = []
-    for index, event in enumerate(events):
-        if event.type == "messages.snapshot":
-            candidate = event.payload.get("messages")
-            if isinstance(candidate, list):
-                snapshot_index = index
-                raw_messages = candidate
+    """Reconstruct visible turns, preserving their root run identity."""
+    starts = [event for event in events if event.type == "session.started"]
+    completions: dict[str, object] = {}
+    artifacts: dict[str, list[dict[str, object]]] = {}
+    for event in events:
+        if event.type == "session.completed":
+            completions[str(event.run_id)] = event
+        elif event.type == "artifact.created":
+            artifacts.setdefault(str(event.run_id), []).append({
+                key: event.payload.get(key)
+                for key in ("artifact_id", "name", "media_type", "kind", "bytes")
+            })
 
     visible: list[dict[str, object]] = []
-    for raw in raw_messages:
-        if not isinstance(raw, dict):
+    for started in starts:
+        run_id = str(started.run_id)
+        prompt = _message_text(started.payload.get("prompt"))
+        if prompt:
+            visible.append({"role": "user", "content": prompt, "run_id": run_id})
+        completed = completions.get(run_id)
+        if completed is None:
             continue
-        kind = raw.get("kind")
-        for part in raw.get("parts", []):
-            if not isinstance(part, dict):
-                continue
-            part_kind = part.get("part_kind")
-            if kind == "request" and part_kind == "user-prompt":
-                content = _message_text(part.get("content"))
-                if content:
-                    visible.append({"role": "user", "content": content})
-            elif (
-                kind == "response"
-                and part_kind == "text"
-                and raw.get("finish_reason") != "tool_call"
-            ):
-                content = _message_text(part.get("content"))
-                if content:
-                    visible.append({"role": "assistant", "content": content})
-
-    # Preserve turns that failed before Pydantic AI could produce a new snapshot.
-    pending_prompt = False
-    for event in events[snapshot_index + 1 :]:
-        if event.type == "session.started":
-            content = _message_text(event.payload.get("prompt"))
-            if content:
-                visible.append({"role": "user", "content": content})
-                pending_prompt = True
-        elif event.type == "session.completed" and pending_prompt:
-            output = _message_text(event.payload.get("output"))
-            errors = event.payload.get("errors", [])
-            if not output and isinstance(errors, list):
-                output = "\n".join(
-                    str(item.get("message", ""))
-                    for item in errors
-                    if isinstance(item, dict) and item.get("message")
-                )
-            if output:
-                visible.append({
-                    "role": "assistant",
-                    "content": output,
-                    "error": event.payload.get("status") in {"failed", "timeout"},
-                })
-            pending_prompt = False
+        output = _message_text(completed.payload.get("output"))
+        errors = completed.payload.get("errors", [])
+        if not output and isinstance(errors, list):
+            output = "\n".join(
+                str(item.get("message", ""))
+                for item in errors
+                if isinstance(item, dict) and item.get("message")
+            )
+        if output:
+            visible.append({
+                "role": "assistant",
+                "content": output,
+                "run_id": run_id,
+                "error": completed.payload.get("status") in {"failed", "timeout"},
+                "artifacts": artifacts.get(run_id, []),
+            })
     return visible
 
 
@@ -154,17 +151,72 @@ def create_app(root: Path | str = ".") -> FastAPI:
     project = ProjectConfig(root)
     kernel = Kernel(root)
     running_tasks: dict[UUID, asyncio.Task[RunResult]] = {}
+    cron_service = CronService(project.content_root / "state.db")
+    cron_service.import_legacy_once(
+        project.content_root / "agents" / "crons.json", project.root
+    )
     app = FastAPI(title="Agentic Markdown Kernel", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["content-type"],
     )
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/context-status")
+    async def context_status(
+        session_id: UUID | None = None,
+        provider_id: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, object]:
+        registry = project.providers()
+        resolved_provider = provider_id or registry.default_provider
+        provider = next(
+            (item for item in registry.providers if item.id == resolved_provider),
+            None,
+        )
+        if provider is None:
+            raise HTTPException(status_code=404, detail="Provider introuvable")
+        return kernel.context_status(
+            session_id=session_id,
+            provider_id=resolved_provider,
+            model_name=model or provider.model,
+        )
+
+    async def launch(request: RunRequest) -> RunResult:
+        if request.session_id in running_tasks:
+            raise SchedulerError(
+                f"Un run est déjà actif pour la session {request.session_id}"
+            )
+        task = asyncio.create_task(kernel.run(request))
+        running_tasks[request.session_id] = task
+        try:
+            return await task
+        finally:
+            running_tasks.pop(request.session_id, None)
+
+    scheduler = CronScheduler(cron_service, launch)
+    scheduler_task: asyncio.Task[None] | None = None
+
+    @app.on_event("startup")
+    async def start_scheduler() -> None:
+        nonlocal scheduler_task
+        scheduler_task = asyncio.create_task(
+            scheduler.run_forever(), name="amk-cron-scheduler"
+        )
+
+    @app.on_event("shutdown")
+    async def stop_scheduler() -> None:
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except asyncio.CancelledError:
+                pass
 
     def workspace_info(raw_path: str | Path) -> WorkspaceInfo:
         import os
@@ -284,6 +336,60 @@ def create_app(root: Path | str = ".") -> FastAPI:
                 for tool in module.tools
             ],
         }
+
+    @app.get("/api/commands")
+    async def commands(workspace: str | None = None) -> list[dict[str, str]]:
+        selected = workspace_info(workspace).path if workspace else str(project.root)
+        return project.commands(selected)
+
+    plans = PlanService(project.content_root / "state.db")
+
+    @app.get("/api/plans/current")
+    async def current_plan(session_id: UUID) -> dict[str, object] | None:
+        return plans.current(session_id)
+
+    @app.patch("/api/plans/{plan_id}/steps/{step_id}")
+    async def set_plan_step(
+        plan_id: str, step_id: str, payload: PlanStepStatusBody
+    ) -> dict[str, object]:
+        try:
+            plan = plans.update(plan_id, step_id, payload.status)
+        except PlanNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PlanConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        kernel.events.append(
+            Event(
+                session_id=UUID(plan["session_id"]),
+                run_id=uuid4(),
+                agent_id="user",
+                type="plan.updated",
+                payload={
+                    "plan_id": plan_id,
+                    "step_id": step_id,
+                    "status": payload.status,
+                    "source": "web",
+                },
+            )
+        )
+        return plan
+
+    @app.delete("/api/plans/{plan_id}")
+    async def delete_plan(plan_id: str) -> dict[str, str]:
+        try:
+            plan = plans.delete(plan_id)
+        except PlanNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        kernel.events.append(
+            Event(
+                session_id=UUID(plan["session_id"]),
+                run_id=uuid4(),
+                agent_id="user",
+                type="plan.deleted",
+                payload={"plan_id": plan_id, "source": "web"},
+            )
+        )
+        return {"plan_id": plan_id, "status": "deleted"}
 
     @app.get("/api/providers/{provider_id}/models")
     async def provider_models(provider_id: str) -> dict[str, object]:
@@ -571,8 +677,8 @@ def create_app(root: Path | str = ".") -> FastAPI:
 
     @app.post("/api/runs", response_model=RunResult)
     async def run_agent(payload: WebRunRequest) -> RunResult:
-        task = asyncio.create_task(kernel.run(
-            RunRequest(
+        try:
+            return await launch(RunRequest(
                 prompt=payload.prompt,
                 agent_id=payload.agent_id,
                 skills=payload.skills,
@@ -583,13 +689,48 @@ def create_app(root: Path | str = ".") -> FastAPI:
                 model=payload.model,
                 reasoning=payload.reasoning,
                 images=payload.images,
+            ))
+        except SchedulerError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/runs/{session_id}/resume", response_model=RunResult)
+    async def resume_run(session_id: UUID, payload: ResumeRunBody) -> RunResult:
+        events = kernel.events.read(session_id)
+        if not events:
+            raise HTTPException(status_code=404, detail="Session introuvable")
+        completions = [event for event in events if event.type == "session.completed"]
+        if not completions:
+            raise HTTPException(status_code=409, detail="La session n'est pas arrêtée")
+        latest = completions[-1].payload
+        if latest.get("status") not in {"failed", "timeout", "partial", "cancelled"}:
+            raise HTTPException(
+                status_code=409, detail="Seules les sessions interrompues peuvent être reprises"
             )
-        ))
-        running_tasks[payload.session_id] = task
+        started = next(
+            event for event in reversed(events) if event.type == "session.started"
+        )
+        prompt = payload.prompt or (
+            "Reprends la tâche interrompue à partir des traces, artefacts et résultats "
+            "déjà persistés. Ne rejoue pas les outils déjà terminés. Vérifie l'état "
+            "courant et poursuis par la prochaine action utile."
+        )
         try:
-            return await task
-        finally:
-            running_tasks.pop(payload.session_id, None)
+            return await launch(RunRequest(
+                prompt=prompt,
+                agent_id=started.agent_id,
+                skills=list(started.payload.get("skills", [])),
+                session_id=session_id,
+                workspace=Path(str(started.payload.get("workspace") or project.root)),
+                security_mode=SecurityMode(
+                    str(started.payload.get("security_mode") or "limited")
+                ),
+                provider_id=started.payload.get("provider_id"),
+                model=started.payload.get("model"),
+                reasoning=started.payload.get("reasoning"),
+                trigger="resume",
+            ))
+        except SchedulerError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/runs/{session_id}/cancel")
     async def cancel_run(session_id: UUID) -> dict[str, str]:
@@ -605,11 +746,75 @@ def create_app(root: Path | str = ".") -> FastAPI:
             raise HTTPException(status_code=404, detail="Aucun run actif pour cette session")
         return {"status": "updated", "security_mode": payload.security_mode.value}
 
+    @app.get("/api/crons")
+    async def list_crons() -> list[dict[str, object]]:
+        return [job.model_dump(mode="json") for job in cron_service.list()]
+
+    @app.post("/api/crons")
+    async def create_cron(payload: CronJobBody) -> dict[str, object]:
+        try:
+            return cron_service.create(payload).model_dump(mode="json")
+        except SchedulerError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.put("/api/crons/{job_id}")
+    async def update_cron(job_id: str, payload: CronJobBody) -> dict[str, object]:
+        try:
+            return cron_service.update(job_id, payload).model_dump(mode="json")
+        except SchedulerError as exc:
+            raise HTTPException(status_code=404 if "introuvable" in str(exc) else 422,
+                                detail=str(exc)) from exc
+
+    @app.delete("/api/crons/{job_id}")
+    async def delete_cron(job_id: str) -> dict[str, str]:
+        try:
+            cron_service.delete(job_id)
+        except SchedulerError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"id": job_id, "status": "deleted"}
+
+    @app.post("/api/crons/{job_id}/run")
+    async def run_cron_now(job_id: str) -> dict[str, str]:
+        try:
+            job = cron_service.get(job_id)
+        except SchedulerError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if job.in_flight:
+            raise HTTPException(status_code=409, detail="Ce cronjob est déjà en cours")
+        # Move next fire normally while executing an explicit manual fire.
+        claimed = cron_service.claim(job_id)
+        if claimed is None:
+            raise HTTPException(status_code=409, detail="Cronjob désactivé ou déjà en cours")
+        task = asyncio.create_task(scheduler._execute(claimed), name=f"amk-cron-{job_id}")
+        scheduler._tasks.add(task)
+        task.add_done_callback(scheduler._tasks.discard)
+        return {"id": job_id, "status": "started", "session_id": str(job.session_id)}
+
+    @app.post("/api/crons/{job_id}/test", response_model=RunResult)
+    async def test_cron(job_id: str) -> RunResult:
+        """Run a routine without advancing its schedule.
+
+        The durable routine session is deliberately reused: exact guardian
+        grants approved during the test therefore remain valid for subsequent
+        scheduled executions.
+        """
+        try:
+            job = cron_service.get(job_id)
+            return await launch(CronScheduler.request_for(job, trigger="cron_test"))
+        except SchedulerError as exc:
+            status = 404 if "introuvable" in str(exc) else 409
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+
     def session_payload(session_id: UUID) -> dict[str, object]:
         events = kernel.events.read(session_id)
         if not events:
             raise HTTPException(status_code=404, detail="Session not found")
-        started = next((event for event in events if event.type == "session.started"), events[0])
+        starts = [event for event in events if event.type == "session.started"]
+        first_started = starts[0] if starts else events[0]
+        # A durable cron session can be edited between executions (notably its
+        # workspace, provider or prompt). Its current identity comes from the
+        # latest run, while its creation date remains that of the first run.
+        started = starts[-1] if starts else events[0]
         completions = [event for event in events if event.type == "session.completed"]
         latest = completions[-1].payload if completions else {}
         messages = _session_messages(events)
@@ -618,7 +823,9 @@ def create_app(root: Path | str = ".") -> FastAPI:
             "agent_id": started.agent_id,
             "prompt": started.payload.get("prompt", ""),
             "workspace": started.payload.get("workspace"),
-            "created_at": started.timestamp.isoformat(),
+            "trigger": started.payload.get("trigger", "user"),
+            "cron_job_id": started.payload.get("cron_job_id"),
+            "created_at": first_started.timestamp.isoformat(),
             "updated_at": events[-1].timestamp.isoformat(),
             "status": latest.get("status", "running"),
             "output": latest.get("output"),
@@ -644,6 +851,34 @@ def create_app(root: Path | str = ".") -> FastAPI:
     @app.get("/api/sessions/{session_id}")
     async def get_session(session_id: UUID) -> dict[str, object]:
         return session_payload(session_id)
+
+    @app.get("/api/artifacts/{session_id}/{artifact_id}")
+    async def get_artifact(session_id: UUID, artifact_id: str) -> FileResponse:
+        event = next(
+            (
+                item for item in reversed(kernel.events.read(session_id))
+                if item.type == "artifact.created"
+                and item.payload.get("artifact_id") == artifact_id
+            ),
+            None,
+        )
+        if event is None:
+            raise HTTPException(status_code=404, detail="Artefact introuvable")
+        path = Path(str(event.payload.get("path", ""))).resolve()
+        artifact_root = (
+            kernel.events.directory / "artifacts" / str(session_id)
+        ).resolve()
+        try:
+            path.relative_to(artifact_root)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="Artefact hors périmètre") from exc
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Fichier artefact introuvable")
+        return FileResponse(
+            path,
+            media_type=str(event.payload.get("media_type", "application/octet-stream")),
+            filename=str(event.payload.get("name", path.name)),
+        )
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: UUID) -> dict[str, str]:

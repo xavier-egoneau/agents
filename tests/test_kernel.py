@@ -1,12 +1,24 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import (
+    BinaryContent,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from agentic_kernel.kernel import Kernel, _runtime_context_instruction
-from agentic_kernel.models import RunRequest, RunStatus, SecurityMode
+from agentic_kernel.kernel import (
+    Kernel,
+    _runtime_context_instruction,
+    _without_images,
+)
+from agentic_kernel.models import ImageAttachment, RunRequest, RunStatus, SecurityMode
 from agentic_kernel.modules import ModuleRegistry
 from agentic_kernel.providers import ProviderFactory
 
@@ -32,6 +44,150 @@ async def test_kernel_run_writes_complete_session(project: Path, monkeypatch) ->
     assert events[0].type == "session.started"
     assert events[-1].type == "session.completed"
     assert any(event.type == "messages.snapshot" for event in events)
+
+
+async def test_context_commands_are_deterministic_kernel_operations(
+    project: Path,
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    kernel = Kernel(project)
+    configured = await kernel.run(RunRequest(prompt="/model-context 128k"))
+    assert configured.status == RunStatus.SUCCESS
+    assert "128,000 tokens" in configured.output
+    inspected = await kernel.run(
+        RunRequest(prompt="/context", session_id=configured.session_id)
+    )
+    assert inspected.status == RunStatus.SUCCESS
+    assert "Fenêtre connue : **128,000 tokens**" in inspected.output
+    events = kernel.events.read(configured.session_id)
+    assert any(event.type == "context.window_updated" for event in events)
+    assert any(event.type == "context.inspected" for event in events)
+
+
+async def test_secret_commands_never_reach_model_or_session_log(
+    project: Path, monkeypatch
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+
+    def model_must_not_be_built(*args, **kwargs):
+        raise AssertionError("secret command reached the provider")
+
+    monkeypatch.setattr(ProviderFactory, "build", model_must_not_be_built)
+    kernel = Kernel(project)
+    value = "very-private-value"
+    stored = await kernel.run(
+        RunRequest(prompt=f"/secret DATABASE_PASSWORD {value}")
+    )
+
+    assert stored.status == RunStatus.SUCCESS
+    assert value not in (stored.output or "")
+    assert kernel.events.read(stored.session_id) == []
+    secrets_path = project / "content-agents" / "secrets.json"
+    assert json.loads(secrets_path.read_text()) == {
+        "DATABASE_PASSWORD": value
+    }
+    assert secrets_path.stat().st_mode & 0o777 == 0o600
+
+    listed = await kernel.run(
+        RunRequest(prompt="/secret_list", session_id=stored.session_id)
+    )
+    assert listed.status == RunStatus.SUCCESS
+    assert "DATABASE_PASSWORD" in (listed.output or "")
+    assert value not in (listed.output or "")
+    assert kernel.events.read(stored.session_id) == []
+    catalog = kernel._secret_catalog_instruction()
+    assert "DATABASE_PASSWORD" in catalog
+    assert value not in catalog
+
+    hyphenated = await kernel.run(
+        RunRequest(prompt="/secret nom-de-la-variable autre-valeur")
+    )
+    assert hyphenated.status == RunStatus.SUCCESS
+
+
+async def test_non_vision_provider_uses_local_vision_transparently(
+    project: Path, monkeypatch
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    observed: list[tuple[str, str]] = []
+    kernel = Kernel(project)
+
+    async def inspect(data: bytes, media_type: str, question: str, detail: str):
+        observed.append((media_type, question))
+        return "A settings screen with one visible validation error."
+
+    monkeypatch.setattr(kernel.vision, "analyze_bytes", inspect)
+    monkeypatch.setattr(
+        ProviderFactory, "build", lambda *args, **kwargs: TestModel(call_tools=[])
+    )
+    result = await kernel.run(RunRequest(
+        prompt="Inspect this image",
+        images=[
+            ImageAttachment(
+                name="screen.png",
+                media_type="image/png",
+                data_base64="eA==",
+            )
+        ],
+    ))
+
+    assert result.status == RunStatus.SUCCESS
+    assert observed and observed[0][0] == "image/png"
+    events = kernel.events.read(result.session_id)
+    assert any(
+        event.type == "tool.completed"
+        and event.payload.get("tool_name") == "image_inspect"
+        for event in events
+    )
+    assert any(event.type == "artifact.created" for event in events)
+    snapshot = next(
+        event for event in events if event.type == "messages.snapshot"
+    )
+    serialized = json.dumps(snapshot.payload)
+    assert "A settings screen" in serialized
+    assert "image_url" not in serialized
+
+
+def test_image_history_is_sanitized_for_text_only_models() -> None:
+    history = [
+        ModelRequest(parts=[
+            UserPromptPart(content=[
+                "What is wrong?",
+                BinaryContent(data=b"image", media_type="image/png"),
+            ])
+        ])
+    ]
+
+    sanitized = _without_images(history)
+    content = sanitized[0].parts[0].content
+
+    assert content[0] == "What is wrong?"
+    assert isinstance(content[1], str)
+    assert "modèle actif" in content[1]
+
+
+async def test_compact_command_forces_manual_compaction(
+    project: Path, monkeypatch
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    monkeypatch.setattr(
+        ProviderFactory, "build", lambda *args, **kwargs: TestModel(call_tools=[])
+    )
+    kernel = Kernel(project)
+    first = await kernel.run(RunRequest(prompt="Keep this decision: alpha."))
+    compacted = await kernel.run(
+        RunRequest(prompt="/compact", session_id=first.session_id)
+    )
+    assert compacted.status == RunStatus.SUCCESS
+    events = kernel.events.read(first.session_id)
+    compact_event = next(
+        event for event in events
+        if event.type == "context.compacted"
+    )
+    assert compact_event.payload["manual"] is True
+    assert any(
+        event.type == "context.pre_compaction_snapshot" for event in events
+    )
 
 
 async def test_session_reuses_complete_message_history(project: Path, monkeypatch) -> None:
@@ -117,15 +273,15 @@ Complete the delegated task.
     def model_response(messages, info):
         tool_names = {tool.name for tool in info.function_tools}
         already_delegated = any(
-            getattr(part, "tool_name", None) == "delegate_task"
+            getattr(part, "tool_name", None) == "agent_delegate"
             for message in messages
             for part in message.parts
         )
-        if "delegate_task" in tool_names and not already_delegated:
+        if "agent_delegate" in tool_names and not already_delegated:
             return ModelResponse(
                 parts=[
                     ToolCallPart(
-                        "delegate_task", {"agent_name": "child", "task": "Do the work"}
+                        "agent_delegate", {"agent_name": "child", "task": "Do the work"}
                     )
                 ]
             )

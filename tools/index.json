@@ -1,6 +1,913 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "modules": [
+    {
+      "schema_version": 2,
+      "id": "browser",
+      "name": "Browser",
+      "description": "Navigation web stateful avec rendu JavaScript via Playwright.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "browser_open",
+          "description": "Ouvrir ou naviguer une page dans un navigateur stateful.",
+          "category": "browser",
+          "risk_tags": [
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "page_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "wait_until": {
+                "default": "domcontentloaded",
+                "enum": [
+                  "commit",
+                  "domcontentloaded",
+                  "load",
+                  "networkidle"
+                ],
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 60.0,
+          "cancellable": true,
+          "persistent": true
+        },
+        {
+          "name": "browser_snapshot",
+          "description": "Observer le texte et les éléments interactifs de la page.",
+          "category": "browser",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "page_id": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "page_id"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": true,
+          "persistent": true
+        },
+        {
+          "name": "browser_click",
+          "description": "Cliquer un élément visible de la page.",
+          "category": "browser",
+          "risk_tags": [
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "page_id": {
+                "type": "string"
+              },
+              "selector_or_ref": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "page_id",
+              "selector_or_ref"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": true,
+          "persistent": true
+        },
+        {
+          "name": "browser_type",
+          "description": "Saisir du texte dans un champ visible.",
+          "category": "browser",
+          "risk_tags": [
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "page_id": {
+                "type": "string"
+              },
+              "selector_or_ref": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "submit": {
+                "default": false,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "page_id",
+              "selector_or_ref",
+              "text"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": true,
+          "persistent": true
+        },
+        {
+          "name": "browser_screenshot",
+          "description": "Capturer la page et partager l'image comme artefact.",
+          "category": "browser",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "page_id": {
+                "type": "string"
+              },
+              "full_page": {
+                "default": true,
+                "type": "boolean"
+              },
+              "name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "page_id"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": true,
+          "persistent": true
+        },
+        {
+          "name": "browser_close",
+          "description": "Fermer une page ou le navigateur de la session.",
+          "category": "browser",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "page_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": true,
+          "persistent": true
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
+      "id": "catalog",
+      "name": "Tool catalog",
+      "description": "Discover and inspect autonomous tools without loading their full schemas up front.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "tool_search",
+          "description": "Search the indexed tool catalog by intent, name, category, or risk.",
+          "category": "discovery",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "limit": {
+                "default": 8,
+                "maximum": 20,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 5.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "tool_describe",
+          "description": "Return the complete indexed contract for one tool.",
+          "category": "discovery",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 5.0,
+          "cancellable": false,
+          "persistent": false
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
+      "id": "codegraph",
+      "name": "CodeGraph",
+      "description": "Cartographie sémantique locale des symboles, appels et impacts.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "codegraph_explore",
+          "description": "Explorer sémantiquement une architecture ou un flux.",
+          "category": "code-intelligence",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "timeout_seconds": {
+                "default": 90,
+                "maximum": 180,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 180.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "codegraph_query",
+          "description": "Rechercher des symboles indexés.",
+          "category": "code-intelligence",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "search": {
+                "type": "string"
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "limit": {
+                "default": 20,
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "search"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "codegraph_node",
+          "description": "Lire un symbole ou fichier indexé et ses relations.",
+          "category": "code-intelligence",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "symbol_or_file": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol_or_file"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "codegraph_callers",
+          "description": "Lister les appelants d'un symbole.",
+          "category": "code-intelligence",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "symbol": {
+                "type": "string"
+              },
+              "limit": {
+                "default": 30,
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "codegraph_callees",
+          "description": "Lister les symboles appelés.",
+          "category": "code-intelligence",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "symbol": {
+                "type": "string"
+              },
+              "limit": {
+                "default": 30,
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "codegraph_impact",
+          "description": "Calculer le rayon d'impact d'un symbole.",
+          "category": "code-intelligence",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "symbol": {
+                "type": "string"
+              },
+              "depth": {
+                "default": 3,
+                "maximum": 10,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "codegraph_affected",
+          "description": "Trouver les tests affectés par des fichiers modifiés.",
+          "category": "code-intelligence",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "files": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "minItems": 1,
+                "type": "array"
+              },
+              "depth": {
+                "default": 5,
+                "maximum": 10,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "files"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "codegraph_status",
+          "description": "Lire l'état et la fraîcheur de l'index.",
+          "category": "code-intelligence",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "codegraph_sync",
+          "description": "Synchroniser le cache technique CodeGraph.",
+          "category": "code-intelligence",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "full": {
+                "default": false,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 180.0,
+          "cancellable": true,
+          "persistent": true
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
+      "id": "data",
+      "name": "Structured data",
+      "description": "Interrogation bornée de JSON, CSV et SQLite.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "json_query",
+          "description": "Interroger un document JSON par chemin.",
+          "category": "data",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "query": {
+                "default": "",
+                "type": "string"
+              },
+              "limit": {
+                "default": 100,
+                "maximum": 1000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "csv_query",
+          "description": "Filtrer et projeter un fichier CSV.",
+          "category": "data",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "columns": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "where_column": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "equals": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "limit": {
+                "default": 100,
+                "maximum": 1000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "sql_query",
+          "description": "Exécuter une requête SQLite strictement en lecture seule.",
+          "category": "data",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "query": {
+                "type": "string"
+              },
+              "parameters": {
+                "anyOf": [
+                  {
+                    "items": {},
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "limit": {
+                "default": 100,
+                "maximum": 1000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "query"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "sql_execute",
+          "description": "Exécuter une mutation SQLite explicite.",
+          "category": "data",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "statement": {
+                "type": "string"
+              },
+              "parameters": {
+                "anyOf": [
+                  {
+                    "items": {},
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "statement"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": false,
+          "persistent": false
+        }
+      ],
+      "enabled": true
+    },
     {
       "schema_version": 1,
       "id": "datetime",
@@ -15,19 +922,37 @@
         {
           "name": "utc_now",
           "description": "Retourner la date et l'heure UTC.",
+          "category": "general",
           "risk_tags": [
             "read"
-          ]
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": null,
+          "cancellable": false,
+          "persistent": false
         }
       ],
       "enabled": true
     },
     {
-      "schema_version": 1,
+      "schema_version": 2,
       "id": "filesystem",
       "name": "Filesystem",
-      "description": "Outils bornés pour lire, lister, écrire et mettre à la corbeille.",
-      "version": "1.0.0",
+      "description": "Opérations filesystem autonomes, bornées et récupérables.",
+      "version": "2.0.0",
       "entrypoint": "module.py:module",
       "capabilities": [
         "tools"
@@ -36,39 +961,374 @@
         {
           "name": "read",
           "description": "Lire un fichier avec pagination.",
+          "category": "filesystem",
           "risk_tags": [
             "read"
-          ]
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "offset": {
+                "default": 1,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "limit": {
+                "default": 2000,
+                "maximum": 2000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": true,
+          "persistent": false
         },
         {
           "name": "list",
           "description": "Lister un dossier de façon déterministe.",
+          "category": "filesystem",
           "risk_tags": [
             "read"
-          ]
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "default": ".",
+                "type": "string"
+              },
+              "limit": {
+                "default": 500,
+                "maximum": 500,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": true,
+          "persistent": false
         },
         {
           "name": "write",
           "description": "Créer ou remplacer un fichier.",
+          "category": "filesystem",
           "risk_tags": [
             "write"
-          ]
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "patch",
+          "description": "Remplacer précisément un fragment de texte.",
+          "category": "filesystem",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "old_text": {
+                "type": "string"
+              },
+              "new_text": {
+                "type": "string"
+              },
+              "replace_all": {
+                "default": false,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "old_text",
+              "new_text"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "move",
+          "description": "Déplacer une cible vers une destination exacte.",
+          "category": "filesystem",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "destination": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "destination"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 60.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "copy",
+          "description": "Copier une cible vers une destination exacte.",
+          "category": "filesystem",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "destination": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "destination"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 60.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "mkdir",
+          "description": "Créer un dossier.",
+          "category": "filesystem",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "parents": {
+                "default": true,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "stat",
+          "description": "Inspecter les métadonnées d'une cible.",
+          "category": "filesystem",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "search_text",
+          "description": "Chercher du texte littéral dans le workspace.",
+          "category": "filesystem",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "path": {
+                "default": ".",
+                "type": "string"
+              },
+              "limit": {
+                "default": 100,
+                "maximum": 500,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 60.0,
+          "cancellable": true,
+          "persistent": false
         },
         {
           "name": "delete",
           "description": "Déplacer un fichier ou dossier vers la corbeille de session.",
+          "category": "filesystem",
           "risk_tags": [
             "destructive"
-          ]
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 60.0,
+          "cancellable": true,
+          "persistent": false
         }
       ],
       "enabled": true
     },
     {
-      "schema_version": 1,
-      "id": "web",
-      "name": "Web research",
-      "description": "Recherche, scraping, code public, documentation et crawl via Ketch.",
+      "schema_version": 2,
+      "id": "http",
+      "name": "HTTP",
+      "description": "Appels HTTP(S) structurés, bornés et protégés contre le SSRF.",
       "version": "1.0.0",
       "entrypoint": "module.py:module",
       "capabilities": [
@@ -76,12 +1336,1916 @@
       ],
       "tools": [
         {
-          "name": "web",
-          "description": "Interroger une surface web stateless avec une sortie JSON bornée.",
+          "name": "http_request",
+          "description": "Effectuer une requête HTTP(S) structurée avec redirections contrôlées.",
+          "category": "http",
           "risk_tags": [
             "network",
             "external"
-          ]
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "method": {
+                "enum": [
+                  "GET",
+                  "HEAD",
+                  "POST",
+                  "PUT",
+                  "PATCH",
+                  "DELETE"
+                ],
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "headers": {
+                "anyOf": [
+                  {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "query": {
+                "anyOf": [
+                  {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "json_body": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "text_body": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "credential_env": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "timeout_seconds": {
+                "default": 30,
+                "exclusiveMinimum": 0,
+                "maximum": 120,
+                "type": "number"
+              },
+              "max_redirects": {
+                "default": 3,
+                "maximum": 5,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "url"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
+      "id": "mcp",
+      "name": "MCP",
+      "description": "Découverte et appels MCP via des connexions configurées hors contexte.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "mcp_search",
+          "description": "Rechercher les tools des serveurs MCP configurés.",
+          "category": "integration",
+          "risk_tags": [
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "server_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "limit": {
+                "default": 10,
+                "maximum": 50,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 60.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "mcp_describe",
+          "description": "Charger le schéma d'un tool MCP.",
+          "category": "integration",
+          "risk_tags": [
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "server_id": {
+                "type": "string"
+              },
+              "tool_name": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "server_id",
+              "tool_name"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 60.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "mcp_call",
+          "description": "Appeler un tool MCP configuré.",
+          "category": "integration",
+          "risk_tags": [
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "server_id": {
+                "type": "string"
+              },
+              "tool_name": {
+                "type": "string"
+              },
+              "arguments": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "server_id",
+              "tool_name",
+              "arguments"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
+      "id": "memory",
+      "name": "Memory",
+      "description": "Mémoire explicite SQLite et recherche de connaissances locales.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "memory_store",
+          "description": "Enregistrer explicitement une mémoire vérifiée.",
+          "category": "memory",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "scope": {
+                "default": "project",
+                "enum": [
+                  "session",
+                  "project",
+                  "agent"
+                ],
+                "type": "string"
+              },
+              "agent_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "verified": {
+                "default": false,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "content"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "memory_search",
+          "description": "Rechercher des mémoires dans une portée.",
+          "category": "memory",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "scope": {
+                "default": "project",
+                "enum": [
+                  "session",
+                  "project",
+                  "agent"
+                ],
+                "type": "string"
+              },
+              "agent_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "limit": {
+                "default": 10,
+                "maximum": 50,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "verified_only": {
+                "default": false,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "memory_get",
+          "description": "Lire une mémoire par identifiant.",
+          "category": "memory",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "memory_id": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "memory_id"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "memory_forget",
+          "description": "Supprimer explicitement une mémoire.",
+          "category": "memory",
+          "risk_tags": [
+            "destructive"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "memory_id": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "memory_id"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "knowledge_index",
+          "description": "Indexer incrémentalement des fichiers texte du projet.",
+          "category": "knowledge",
+          "risk_tags": [
+            "read",
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "default": ".",
+                "type": "string"
+              },
+              "extensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "knowledge_search",
+          "description": "Rechercher dans l'index local du projet.",
+          "category": "knowledge",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "limit": {
+                "default": 10,
+                "maximum": 50,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": false,
+          "persistent": false
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
+      "id": "model_info",
+      "name": "Model context information",
+      "description": "Référence persistante des fenêtres de contexte des modèles.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "model_context_status",
+          "description": "Lire la fenêtre de contexte connue du modèle actif.",
+          "category": "model",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 10.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "model_context_store",
+          "description": "Enregistrer la fenêtre confirmée du modèle actif.",
+          "category": "model",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "context_window_tokens": {
+                "maximum": 10000000,
+                "minimum": 1024,
+                "type": "integer"
+              },
+              "source": {
+                "default": "user-confirmed",
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "context_window_tokens"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 10.0,
+          "cancellable": false,
+          "persistent": true
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
+      "id": "operations",
+      "name": "Operations",
+      "description": "Plans structurés, checkpoints et observabilité en lecture seule.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "plan_create",
+          "description": "Créer un plan structuré.",
+          "category": "planning",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "$defs": {
+              "PlanStepInput": {
+                "properties": {
+                  "id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "title": {
+                    "maxLength": 500,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "dependencies": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "parallelizable": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "title"
+                ],
+                "title": "PlanStepInput",
+                "type": "object"
+              }
+            },
+            "additionalProperties": false,
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "steps": {
+                "items": {
+                  "$ref": "#/$defs/PlanStepInput"
+                },
+                "type": "array"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "steps"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "plan_update",
+          "description": "Mettre à jour une étape d'un plan.",
+          "category": "planning",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "plan_id": {
+                "type": "string"
+              },
+              "step_id": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "completed",
+                  "blocked",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              "note": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "plan_id",
+              "step_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "plan_status",
+          "description": "Lire un plan structuré.",
+          "category": "planning",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "plan_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "plan_ready",
+          "description": "Calculer les tâches prêtes selon le graphe de dépendances.",
+          "category": "planning",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "plan_id": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "plan_id"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "evaluate_result",
+          "description": "Évaluer un résultat avec des critères explicites.",
+          "category": "evaluation",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "result": {
+                "type": "string"
+              },
+              "criteria": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "satisfied": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "max_iterations": {
+                "default": 3,
+                "maximum": 10,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "result",
+              "criteria"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "session_status",
+          "description": "Résumer l'état de la session courante.",
+          "category": "session",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "checkpoint_create",
+          "description": "Créer un checkpoint explicite de session.",
+          "category": "session",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "label",
+              "summary"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": true
+        },
+        {
+          "name": "trace_query",
+          "description": "Interroger les traces d'audit bornées de la session.",
+          "category": "observability",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "event_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "limit": {
+                "default": 50,
+                "maximum": 200,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "metrics_summary",
+          "description": "Agréger les métriques d'outils de la session.",
+          "category": "observability",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "cron_list",
+          "description": "Lister les cronjobs persistants et leur état.",
+          "category": "scheduler",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "cron_create",
+          "description": "Créer un cronjob persistant dans le workspace courant.",
+          "category": "scheduler",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "schedule": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "agent_id": {
+                "default": "main",
+                "type": "string"
+              },
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "auto_resume": {
+                "default": true,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "schedule",
+              "prompt"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": true
+        },
+        {
+          "name": "cron_set_enabled",
+          "description": "Activer ou mettre en pause un cronjob.",
+          "category": "scheduler",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_id",
+              "enabled"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": true
+        },
+        {
+          "name": "cron_delete",
+          "description": "Supprimer une définition de cronjob.",
+          "category": "scheduler",
+          "risk_tags": [
+            "destructive"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_id"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": true
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
+      "id": "perception",
+      "name": "Documents and vision",
+      "description": "Extraction bornée de PDF/OCR et perception d'images.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "pdf_extract",
+          "description": "Extraire du texte paginé d'un PDF.",
+          "category": "document",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "first_page": {
+                "default": 1,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "last_page": {
+                "anyOf": [
+                  {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 60.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "ocr_extract",
+          "description": "Extraire le texte d'une image avec OCR local.",
+          "category": "document",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "language": {
+                "default": "eng",
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 60.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "image_inspect",
+          "description": "Analyser localement une image avec Gemma 4.",
+          "category": "vision",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "question": {
+                "default": "Décris précisément cette image.",
+                "type": "string"
+              },
+              "detail": {
+                "default": "balanced",
+                "pattern": "^(fast|balanced|precise)$",
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 180.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "screenshot_capture",
+          "description": "Capturer l'écran dans un artefact de session.",
+          "category": "vision",
+          "risk_tags": [
+            "screen"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "interactive": {
+                "default": false,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": true,
+          "persistent": true
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
+      "id": "process",
+      "name": "Commands and processes",
+      "description": "Run bounded commands and manage persistent non-interactive processes.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "command_run",
+          "description": "Run a non-interactive command and wait for completion.",
+          "category": "execution",
+          "risk_tags": [
+            "execute"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "program": {
+                "type": "string"
+              },
+              "args": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "cwd": {
+                "default": ".",
+                "type": "string"
+              },
+              "timeout_seconds": {
+                "default": 120,
+                "exclusiveMinimum": 0,
+                "maximum": 300,
+                "type": "number"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "program"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 300.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "process_start",
+          "description": "Start a persistent non-interactive process.",
+          "category": "execution",
+          "risk_tags": [
+            "execute"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "program": {
+                "type": "string"
+              },
+              "args": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "cwd": {
+                "default": ".",
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "program"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 10.0,
+          "cancellable": true,
+          "persistent": true
+        },
+        {
+          "name": "process_status",
+          "description": "Inspect a process started by AMK.",
+          "category": "execution",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "process_id": {
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "process_id"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 5.0,
+          "cancellable": false,
+          "persistent": true
+        },
+        {
+          "name": "process_output",
+          "description": "Read bounded output from a process started by AMK.",
+          "category": "execution",
+          "risk_tags": [
+            "read"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "process_id": {
+                "type": "string"
+              },
+              "offset": {
+                "default": 0,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "max_bytes": {
+                "default": 20000,
+                "maximum": 50000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "process_id"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 5.0,
+          "cancellable": false,
+          "persistent": true
+        },
+        {
+          "name": "process_stop",
+          "description": "Stop a process started by AMK.",
+          "category": "execution",
+          "risk_tags": [
+            "execute"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "process_id": {
+                "type": "string"
+              },
+              "grace_seconds": {
+                "default": 3,
+                "maximum": 10,
+                "minimum": 0,
+                "type": "number"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "process_id"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": true,
+          "persistent": true
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
+      "id": "web",
+      "name": "Web research",
+      "description": "Recherche, scraping, code public, documentation et crawl via Ketch.",
+      "version": "2.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "web_search",
+          "description": "Rechercher sur le web public.",
+          "category": "web",
+          "risk_tags": [
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "limit": {
+                "default": 5,
+                "maximum": 20,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "backend": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "scrape_results": {
+                "default": false,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "web_scrape",
+          "description": "Extraire le contenu borné d'une URL.",
+          "category": "web",
+          "risk_tags": [
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "max_chars": {
+                "default": 12000,
+                "maximum": 50000,
+                "minimum": 500,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "web_docs",
+          "description": "Rechercher dans la documentation publique.",
+          "category": "web",
+          "risk_tags": [
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "library": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "limit": {
+                "default": 5,
+                "maximum": 20,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_chars": {
+                "default": 12000,
+                "maximum": 50000,
+                "minimum": 500,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "web_code_search",
+          "description": "Rechercher dans le code source public.",
+          "category": "web",
+          "risk_tags": [
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "language": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "limit": {
+                "default": 5,
+                "maximum": 20,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "web_crawl",
+          "description": "Crawler un site public avec profondeur bornée.",
+          "category": "web",
+          "risk_tags": [
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "depth": {
+                "default": 1,
+                "maximum": 2,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "web",
+          "description": "Compatibilité temporaire pour l'ancien outil web multiplexé.",
+          "category": "web",
+          "risk_tags": [
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "search",
+                  "scrape",
+                  "code",
+                  "docs",
+                  "crawl"
+                ],
+                "type": "string"
+              },
+              "query": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "library": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "language": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "backend": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "limit": {
+                "default": 5,
+                "maximum": 20,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_chars": {
+                "default": 12000,
+                "maximum": 50000,
+                "minimum": 500,
+                "type": "integer"
+              },
+              "depth": {
+                "default": 1,
+                "maximum": 2,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "scrape_results": {
+                "default": false,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 120.0,
+          "cancellable": true,
+          "persistent": false
         }
       ],
       "enabled": true

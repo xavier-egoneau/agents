@@ -21,7 +21,10 @@ class BudgetConfig(BaseModel):
     max_depth: int = Field(default=5, ge=1, le=20)
     max_agent_runs: int = Field(default=24, ge=1, le=256)
     max_concurrency: int = Field(default=6, ge=1, le=64)
-    max_requests_per_agent: int = Field(default=20, ge=1, le=100)
+    # A tool-heavy implementation run can legitimately require dozens of
+    # model/tool round trips. This limit applies to one run, not to the number
+    # of messages that a durable session may contain.
+    max_requests_per_agent: int = Field(default=100, ge=1, le=500)
     session_timeout_seconds: float = Field(default=1800, gt=0, le=86400)
     child_timeout_seconds: float = Field(default=600, gt=0, le=86400)
     retries: int = Field(default=2, ge=0, le=10)
@@ -110,6 +113,8 @@ class ToolRisk(StrEnum):
     SECRET = "secret"
     EXTERNAL = "external"
     SYSTEM = "system"
+    EXECUTE = "execute"
+    SCREEN = "screen"
 
 
 class ToolDescriptor(BaseModel):
@@ -117,7 +122,13 @@ class ToolDescriptor(BaseModel):
 
     name: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
     description: str
+    category: str = "general"
     risk_tags: list[ToolRisk] = Field(default_factory=list)
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    cancellable: bool = False
+    persistent: bool = False
 
 
 class ModuleManifest(BaseModel):
@@ -137,7 +148,7 @@ class ModuleManifest(BaseModel):
 class ModuleIndex(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: int = 1
+    schema_version: int = 2
     modules: list[ModuleManifest]
 
 
@@ -225,6 +236,8 @@ class RunRequest(BaseModel):
     model: str | None = None
     reasoning: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None
     images: list[ImageAttachment] = Field(default_factory=list)
+    trigger: Literal["user", "resume", "cron", "cron_resume", "cron_test"] = "user"
+    cron_job_id: str | None = None
 
 
 class RunError(BaseModel):
@@ -232,6 +245,14 @@ class RunError(BaseModel):
     message: str
     retryable: bool = False
     attempt: int = 0
+
+
+class RunArtifact(BaseModel):
+    artifact_id: str
+    name: str
+    media_type: str
+    kind: str = "file"
+    bytes: int | None = None
 
 
 class RunResult(BaseModel):
@@ -242,6 +263,7 @@ class RunResult(BaseModel):
     output: str | None = None
     errors: list[RunError] = Field(default_factory=list)
     usage: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[RunArtifact] = Field(default_factory=list)
 
 
 class Event(BaseModel):

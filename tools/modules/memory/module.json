@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "id": "memory",
+  "name": "Memory",
+  "description": "Mémoire explicite SQLite et recherche de connaissances locales.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {"name": "memory_store", "description": "Enregistrer explicitement une mémoire vérifiée.", "category": "memory", "risk_tags": ["write"], "timeout_seconds": 15},
+    {"name": "memory_search", "description": "Rechercher des mémoires dans une portée.", "category": "memory", "risk_tags": ["read"], "timeout_seconds": 15},
+    {"name": "memory_get", "description": "Lire une mémoire par identifiant.", "category": "memory", "risk_tags": ["read"], "timeout_seconds": 15},
+    {"name": "memory_forget", "description": "Supprimer explicitement une mémoire.", "category": "memory", "risk_tags": ["destructive"], "timeout_seconds": 15},
+    {"name": "knowledge_index", "description": "Indexer incrémentalement des fichiers texte du projet.", "category": "knowledge", "risk_tags": ["read", "write"], "timeout_seconds": 120, "cancellable": true},
+    {"name": "knowledge_search", "description": "Rechercher dans l'index local du projet.", "category": "knowledge", "risk_tags": ["read"], "timeout_seconds": 30}
+  ],
+  "enabled": true
+}

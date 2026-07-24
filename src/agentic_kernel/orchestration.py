@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID, uuid4
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, FunctionToolset, RunContext
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
 from pydantic_ai_harness.subagents import SubAgentToolset as HarnessSubAgentToolset
@@ -30,6 +30,12 @@ class RuntimeDeps:
     approved_scopes: set[tuple[str, str | None]] = field(default_factory=set)
     agent_runs: int = 1
     attempts: dict[str, int] = field(default_factory=dict)
+    tool_catalog: list[dict[str, Any]] = field(default_factory=list)
+    state_db: Path | None = None
+    provider_id: str | None = None
+    model_name: str | None = None
+    context_window_tokens: int | None = None
+    secret_resolver: Callable[[str], str | None] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def is_scope_approved(self, decision: GuardianDecision) -> bool:
@@ -142,7 +148,111 @@ def make_subagents(
         forward_usage=True,
         tool_retries=budgets.retries,
         contain_errors=True,
+        tool_name="agent_delegate",
     )
+
+
+def make_neutral_subagent_toolset(
+    parent_agent_id: str,
+    agent: Agent[RuntimeDeps, Any],
+    budgets: BudgetConfig,
+) -> FunctionToolset[RuntimeDeps]:
+    """Expose an ephemeral neutral subagent whose role is supplied per call."""
+
+    async def subagent_spawn(
+        ctx: RunContext[RuntimeDeps],
+        role: str,
+        task: str,
+        expected_output: str,
+        scope: list[str] | None = None,
+        justification: str = "",
+    ) -> dict[str, Any]:
+        if not role.strip() or not task.strip() or not expected_output.strip():
+            raise ValueError("role, task and expected_output are required")
+        deps = ctx.deps
+        attempt = await deps.reserve_run("subagent")
+        child_run_id = uuid4()
+        parent_run_id = _uuid_or(ctx.run_id, deps.root_run_id)
+        prompt = (
+            f"# Temporary role\n{role.strip()}\n\n"
+            f"# Bounded task\n{task.strip()}\n\n"
+            f"# Allowed scope\n{', '.join(scope or ['workspace'])}\n\n"
+            f"# Expected output\n{expected_output.strip()}\n\n"
+            "Stay within this task and scope. Report files changed, evidence, "
+            "validation and blockers. Do not redefine your permissions."
+        )
+        deps.events.append(
+            Event(
+                session_id=deps.session_id,
+                run_id=child_run_id,
+                agent_id="subagent",
+                parent_run_id=parent_run_id,
+                type="agent.started",
+                attempt=attempt,
+                payload={
+                    "role": role,
+                    "task": task,
+                    "scope": scope or [],
+                    "expected_output": expected_output,
+                    "delegated_by": parent_agent_id,
+                    "ephemeral": True,
+                },
+            )
+        )
+        async with deps.semaphore:
+            try:
+                result = await agent.run(
+                    prompt,
+                    deps=deps,
+                    usage_limits=UsageLimits(
+                        request_limit=budgets.max_requests_per_agent
+                    ),
+                )
+            except Exception as exc:
+                deps.events.append(
+                    Event(
+                        session_id=deps.session_id,
+                        run_id=child_run_id,
+                        agent_id="subagent",
+                        parent_run_id=parent_run_id,
+                        type="agent.failed",
+                        attempt=attempt,
+                        payload={
+                            "role": role,
+                            "error_type": type(exc).__name__,
+                            "message": str(exc),
+                        },
+                    )
+                )
+                return {
+                    "ok": False,
+                    "data": None,
+                    "error": {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                    "metadata": {"run_id": str(child_run_id)},
+                }
+        output = str(result.output)
+        deps.events.append(
+            Event(
+                session_id=deps.session_id,
+                run_id=child_run_id,
+                agent_id="subagent",
+                parent_run_id=parent_run_id,
+                type="agent.completed",
+                attempt=attempt,
+                payload={"role": role, "output": output, "ephemeral": True},
+            )
+        )
+        return {
+            "ok": True,
+            "data": {"role": role, "output": output},
+            "error": None,
+            "metadata": {"run_id": str(child_run_id)},
+        }
+
+    return FunctionToolset(tools=[subagent_spawn])
 
 
 def _uuid_or(value: str | None, fallback: UUID) -> UUID:
