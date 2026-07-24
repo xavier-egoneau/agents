@@ -94,9 +94,7 @@ class CronService:
                     in_flight INTEGER NOT NULL DEFAULT 0
                 )
             """)
-            columns = {
-                row[1] for row in connection.execute("PRAGMA table_info(cron_jobs)")
-            }
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(cron_jobs)")}
             if "last_retryable" not in columns:
                 connection.execute(
                     "ALTER TABLE cron_jobs ADD COLUMN last_retryable INTEGER NOT NULL DEFAULT 0"
@@ -127,15 +125,17 @@ class CronService:
                 if not isinstance(item, dict):
                     continue
                 try:
-                    self.create(CronJobInput(
-                        name=str(item.get("name") or "Routine importée"),
-                        schedule=str(item.get("schedule") or ""),
-                        prompt=str(item.get("message") or item.get("prompt") or ""),
-                        workspace=Path(item.get("workspace") or default_workspace),
-                        agent_id=str(item.get("agent") or "main"),
-                        enabled=bool(item.get("enabled", True)),
-                        auto_resume=True,
-                    ))
+                    self.create(
+                        CronJobInput(
+                            name=str(item.get("name") or "Routine importée"),
+                            schedule=str(item.get("schedule") or ""),
+                            prompt=str(item.get("message") or item.get("prompt") or ""),
+                            workspace=Path(item.get("workspace") or default_workspace),
+                            agent_id=str(item.get("agent") or "main"),
+                            enabled=bool(item.get("enabled", True)),
+                            auto_resume=True,
+                        )
+                    )
                     imported += 1
                 except (SchedulerError, ValueError):
                     continue
@@ -179,28 +179,38 @@ class CronService:
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0
                 )""",
                 (
-                    job_id, payload.name.strip(), payload.schedule.strip(), payload.prompt,
-                    str(workspace), payload.agent_id, json.dumps(payload.skills),
-                    payload.security_mode.value, payload.provider_id, payload.model,
-                    payload.reasoning, int(payload.enabled), int(payload.auto_resume),
-                    str(session_id), now.isoformat(), now.isoformat(), next_run.isoformat(),
-                    None, None, None,
+                    job_id,
+                    payload.name.strip(),
+                    payload.schedule.strip(),
+                    payload.prompt,
+                    str(workspace),
+                    payload.agent_id,
+                    json.dumps(payload.skills),
+                    payload.security_mode.value,
+                    payload.provider_id,
+                    payload.model,
+                    payload.reasoning,
+                    int(payload.enabled),
+                    int(payload.auto_resume),
+                    str(session_id),
+                    now.isoformat(),
+                    now.isoformat(),
+                    next_run.isoformat(),
+                    None,
+                    None,
+                    None,
                 ),
             )
         return self.get(job_id)
 
     def list(self) -> list[CronJob]:
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM cron_jobs ORDER BY created_at DESC"
-            ).fetchall()
+            rows = connection.execute("SELECT * FROM cron_jobs ORDER BY created_at DESC").fetchall()
         return [self._row(row) for row in rows]
 
     def get(self, job_id: str) -> CronJob:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM cron_jobs WHERE id = ?", (job_id,)
-            ).fetchone()
+            row = connection.execute("SELECT * FROM cron_jobs WHERE id = ?", (job_id,)).fetchone()
         if row is None:
             raise SchedulerError(f"Cronjob introuvable : {job_id}")
         return self._row(row)
@@ -220,11 +230,21 @@ class CronService:
                    reasoning=?, enabled=?, auto_resume=?, updated_at=?, next_run_at=?
                    WHERE id=?""",
                 (
-                    payload.name.strip(), payload.schedule.strip(), payload.prompt,
-                    str(workspace), payload.agent_id, json.dumps(payload.skills),
-                    payload.security_mode.value, payload.provider_id, payload.model,
-                    payload.reasoning, int(payload.enabled), int(payload.auto_resume),
-                    now.isoformat(), next_run.isoformat(), job_id,
+                    payload.name.strip(),
+                    payload.schedule.strip(),
+                    payload.prompt,
+                    str(workspace),
+                    payload.agent_id,
+                    json.dumps(payload.skills),
+                    payload.security_mode.value,
+                    payload.provider_id,
+                    payload.model,
+                    payload.reasoning,
+                    int(payload.enabled),
+                    int(payload.auto_resume),
+                    now.isoformat(),
+                    next_run.isoformat(),
+                    job_id,
                 ),
             )
         return self.get(job_id)
@@ -238,8 +258,10 @@ class CronService:
     def due(self, now: datetime | None = None) -> list[CronJob]:
         current = now or datetime.now(UTC)
         return [
-            job for job in self.list()
-            if job.enabled and not job.in_flight
+            job
+            for job in self.list()
+            if job.enabled
+            and not job.in_flight
             and job.next_run_at is not None
             and job.next_run_at.astimezone(UTC) <= current.astimezone(UTC)
         ]
@@ -285,16 +307,26 @@ class CronService:
             return datetime.fromisoformat(row[name]) if row[name] else None
 
         return CronJob(
-            id=row["id"], name=row["name"], schedule=row["schedule"],
-            prompt=row["prompt"], workspace=Path(row["workspace"]),
-            agent_id=row["agent_id"], skills=json.loads(row["skills_json"]),
-            security_mode=row["security_mode"], provider_id=row["provider_id"],
-            model=row["model"], reasoning=row["reasoning"], enabled=bool(row["enabled"]),
-            auto_resume=bool(row["auto_resume"]), session_id=UUID(row["session_id"]),
+            id=row["id"],
+            name=row["name"],
+            schedule=row["schedule"],
+            prompt=row["prompt"],
+            workspace=Path(row["workspace"]),
+            agent_id=row["agent_id"],
+            skills=json.loads(row["skills_json"]),
+            security_mode=row["security_mode"],
+            provider_id=row["provider_id"],
+            model=row["model"],
+            reasoning=row["reasoning"],
+            enabled=bool(row["enabled"]),
+            auto_resume=bool(row["auto_resume"]),
+            session_id=UUID(row["session_id"]),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
-            next_run_at=parsed("next_run_at"), last_run_at=parsed("last_run_at"),
-            last_status=row["last_status"], last_error=row["last_error"],
+            next_run_at=parsed("next_run_at"),
+            last_run_at=parsed("last_run_at"),
+            last_status=row["last_status"],
+            last_error=row["last_error"],
             last_retryable=bool(row["last_retryable"]),
             in_flight=bool(row["in_flight"]),
         )
@@ -342,13 +374,20 @@ class CronScheduler:
             "Reprends la tâche interrompue à partir des traces et résultats déjà "
             "persistés. Ne rejoue pas les outils déjà terminés; vérifie l'état "
             "courant puis poursuis par la prochaine action utile."
-            if resume else job.prompt
+            if resume
+            else job.prompt
         )
         return RunRequest(
-            prompt=prompt, agent_id=job.agent_id, skills=job.skills,
-            session_id=job.session_id, workspace=job.workspace,
-            security_mode=job.security_mode, provider_id=job.provider_id,
-            model=job.model, reasoning=job.reasoning, trigger=trigger,
+            prompt=prompt,
+            agent_id=job.agent_id,
+            skills=job.skills,
+            session_id=job.session_id,
+            workspace=job.workspace,
+            security_mode=job.security_mode,
+            provider_id=job.provider_id,
+            model=job.model,
+            reasoning=job.reasoning,
+            trigger=trigger,
             cron_job_id=job.id,
         )
 

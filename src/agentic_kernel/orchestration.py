@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic_ai import Agent, FunctionToolset, RunContext
@@ -15,6 +16,7 @@ from .errors import BudgetExceeded
 from .events import JsonlEventStore
 from .guardian import action_family
 from .models import ApprovalRequest, BudgetConfig, Event, GuardianDecision, SecurityMode
+from .plans import PlanConflict, PlanNotFound, PlanService
 
 
 @dataclass
@@ -36,6 +38,8 @@ class RuntimeDeps:
     model_name: str | None = None
     context_window_tokens: int | None = None
     secret_resolver: Callable[[str], str | None] | None = None
+    secret_redactor: Callable[[Any], Any] | None = None
+    snapshot_store: Any | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def is_scope_approved(self, decision: GuardianDecision) -> bool:
@@ -57,9 +61,7 @@ class TracedSubAgentToolset(HarnessSubAgentToolset[RuntimeDeps]):
         self.parent_agent_id = parent_agent_id
         super().__init__(**kwargs)
 
-    async def delegate_task(
-        self, ctx: RunContext[RuntimeDeps], agent_name: str, task: str
-    ) -> str:
+    async def delegate_task(self, ctx: RunContext[RuntimeDeps], agent_name: str, task: str) -> str:
         deps: RuntimeDeps = ctx.deps
         attempt = await deps.reserve_run(agent_name)
         child_run_id = uuid4()
@@ -70,12 +72,23 @@ class TracedSubAgentToolset(HarnessSubAgentToolset[RuntimeDeps]):
                 run_id=child_run_id,
                 agent_id=agent_name,
                 parent_run_id=parent_run_id,
-                type="agent.started",
+                type="agent.queued",
                 attempt=attempt,
                 payload={"task": task, "delegated_by": self.parent_agent_id},
             )
         )
         async with deps.semaphore:
+            deps.events.append(
+                Event(
+                    session_id=deps.session_id,
+                    run_id=child_run_id,
+                    agent_id=agent_name,
+                    parent_run_id=parent_run_id,
+                    type="agent.started",
+                    attempt=attempt,
+                    payload={"task": task, "delegated_by": self.parent_agent_id},
+                )
+            )
             try:
                 output = await super().delegate_task(ctx, agent_name, task)
             except Exception as exc:
@@ -165,6 +178,8 @@ def make_neutral_subagent_toolset(
         task: str,
         expected_output: str,
         scope: list[str] | None = None,
+        plan_id: str | None = None,
+        step_id: str | None = None,
         justification: str = "",
     ) -> dict[str, Any]:
         if not role.strip() or not task.strip() or not expected_output.strip():
@@ -173,6 +188,31 @@ def make_neutral_subagent_toolset(
         attempt = await deps.reserve_run("subagent")
         child_run_id = uuid4()
         parent_run_id = _uuid_or(ctx.run_id, deps.root_run_id)
+        if bool(plan_id) != bool(step_id):
+            raise ValueError("plan_id and step_id must be supplied together")
+        if plan_id and step_id:
+            if deps.state_db is None:
+                raise ValueError("plan state database is unavailable")
+            try:
+                PlanService(deps.state_db).claim(
+                    plan_id,
+                    step_id,
+                    session_id=deps.session_id,
+                    claimed_by=f"subagent:{role.strip()}",
+                    run_id=str(child_run_id),
+                    lease_seconds=max(30, int(budgets.child_timeout_seconds)),
+                )
+            except (PlanNotFound, PlanConflict) as exc:
+                return {
+                    "ok": False,
+                    "data": None,
+                    "error": {"type": "plan_conflict", "message": str(exc)},
+                    "metadata": {
+                        "run_id": str(child_run_id),
+                        "plan_id": plan_id,
+                        "step_id": step_id,
+                    },
+                }
         prompt = (
             f"# Temporary role\n{role.strip()}\n\n"
             f"# Bounded task\n{task.strip()}\n\n"
@@ -187,7 +227,7 @@ def make_neutral_subagent_toolset(
                 run_id=child_run_id,
                 agent_id="subagent",
                 parent_run_id=parent_run_id,
-                type="agent.started",
+                type="agent.queued",
                 attempt=attempt,
                 payload={
                     "role": role,
@@ -196,17 +236,37 @@ def make_neutral_subagent_toolset(
                     "expected_output": expected_output,
                     "delegated_by": parent_agent_id,
                     "ephemeral": True,
+                    "plan_id": plan_id,
+                    "step_id": step_id,
                 },
             )
         )
         async with deps.semaphore:
+            deps.events.append(
+                Event(
+                    session_id=deps.session_id,
+                    run_id=child_run_id,
+                    agent_id="subagent",
+                    parent_run_id=parent_run_id,
+                    type="agent.started",
+                    attempt=attempt,
+                    payload={
+                        "role": role,
+                        "task": task,
+                        "scope": scope or [],
+                        "expected_output": expected_output,
+                        "delegated_by": parent_agent_id,
+                        "ephemeral": True,
+                        "plan_id": plan_id,
+                        "step_id": step_id,
+                    },
+                )
+            )
             try:
                 result = await agent.run(
                     prompt,
                     deps=deps,
-                    usage_limits=UsageLimits(
-                        request_limit=budgets.max_requests_per_agent
-                    ),
+                    usage_limits=UsageLimits(request_limit=budgets.max_requests_per_agent),
                 )
             except Exception as exc:
                 deps.events.append(
@@ -224,6 +284,14 @@ def make_neutral_subagent_toolset(
                         },
                     )
                 )
+                if plan_id and step_id and deps.state_db is not None:
+                    PlanService(deps.state_db).update(
+                        plan_id,
+                        step_id,
+                        "failed",
+                        session_id=deps.session_id,
+                        note=str(exc),
+                    )
                 return {
                     "ok": False,
                     "data": None,
@@ -234,6 +302,14 @@ def make_neutral_subagent_toolset(
                     "metadata": {"run_id": str(child_run_id)},
                 }
         output = str(result.output)
+        if plan_id and step_id and deps.state_db is not None:
+            PlanService(deps.state_db).update(
+                plan_id,
+                step_id,
+                "validating",
+                session_id=deps.session_id,
+                note="Subagent returned a result; parent validation required.",
+            )
         deps.events.append(
             Event(
                 session_id=deps.session_id,
@@ -242,14 +318,25 @@ def make_neutral_subagent_toolset(
                 parent_run_id=parent_run_id,
                 type="agent.completed",
                 attempt=attempt,
-                payload={"role": role, "output": output, "ephemeral": True},
+                payload={
+                    "role": role,
+                    "output": output,
+                    "ephemeral": True,
+                    "plan_id": plan_id,
+                    "step_id": step_id,
+                },
             )
         )
         return {
             "ok": True,
             "data": {"role": role, "output": output},
             "error": None,
-            "metadata": {"run_id": str(child_run_id)},
+            "metadata": {
+                "run_id": str(child_run_id),
+                "plan_id": plan_id,
+                "step_id": step_id,
+                "requires_parent_validation": bool(plan_id),
+            },
         }
 
     return FunctionToolset(tools=[subagent_spawn])

@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
@@ -63,11 +62,22 @@ async def memory_store(
         db.execute(
             "INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                memory_id, scope, _scope_id(ctx, scope, agent_id), title.strip(),
-                content.strip(), int(verified), now, now,
+                memory_id,
+                scope,
+                _scope_id(ctx, scope, agent_id),
+                title.strip(),
+                content.strip(),
+                int(verified),
+                now,
+                now,
             ),
         )
-    return {"ok": True, "data": {"memory_id": memory_id, "scope": scope, "verified": verified}, "error": None, "metadata": {}}
+    return {
+        "ok": True,
+        "data": {"memory_id": memory_id, "scope": scope, "verified": verified},
+        "error": None,
+        "metadata": {},
+    }
 
 
 async def memory_search(
@@ -88,8 +98,12 @@ async def memory_search(
                AND (lower(title) LIKE ? OR lower(content) LIKE ?)
                ORDER BY updated_at DESC LIMIT ?""",
             (
-                scope, _scope_id(ctx, scope, agent_id), int(verified_only),
-                f"%{query.casefold()}%", f"%{query.casefold()}%", limit,
+                scope,
+                _scope_id(ctx, scope, agent_id),
+                int(verified_only),
+                f"%{query.casefold()}%",
+                f"%{query.casefold()}%",
+                limit,
             ),
         ).fetchall()
     data = [{**dict(row), "content": row["content"][:2000]} for row in rows]
@@ -103,7 +117,12 @@ async def memory_get(
     with _db(ctx) as db:
         row = db.execute("SELECT * FROM memories WHERE memory_id = ?", (memory_id,)).fetchone()
     if not row:
-        return {"ok": False, "data": None, "error": {"type": "not_found", "message": "memory not found"}, "metadata": {}}
+        return {
+            "ok": False,
+            "data": None,
+            "error": {"type": "not_found", "message": "memory not found"},
+            "metadata": {},
+        }
     return {"ok": True, "data": dict(row), "error": None, "metadata": {}}
 
 
@@ -113,7 +132,12 @@ async def memory_forget(
     """Delete one explicit memory."""
     with _db(ctx) as db:
         deleted = db.execute("DELETE FROM memories WHERE memory_id = ?", (memory_id,)).rowcount
-    return {"ok": bool(deleted), "data": {"memory_id": memory_id, "deleted": bool(deleted)}, "error": None if deleted else {"type": "not_found", "message": "memory not found"}, "metadata": {}}
+    return {
+        "ok": bool(deleted),
+        "data": {"memory_id": memory_id, "deleted": bool(deleted)},
+        "error": None if deleted else {"type": "not_found", "message": "memory not found"},
+        "metadata": {},
+    }
 
 
 async def knowledge_index(
@@ -124,10 +148,21 @@ async def knowledge_index(
 ) -> dict[str, Any]:
     """Incrementally index bounded UTF-8 project files in local SQLite."""
     root = (ctx.deps.workspace / path).resolve()
-    allowed = set(extensions or [".md", ".txt", ".py", ".js", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml"])
-    candidates = [root] if root.is_file() else sorted(
-        (item for item in root.rglob("*") if item.is_file() and item.suffix.casefold() in allowed),
-        key=lambda item: str(item).casefold(),
+    allowed = set(
+        extensions
+        or [".md", ".txt", ".py", ".js", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml"]
+    )
+    candidates = (
+        [root]
+        if root.is_file()
+        else sorted(
+            (
+                item
+                for item in root.rglob("*")
+                if item.is_file() and item.suffix.casefold() in allowed
+            ),
+            key=lambda item: str(item).casefold(),
+        )
     )
     changed = skipped = 0
     with _db(ctx) as db:
@@ -152,11 +187,17 @@ async def knowledge_index(
             db.execute(
                 """INSERT INTO knowledge VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(project, path) DO UPDATE SET
-                   sha256=excluded.sha256, content=excluded.content, indexed_at=excluded.indexed_at""",
+                   sha256=excluded.sha256, content=excluded.content,
+                   indexed_at=excluded.indexed_at""",
                 (str(ctx.deps.workspace), relative, digest, content, datetime.now(UTC).isoformat()),
             )
             changed += 1
-    return {"ok": True, "data": {"indexed": changed, "skipped": skipped}, "error": None, "metadata": {"embedding_backend": "lexical"}}
+    return {
+        "ok": True,
+        "data": {"indexed": changed, "skipped": skipped},
+        "error": None,
+        "metadata": {"embedding_backend": "lexical"},
+    }
 
 
 async def knowledge_search(
@@ -177,16 +218,29 @@ async def knowledge_search(
         content, needle = row["content"], query.casefold()
         position = content.casefold().find(needle)
         start = max(0, position - 500)
-        results.append({"path": row["path"], "excerpt": content[start:start + 1500]})
-    return {"ok": True, "data": results, "error": None, "metadata": {"count": len(results), "backend": "lexical"}}
+        results.append({"path": row["path"], "excerpt": content[start : start + 1500]})
+    return {
+        "ok": True,
+        "data": results,
+        "error": None,
+        "metadata": {"count": len(results), "backend": "lexical"},
+    }
 
 
 class MemoryModule:
     def toolsets(self):
-        return [FunctionToolset(tools=[
-            memory_store, memory_search, memory_get, memory_forget,
-            knowledge_index, knowledge_search,
-        ])]
+        return [
+            FunctionToolset(
+                tools=[
+                    memory_store,
+                    memory_search,
+                    memory_get,
+                    memory_forget,
+                    knowledge_index,
+                    knowledge_search,
+                ]
+            )
+        ]
 
     def instructions(self):
         return [

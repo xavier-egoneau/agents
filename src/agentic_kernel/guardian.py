@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 import ipaddress
 import json
+import platform
+import shutil
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -22,12 +24,18 @@ from .models import (
     GuardianDecision,
     GuardianVerdict,
     SecurityMode,
+    ToolResult,
     ToolRisk,
 )
+from .network_policy import network_scope
 
 PROTECTED_PARTS = {".ssh", ".gnupg", ".aws", ".kube", ".git", ".codex"}
 SENSITIVE_NAMES = {
-    ".env", ".env.local", ".envrc", "providers.json", "secrets.json",
+    ".env",
+    ".env.local",
+    ".envrc",
+    "providers.json",
+    "secrets.json",
 }
 SECRET_KEYS = {"api_key", "token", "password", "secret", "authorization"}
 
@@ -63,11 +71,18 @@ def review_tool_call(
             security_mode=mode,
         )
     raw_paths = [
-        arguments[key] for key in ("path", "cwd", "destination")
-        if arguments.get(key) is not None
+        arguments[key] for key in ("path", "cwd", "destination") if arguments.get(key) is not None
     ]
     paths = [canonical_path(raw, workspace) for raw in raw_paths]
     path = paths[0] if paths else None
+    network_path = next(
+        (
+            network_scope(value)
+            for key in ("url", "seed")
+            if isinstance((value := arguments.get(key)), str) and network_scope(value) is not None
+        ),
+        None,
+    )
     if any(candidate is None for candidate in paths):
         verdict, reason = GuardianVerdict.DENY, "The path is invalid or ambiguous."
     elif any(_contains_symlink(raw, workspace) for raw in raw_paths):
@@ -97,8 +112,7 @@ def review_tool_call(
             "Reading a kernel-owned artifact for this session is allowed.",
         )
     elif any(
-        candidate is not None and not _inside(candidate, workspace.resolve())
-        for candidate in paths
+        candidate is not None and not _inside(candidate, workspace.resolve()) for candidate in paths
     ):
         verdict, reason = GuardianVerdict.ASK, "Actions outside the workspace require approval."
     elif ToolRisk.DESTRUCTIVE in risks:
@@ -107,10 +121,9 @@ def review_tool_call(
         verdict, reason = GuardianVerdict.ASK, "Screen capture always requires approval."
     elif ToolRisk.EXECUTE in risks:
         verdict, reason = _review_execution(arguments, mode)
-    elif (
-        (ToolRisk.NETWORK in risks or ToolRisk.EXTERNAL in risks)
-        and str(arguments.get("method", "GET")).upper() in {"POST", "PUT", "PATCH", "DELETE"}
-    ):
+    elif (ToolRisk.NETWORK in risks or ToolRisk.EXTERNAL in risks) and str(
+        arguments.get("method", "GET")
+    ).upper() in {"POST", "PUT", "PATCH", "DELETE"}:
         verdict, reason = GuardianVerdict.ASK, "Mutating HTTP requests require approval."
     elif ToolRisk.WRITE in risks and mode is SecurityMode.SAFE:
         verdict, reason = GuardianVerdict.ASK, "Writes require approval in safe mode."
@@ -134,7 +147,7 @@ def review_tool_call(
         tool_name=tool_name,
         agent_id=agent_id,
         tool_call_id=tool_call_id,
-        path=str(path) if path else None,
+        path=str(path) if path else network_path,
         risks=risks,
         justification=justification.strip(),
         security_mode=mode,
@@ -205,40 +218,74 @@ def action_family(risks: list[ToolRisk]) -> str:
     return "other"
 
 
-def _review_execution(
-    arguments: dict[str, Any], mode: SecurityMode
-) -> tuple[GuardianVerdict, str]:
+def _review_execution(arguments: dict[str, Any], mode: SecurityMode) -> tuple[GuardianVerdict, str]:
     program = str(arguments.get("program", "")).strip()
+    executable = Path(program).name.casefold()
     args = [str(value) for value in arguments.get("args", [])]
-    lowered = [program.casefold(), *(value.casefold() for value in args)]
+    lowered = [executable, *(value.casefold() for value in args)]
     command = " ".join(lowered)
     destructive = (
-        program.casefold() in {"rm", "rmdir", "shred", "mkfs"}
+        executable in {"rm", "rmdir", "shred", "mkfs"}
         or "reset --hard" in command
         or "clean -fd" in command
         or "--force" in lowered
     )
     installs = (
-        program.casefold() in {"pip", "pip3", "brew"}
+        executable in {"pip", "pip3", "brew"}
         and any(value in {"install", "uninstall"} for value in lowered)
     ) or (
-        program.casefold() in {"npm", "pnpm", "yarn", "bun"}
+        executable in {"npm", "pnpm", "yarn", "bun"}
         and any(value in {"install", "add", "remove", "uninstall"} for value in lowered)
     )
-    network_program = program.casefold() in {
-        "curl", "wget", "ssh", "scp", "nc", "ncat", "telnet"
+    network_program = executable in {"curl", "wget", "ssh", "scp", "nc", "ncat", "telnet"}
+    interpreter_escape = executable in {
+        "python",
+        "python3",
+        "node",
+        "ruby",
+        "perl",
+        "php",
     }
+    external_path_argument = any(
+        value.startswith(("/", "~/", "../")) or "/../" in value for value in args
+    )
+    sandbox_available = platform.system() == "Darwin" and shutil.which("sandbox-exec") is not None
     if destructive:
         return GuardianVerdict.ASK, "Potentially destructive command requires approval."
     if mode is SecurityMode.SAFE:
         return GuardianVerdict.ASK, "Command execution requires approval in safe mode."
-    if mode is SecurityMode.LIMITED and (installs or network_program):
-        return GuardianVerdict.ASK, "Install or network commands require approval in limited mode."
+    if mode is SecurityMode.LIMITED and (
+        installs or network_program or interpreter_escape or external_path_argument
+    ):
+        return (
+            GuardianVerdict.ASK,
+            "Install, network, interpreter, or external-path commands require approval.",
+        )
+    if not sandbox_available:
+        return (
+            GuardianVerdict.ASK,
+            "The execution sandbox is unavailable; explicit approval is required.",
+        )
     known = {
-        "npm", "pnpm", "yarn", "bun", "node", "python", "python3", "pytest",
-        "git", "make", "cmake", "cargo", "go", "ruff", "eslint", "tsc", "vite",
+        "npm",
+        "pnpm",
+        "yarn",
+        "bun",
+        "node",
+        "python",
+        "python3",
+        "pytest",
+        "git",
+        "make",
+        "cmake",
+        "cargo",
+        "go",
+        "ruff",
+        "eslint",
+        "tsc",
+        "vite",
     }
-    if mode is SecurityMode.LIMITED and program.casefold() not in known:
+    if mode is SecurityMode.LIMITED and executable not in known:
         return GuardianVerdict.ASK, "Unknown executable requires approval in limited mode."
     return GuardianVerdict.ALLOW, "Command execution allowed by the active security mode."
 
@@ -300,56 +347,84 @@ class GuardianToolset(WrapperToolset[Any]):
         call_id = str(ctx.tool_call_id or "unknown")
         run_id = _run_uuid(ctx.run_id, deps.root_run_id)
         risks = self.risks.get(name, [])
-        deps.events.append(Event(
-            session_id=deps.session_id, run_id=run_id, agent_id=self.agent_id,
-            type="tool.proposed",
-            payload={"tool_call_id": call_id, "tool": name, "arguments": redact(tool_args)},
-        ))
-        decision = review_tool_call(
-            tool_name=name, tool_call_id=call_id, agent_id=self.agent_id,
-            arguments=tool_args, risks=risks, mode=deps.security_mode, workspace=deps.workspace,
-            trusted_read_roots=(
-                (
-                    deps.state_db.parent / "sessions" / "artifacts"
-                    / str(deps.session_id)
-                ),
-            ) if deps.state_db is not None else (),
+        proposed_arguments = redact(tool_args)
+        if callable(getattr(deps, "secret_redactor", None)):
+            proposed_arguments = deps.secret_redactor(proposed_arguments)
+        deps.events.append(
+            Event(
+                session_id=deps.session_id,
+                run_id=run_id,
+                agent_id=self.agent_id,
+                type="tool.proposed",
+                payload={"tool_call_id": call_id, "tool": name, "arguments": proposed_arguments},
+            )
         )
-        deps.events.append(Event(
-            session_id=deps.session_id, run_id=run_id, agent_id=self.agent_id,
-            type="guardian.reviewed", payload=decision.model_dump(mode="json"),
-        ))
+        decision = review_tool_call(
+            tool_name=name,
+            tool_call_id=call_id,
+            agent_id=self.agent_id,
+            arguments=tool_args,
+            risks=risks,
+            mode=deps.security_mode,
+            workspace=deps.workspace,
+            trusted_read_roots=(
+                (deps.state_db.parent / "sessions" / "artifacts" / str(deps.session_id)),
+            )
+            if deps.state_db is not None
+            else (),
+        )
+        deps.events.append(
+            Event(
+                session_id=deps.session_id,
+                run_id=run_id,
+                agent_id=self.agent_id,
+                type="guardian.reviewed",
+                payload=decision.model_dump(mode="json"),
+            )
+        )
         if decision.verdict is GuardianVerdict.DENY:
-            return {
-                "ok": False,
-                "data": None,
-                "error": {"type": "denied", "message": decision.reason},
-                "metadata": {"guardian": decision.model_dump(mode="json")},
-                "denied": True,
-                "reason": decision.reason,
-            }
+            return ToolResult(
+                ok=False,
+                error={"type": "denied", "message": decision.reason},
+                metadata={"guardian": decision.model_dump(mode="json")},
+            ).model_dump(mode="json")
         if decision.verdict is GuardianVerdict.ASK and not ctx.tool_call_approved:
             if not deps.is_scope_approved(decision):
                 request = ApprovalRequest(
-                    session_id=deps.session_id, run_id=run_id, agent_id=self.agent_id,
-                    tool_call_id=call_id, tool_name=name,
-                    action_family=action_family(risks), path=decision.path,
-                    justification=decision.justification, risks=risks, reason=decision.reason,
+                    session_id=deps.session_id,
+                    run_id=run_id,
+                    agent_id=self.agent_id,
+                    tool_call_id=call_id,
+                    tool_name=name,
+                    action_family=action_family(risks),
+                    path=decision.path,
+                    justification=decision.justification,
+                    risks=risks,
+                    reason=decision.reason,
                 )
                 deps.pending_approvals[call_id] = request
-                deps.events.append(Event(
-                    session_id=deps.session_id, run_id=run_id, agent_id=self.agent_id,
-                    type="approval.requested", payload=request.model_dump(mode="json"),
-                ))
+                deps.events.append(
+                    Event(
+                        session_id=deps.session_id,
+                        run_id=run_id,
+                        agent_id=self.agent_id,
+                        type="approval.requested",
+                        payload=request.model_dump(mode="json"),
+                    )
+                )
                 raise ApprovalRequired(metadata={"approval_id": str(request.approval_id)})
         clean_args = dict(tool_args)
         clean_args.pop("justification", None)
         started = time.monotonic()
-        deps.events.append(Event(
-            session_id=deps.session_id, run_id=run_id, agent_id=self.agent_id,
-            type="tool.started",
-            payload={"tool_call_id": call_id, "tool": name, "path": decision.path},
-        ))
+        deps.events.append(
+            Event(
+                session_id=deps.session_id,
+                run_id=run_id,
+                agent_id=self.agent_id,
+                type="tool.started",
+                payload={"tool_call_id": call_id, "tool": name, "path": decision.path},
+            )
+        )
         try:
             timeout = self.timeouts.get(name)
             if timeout is None:
@@ -357,31 +432,57 @@ class GuardianToolset(WrapperToolset[Any]):
             else:
                 async with asyncio.timeout(timeout):
                     value = await self.wrapped.call_tool(name, clean_args, ctx, tool)
+            value = ToolResult.model_validate(value).model_dump(mode="json")
         except Exception as exc:
             error_type = (
-                "validation" if isinstance(exc, (ValueError, TypeError))
-                else "timeout" if isinstance(exc, TimeoutError)
-                else "not_found" if isinstance(exc, FileNotFoundError)
+                "validation"
+                if isinstance(exc, (ValueError, TypeError))
+                else "timeout"
+                if isinstance(exc, TimeoutError)
+                else "not_found"
+                if isinstance(exc, FileNotFoundError)
                 else "execution"
             )
+            error_message: Any = str(exc)[:4000]
+            if callable(getattr(deps, "secret_redactor", None)):
+                error_message = deps.secret_redactor(error_message)
             failure = {
                 "ok": False,
                 "data": None,
-                "error": {"type": error_type, "message": str(exc)[:4000]},
+                "error": {"type": error_type, "message": str(error_message)},
                 "metadata": {},
             }
-            deps.events.append(Event(
-                session_id=deps.session_id, run_id=run_id, agent_id=self.agent_id,
-                type="tool.failed", payload={"tool_call_id": call_id, "tool": name,
-                "duration_ms": (time.monotonic() - started) * 1000,
-                "error": failure["error"]},
-            ))
+            deps.events.append(
+                Event(
+                    session_id=deps.session_id,
+                    run_id=run_id,
+                    agent_id=self.agent_id,
+                    type="tool.failed",
+                    payload={
+                        "tool_call_id": call_id,
+                        "tool": name,
+                        "duration_ms": (time.monotonic() - started) * 1000,
+                        "error": failure["error"],
+                    },
+                )
+            )
             return failure
-        deps.events.append(Event(
-            session_id=deps.session_id, run_id=run_id, agent_id=self.agent_id,
-            type="tool.completed", payload={"tool_call_id": call_id, "tool": name,
-            "duration_ms": (time.monotonic() - started) * 1000, "result": redact(value)},
-        ))
+        if callable(getattr(deps, "secret_redactor", None)):
+            value = deps.secret_redactor(value)
+        deps.events.append(
+            Event(
+                session_id=deps.session_id,
+                run_id=run_id,
+                agent_id=self.agent_id,
+                type="tool.completed",
+                payload={
+                    "tool_call_id": call_id,
+                    "tool": name,
+                    "duration_ms": (time.monotonic() - started) * 1000,
+                    "result": redact(value),
+                },
+            )
+        )
         return value
 
 

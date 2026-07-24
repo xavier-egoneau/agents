@@ -97,8 +97,13 @@ async def web_search(
 ) -> dict[str, Any]:
     """Search the public web and return bounded structured results."""
     return await web(
-        ctx, "search", query=query, limit=limit, backend=backend,
-        scrape_results=scrape_results, justification=justification,
+        ctx,
+        "search",
+        query=query,
+        limit=limit,
+        backend=backend,
+        scrape_results=scrape_results,
+        justification=justification,
     )
 
 
@@ -122,8 +127,13 @@ async def web_docs(
 ) -> dict[str, Any]:
     """Search public library and product documentation."""
     return await web(
-        ctx, "docs", query=query, library=library, limit=limit,
-        max_chars=max_chars, justification=justification,
+        ctx,
+        "docs",
+        query=query,
+        library=library,
+        limit=limit,
+        max_chars=max_chars,
+        justification=justification,
     )
 
 
@@ -136,7 +146,11 @@ async def web_code_search(
 ) -> dict[str, Any]:
     """Search public source code."""
     return await web(
-        ctx, "code", query=query, language=language, limit=limit,
+        ctx,
+        "code",
+        query=query,
+        language=language,
+        limit=limit,
         justification=justification,
     )
 
@@ -236,9 +250,18 @@ def _decode_output(raw: bytes) -> dict[str, Any]:
 
 class WebModule:
     def toolsets(self):
-        return [FunctionToolset(tools=[
-            web_search, web_scrape, web_docs, web_code_search, web_crawl, web,
-        ])]
+        return [
+            FunctionToolset(
+                tools=[
+                    web_search,
+                    web_scrape,
+                    web_docs,
+                    web_code_search,
+                    web_crawl,
+                    web,
+                ]
+            )
+        ]
 
     def instructions(self):
         return [

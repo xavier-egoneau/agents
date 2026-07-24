@@ -13,9 +13,7 @@ from agentic_kernel.modules import ModuleRegistry
 from agentic_kernel.providers import ProviderFactory
 
 
-async def test_overwrite_suspends_resumes_once_and_traces(
-    project: Path, monkeypatch
-) -> None:
+async def test_overwrite_suspends_resumes_once_and_traces(project: Path, monkeypatch) -> None:
     source = Path(__file__).parents[1] / "tools" / "modules" / "filesystem"
     shutil.copytree(source, project / "tools" / "modules" / "filesystem")
     ModuleRegistry(project / "tools").build_index()
@@ -30,11 +28,19 @@ async def test_overwrite_suspends_resumes_once_and_traces(
             for part in message.parts
         )
         if not called:
-            return ModelResponse(parts=[ToolCallPart(
-                "write",
-                {"path": "note.txt", "content": "new", "justification": "Update requested."},
-                tool_call_id="write-1",
-            )])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "write",
+                        {
+                            "path": "note.txt",
+                            "content": "new",
+                            "justification": "Update requested.",
+                        },
+                        tool_call_id="write-1",
+                    )
+                ]
+            )
         return ModelResponse(parts=[TextPart("done")])
 
     monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(respond))
@@ -44,9 +50,9 @@ async def test_overwrite_suspends_resumes_once_and_traces(
     assert target.read_text() == "old"
     approval = kernel.list_approvals()[0]
 
-    repeated = await kernel.run(RunRequest(
-        prompt="/reprise", workspace=project, session_id=first.session_id
-    ))
+    repeated = await kernel.run(
+        RunRequest(prompt="/reprise", workspace=project, session_id=first.session_id)
+    )
     assert repeated.status is RunStatus.APPROVAL_PENDING
     assert repeated.run_id == approval.run_id
     assert len(kernel.list_approvals()) == 1
@@ -77,18 +83,20 @@ async def test_parallel_approvals_resume_as_one_batch(project: Path, monkeypatch
             for part in message.parts
         )
         if not called:
-            return ModelResponse(parts=[
-                ToolCallPart(
-                    "write",
-                    {"path": "first.txt", "content": "new", "justification": "Update one."},
-                    tool_call_id="write-1",
-                ),
-                ToolCallPart(
-                    "write",
-                    {"path": "second.txt", "content": "new", "justification": "Update two."},
-                    tool_call_id="write-2",
-                ),
-            ])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "write",
+                        {"path": "first.txt", "content": "new", "justification": "Update one."},
+                        tool_call_id="write-1",
+                    ),
+                    ToolCallPart(
+                        "write",
+                        {"path": "second.txt", "content": "new", "justification": "Update two."},
+                        tool_call_id="write-2",
+                    ),
+                ]
+            )
         return ModelResponse(parts=[TextPart("both done")])
 
     monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(respond))
@@ -98,9 +106,7 @@ async def test_parallel_approvals_resume_as_one_batch(project: Path, monkeypatch
     pending = kernel.list_approvals()
     assert len(pending) == 2
 
-    completed = await kernel.resolve_approval_batch(
-        [item.approval_id for item in pending], True
-    )
+    completed = await kernel.resolve_approval_batch([item.approval_id for item in pending], True)
     assert completed.status is RunStatus.SUCCESS
     assert completed.output == "both done"
     assert first_target.read_text() == "new"
@@ -114,9 +120,11 @@ def test_disabled_tools_sidecar(project: Path) -> None:
     # Unknown exclusions are rejected instead of silently weakening configuration checks.
     with pytest.raises(ConfigurationError, match="unknown tools"):
         Kernel(project)._build_agent(
-            "main", Kernel(project).config.agents(),
+            "main",
+            Kernel(project).config.agents(),
             ProviderFactory(Kernel(project).config.providers()),
             Kernel(project).config.agents()["main"].budgets
             or __import__("agentic_kernel.models", fromlist=["BudgetConfig"]).BudgetConfig(),
-            1, {},
+            1,
+            {},
         )

@@ -10,7 +10,7 @@ from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic_ai import (
     Agent,
@@ -20,10 +20,10 @@ from pydantic_ai import (
     ModelSettings,
 )
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UsageLimitExceeded
+from pydantic_ai.messages import ImageUrl, ModelRequest, UserPromptPart
 from pydantic_ai.tools import DeferredToolResults, ToolApproved, ToolDenied
 from pydantic_ai.toolsets import FilteredToolset
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai.messages import ImageUrl, ModelRequest, UserPromptPart
 
 from .approvals import ApprovalStore
 from .compaction import ContextWindowCompaction
@@ -35,8 +35,8 @@ from .models import (
     ApprovalRequest,
     ApprovalResolution,
     Event,
-    RunError,
     RunArtifact,
+    RunError,
     RunRequest,
     RunResult,
     RunStatus,
@@ -49,10 +49,12 @@ from .orchestration import (
     make_subagents,
 )
 from .providers import ProviderFactory
-from .skills import skill_catalog_instruction, skill_toolset
+from .run_executor import RunExecutor
 from .secrets import SecretStore
-from .workspace_map import WorkspaceMapService
+from .skills import skill_catalog_instruction, skill_toolset
+from .snapshots import SnapshotStore
 from .vision import LocalVisionService, VisionUnavailable
+from .workspace_map import WorkspaceMapService
 
 
 class Kernel:
@@ -62,10 +64,18 @@ class Kernel:
         self.config = ProjectConfig(root)
         self.module_registry = ModuleRegistry(self.config.tools_root)
         self.events = JsonlEventStore(self.config.content_root / "sessions")
+        self.events.rebuild_projection()
+        self.snapshots = SnapshotStore(self.config.content_root / "sessions")
         self.approvals = ApprovalStore(self.config.content_root / "sessions")
         self.secrets = SecretStore(self.config.content_root / "secrets.json")
         self.workspace_maps = WorkspaceMapService()
         self.vision = LocalVisionService(self.config.content_root)
+        self.executor = RunExecutor(
+            self.events,
+            self.secrets,
+            self.snapshots,
+            self.config.content_root / "state.db",
+        )
         self.active_runs: dict[Any, RuntimeDeps] = {}
 
     async def run(self, request: RunRequest) -> RunResult:
@@ -83,24 +93,18 @@ class Kernel:
         if command and command["kind"] == "native":
             request = request.model_copy(
                 update={
-                    "prompt": self.config.expand_native_command(
-                        request.prompt, command["command"]
-                    )
+                    "prompt": self.config.expand_native_command(request.prompt, command["command"])
                 }
             )
         elif command and command["skill"] not in request.skills:
-            request = request.model_copy(
-                update={"skills": [*request.skills, command["skill"]]}
-            )
+            request = request.model_copy(update={"skills": [*request.skills, command["skill"]]})
         provider_factory = ProviderFactory(self.config.providers())
         agent_config = agents[request.agent_id]
         active_provider_id = request.provider_id or agent_config.provider
         provider_config = provider_factory.get_config(active_provider_id)
         active_model = request.model or agent_config.model or provider_config.model
         supports_vision = bool(getattr(provider_config, "vision", False))
-        context_window_tokens = self._model_context_window(
-            active_provider_id, active_model
-        )
+        context_window_tokens = self._model_context_window(active_provider_id, active_model)
         if command and command["command"] in {"/context", "/model-context"}:
             return self._run_native_context_command(
                 request=request,
@@ -112,7 +116,8 @@ class Kernel:
                 workspace=workspace,
             )
         pending = [
-            approval for approval in self.approvals.list_pending()
+            approval
+            for approval in self.approvals.list_pending()
             if approval.session_id == request.session_id
         ]
         if pending:
@@ -131,21 +136,17 @@ class Kernel:
 
             budgets = BudgetConfig()
         run_id = uuid4()
-        deps = RuntimeDeps(
+        deps = self.executor.dependencies(
             session_id=request.session_id,
-            root_run_id=run_id,
+            run_id=run_id,
             budgets=budgets,
-            events=self.events,
-            semaphore=asyncio.Semaphore(budgets.max_concurrency),
             workspace=workspace,
             security_mode=request.security_mode,
             approved_scopes=self._approved_scopes(request.session_id),
             tool_catalog=self._tool_catalog(),
-            state_db=self.config.content_root / "state.db",
             provider_id=active_provider_id,
             model_name=active_model,
             context_window_tokens=context_window_tokens,
-            secret_resolver=self.secrets.resolve,
         )
         self.active_runs[request.session_id] = deps
         self.events.append(
@@ -154,23 +155,35 @@ class Kernel:
                 run_id=run_id,
                 agent_id=request.agent_id,
                 type="session.started",
-                payload={"prompt": display_prompt, "budgets": budgets.model_dump(),
-                         "skills": request.skills,
-                         "resolved_command": command["command"] if command else None,
-                         "workspace": str(workspace), "security_mode": request.security_mode,
-                         "provider_id": active_provider_id, "model": active_model,
-                         "reasoning": request.reasoning,
-                         "trigger": request.trigger,
-                         "cron_job_id": request.cron_job_id,
-                         "images": [{"name": item.name, "media_type": item.media_type}
-                                    for item in request.images]},
+                payload={
+                    "prompt": display_prompt,
+                    "budgets": budgets.model_dump(),
+                    "skills": request.skills,
+                    "resolved_command": command["command"] if command else None,
+                    "workspace": str(workspace),
+                    "security_mode": request.security_mode,
+                    "provider_id": active_provider_id,
+                    "model": active_model,
+                    "reasoning": request.reasoning,
+                    "trigger": request.trigger,
+                    "cron_job_id": request.cron_job_id,
+                    "images": [
+                        {"name": item.name, "media_type": item.media_type}
+                        for item in request.images
+                    ],
+                },
             )
+        )
+        self.executor.transition(
+            session_id=request.session_id,
+            run_id=run_id,
+            agent_id=request.agent_id,
+            state="running",
+            previous="created",
         )
         try:
             if request.images and not supports_vision:
-                request = await self._prepare_images_with_local_vision(
-                    request, run_id
-                )
+                request = await self._prepare_images_with_local_vision(request, run_id)
             root_agent = self._build_agent(
                 request.agent_id,
                 agents,
@@ -183,9 +196,7 @@ class Kernel:
                 security_mode=request.security_mode,
                 provider_override=request.provider_id,
                 model_override=request.model,
-                force_compaction=bool(
-                    command and command["command"] == "/compact"
-                ),
+                force_compaction=bool(command and command["command"] == "/compact"),
             )
             message_history = self._latest_message_history(
                 request.session_id,
@@ -208,21 +219,23 @@ class Kernel:
                 )
             if isinstance(result.output, DeferredToolRequests):
                 response = self._persist_pending(request, run_id, deps, result)
-                self.events.append(Event(
-                    session_id=request.session_id, run_id=run_id, agent_id=request.agent_id,
-                    type="session.completed", payload=response.model_dump(mode="json"),
-                ))
+                self.executor.suspend(
+                    session_id=request.session_id,
+                    run_id=run_id,
+                    agent_id=request.agent_id,
+                )
                 self.active_runs.pop(request.session_id, None)
                 return response
             usage = asdict(result.usage)
             messages = json.loads(result.all_messages_json())
+            snapshot_payload = self.snapshots.save(request.session_id, messages)
             self.events.append(
                 Event(
                     session_id=request.session_id,
                     run_id=run_id,
                     agent_id=request.agent_id,
                     type="messages.snapshot",
-                    payload={"messages": messages},
+                    payload=snapshot_payload,
                 )
             )
             response = RunResult(
@@ -239,9 +252,7 @@ class Kernel:
         except asyncio.CancelledError as exc:
             response = self._failed(request, run_id, RunStatus.CANCELLED, exc, retryable=False)
         except UsageLimitExceeded as exc:
-            response = self._failed(
-                request, run_id, RunStatus.PARTIAL, exc, retryable=False
-            )
+            response = self._failed(request, run_id, RunStatus.PARTIAL, exc, retryable=False)
         except ModelHTTPError as exc:
             response = self._failed(
                 request,
@@ -256,25 +267,13 @@ class Kernel:
             response = self._failed(request, run_id, RunStatus.FAILED, exc, retryable=True)
         if not response.artifacts:
             response.artifacts = self._run_artifacts(request.session_id, run_id)
-        self.events.append(
-            Event(
-                session_id=request.session_id,
-                run_id=run_id,
-                agent_id=request.agent_id,
-                type="session.completed",
-                payload=response.model_dump(mode="json"),
-            )
-        )
+        self.executor.terminal(response)
         self.active_runs.pop(request.session_id, None)
         return response
 
-    async def _prepare_images_with_local_vision(
-        self, request: RunRequest, run_id
-    ) -> RunRequest:
+    async def _prepare_images_with_local_vision(self, request: RunRequest, run_id) -> RunRequest:
         observations: list[str] = []
-        artifact_root = (
-            self.events.directory / "artifacts" / str(request.session_id)
-        )
+        artifact_root = self.events.directory / "artifacts" / str(request.session_id)
         for index, image in enumerate(request.images, 1):
             artifact_id = uuid4().hex
             directory = artifact_root / artifact_id
@@ -295,77 +294,84 @@ class Kernel:
                 "path": str(target),
                 "sha256": hashlib.sha256(raw).hexdigest(),
             }
-            self.events.append(Event(
-                session_id=request.session_id,
-                run_id=run_id,
-                agent_id="kernel",
-                type="artifact.created",
-                payload=payload,
-            ))
-            self.events.append(Event(
-                session_id=request.session_id,
-                run_id=run_id,
-                agent_id="kernel",
-                type="tool.started",
-                payload={
-                    "tool_name": "image_inspect",
-                    "automatic": True,
-                    "artifact_id": artifact_id,
-                    "path": str(target),
-                },
-            ))
-            try:
-                observation = await self.vision.analyze_bytes(
-                    raw,
-                    image.media_type,
-                    (
-                        f"Analyse cette image pour répondre à la demande suivante : "
-                        f"{request.prompt}"
-                    ),
-                    "balanced",
-                )
-            except VisionUnavailable as exc:
-                self.events.append(Event(
+            self.events.append(
+                Event(
                     session_id=request.session_id,
                     run_id=run_id,
                     agent_id="kernel",
-                    type="tool.failed",
+                    type="artifact.created",
+                    payload=payload,
+                )
+            )
+            self.events.append(
+                Event(
+                    session_id=request.session_id,
+                    run_id=run_id,
+                    agent_id="kernel",
+                    type="tool.started",
                     payload={
                         "tool_name": "image_inspect",
                         "automatic": True,
                         "artifact_id": artifact_id,
-                        "error_type": type(exc).__name__,
-                        "message": str(exc),
+                        "path": str(target),
                     },
-                ))
+                )
+            )
+            try:
+                observation = await self.vision.analyze_bytes(
+                    raw,
+                    image.media_type,
+                    (f"Analyse cette image pour répondre à la demande suivante : {request.prompt}"),
+                    "balanced",
+                )
+            except VisionUnavailable as exc:
+                self.events.append(
+                    Event(
+                        session_id=request.session_id,
+                        run_id=run_id,
+                        agent_id="kernel",
+                        type="tool.failed",
+                        payload={
+                            "tool_name": "image_inspect",
+                            "automatic": True,
+                            "artifact_id": artifact_id,
+                            "error_type": type(exc).__name__,
+                            "message": str(exc),
+                        },
+                    )
+                )
                 raise
-            self.events.append(Event(
-                session_id=request.session_id,
-                run_id=run_id,
-                agent_id="kernel",
-                type="tool.completed",
-                payload={
-                    "tool_name": "image_inspect",
-                    "automatic": True,
-                    "artifact_id": artifact_id,
-                    "observation_chars": len(observation),
-                    "preview": observation[:500],
-                },
-            ))
+            self.events.append(
+                Event(
+                    session_id=request.session_id,
+                    run_id=run_id,
+                    agent_id="kernel",
+                    type="tool.completed",
+                    payload={
+                        "tool_name": "image_inspect",
+                        "automatic": True,
+                        "artifact_id": artifact_id,
+                        "observation_chars": len(observation),
+                        "preview": observation[:500],
+                    },
+                )
+            )
             observations.append(
                 f"## Image {index}: {safe_name}\n"
                 f"Artifact reference: `{artifact_id}`\n\n{observation}"
             )
-        augmented = "\n\n".join([
-            request.prompt,
-            (
-                "# Local vision observations\n\n"
-                "The active model is text-only. Gemma 4 analyzed the attached "
-                "images locally; use these observations as image evidence and "
-                "state any remaining uncertainty."
-            ),
-            *observations,
-        ])
+        augmented = "\n\n".join(
+            [
+                request.prompt,
+                (
+                    "# Local vision observations\n\n"
+                    "The active model is text-only. Gemma 4 analyzed the attached "
+                    "images locally; use these observations as image evidence and "
+                    "state any remaining uncertainty."
+                ),
+                *observations,
+            ]
+        )
         return request.model_copy(update={"prompt": augmented, "images": []})
 
     def set_security_mode(self, session_id, mode: SecurityMode) -> bool:
@@ -373,19 +379,27 @@ class Kernel:
         if deps is None:
             return False
         deps.security_mode = mode
-        self.events.append(Event(
-            session_id=session_id,
-            run_id=deps.root_run_id,
-            agent_id="kernel",
-            type="security.changed",
-            payload={"security_mode": mode.value},
-        ))
+        self.events.append(
+            Event(
+                session_id=session_id,
+                run_id=deps.root_run_id,
+                agent_id="kernel",
+                type="security.changed",
+                payload={"security_mode": mode.value},
+            )
+        )
         return True
 
     def list_approvals(self) -> list[ApprovalRequest]:
         return self.approvals.list_pending()
 
-    async def resolve_approval(self, approval_id, approved: bool) -> RunResult:
+    async def resolve_approval(
+        self,
+        approval_id,
+        approved: bool,
+        *,
+        _pre_resolved: bool = False,
+    ) -> RunResult:
         from uuid import UUID
 
         approval_uuid = approval_id if isinstance(approval_id, UUID) else UUID(str(approval_id))
@@ -393,48 +407,52 @@ class Kernel:
         if state is None:
             raise ConfigurationError(f"unknown pending approval: {approval_uuid}")
         approval = ApprovalRequest.model_validate(state["approval"])
-        if "decision" in state:
+        if "decision" in state and not _pre_resolved:
             raise ConfigurationError(f"approval already resolved: {approval_uuid}")
         request = RunRequest.model_validate(state["request"])
         agents = self.config.agents()
         provider_factory = ProviderFactory(self.config.providers())
         active_provider_id = request.provider_id or agents[request.agent_id].provider
         provider_config = provider_factory.get_config(active_provider_id)
-        active_model = (
-            request.model or agents[request.agent_id].model or provider_config.model
-        )
+        active_model = request.model or agents[request.agent_id].model or provider_config.model
         budgets = request.budgets or agents[request.agent_id].budgets
         if budgets is None:
             from .models import BudgetConfig
+
             budgets = BudgetConfig()
         run_id = approval.run_id
-        deps = RuntimeDeps(
-            session_id=request.session_id, root_run_id=run_id, budgets=budgets,
-            events=self.events, semaphore=asyncio.Semaphore(budgets.max_concurrency),
+        deps = self.executor.dependencies(
+            session_id=request.session_id,
+            run_id=run_id,
+            budgets=budgets,
             workspace=(request.workspace or self.config.root).resolve(),
             security_mode=request.security_mode,
             approved_scopes=self._approved_scopes(request.session_id),
             tool_catalog=self._tool_catalog(),
-            state_db=self.config.content_root / "state.db",
             provider_id=active_provider_id,
             model_name=active_model,
-            context_window_tokens=self._model_context_window(
-                active_provider_id, active_model
-            ),
-            secret_resolver=self.secrets.resolve,
+            context_window_tokens=self._model_context_window(active_provider_id, active_model),
         )
-        resolution = ApprovalResolution(approval_id=approval_uuid, approved=approved)
-        self.events.append(Event(
-            session_id=request.session_id, run_id=run_id, agent_id=approval.agent_id,
-            type="approval.resolved",
-            payload={**resolution.model_dump(mode="json"), "action_family": approval.action_family,
-                     "path": approval.path},
-        ))
-        self.approvals.save_state(
-            approval,
-            {key: value for key, value in state.items() if key != "approval"}
-            | {"decision": approved},
-        )
+        if not _pre_resolved:
+            resolution = ApprovalResolution(approval_id=approval_uuid, approved=approved)
+            self.events.append(
+                Event(
+                    session_id=request.session_id,
+                    run_id=run_id,
+                    agent_id=approval.agent_id,
+                    type="approval.resolved",
+                    payload={
+                        **resolution.model_dump(mode="json"),
+                        "action_family": approval.action_family,
+                        "path": approval.path,
+                    },
+                )
+            )
+            self.approvals.save_state(
+                approval,
+                {key: value for key, value in state.items() if key != "approval"}
+                | {"decision": approved},
+            )
         batch = self.approvals.states_for_run(request.session_id, approval.run_id)
         unresolved = [item for item in batch if "decision" not in item]
         if unresolved:
@@ -448,10 +466,6 @@ class Kernel:
                     "before the run can continue."
                 ),
             )
-            self.events.append(Event(
-                session_id=request.session_id, run_id=run_id, agent_id=request.agent_id,
-                type="session.completed", payload=response.model_dump(mode="json"),
-            ))
             return response
 
         # A session must only have one suspended model run. Older approvals can
@@ -460,16 +474,18 @@ class Kernel:
         for stale in self.approvals.list_pending():
             if stale.session_id != request.session_id or stale.run_id == approval.run_id:
                 continue
-            self.events.append(Event(
-                session_id=request.session_id,
-                run_id=stale.run_id,
-                agent_id=stale.agent_id,
-                type="approval.superseded",
-                payload={
-                    "approval_id": str(stale.approval_id),
-                    "superseded_by_run_id": str(approval.run_id),
-                },
-            ))
+            self.events.append(
+                Event(
+                    session_id=request.session_id,
+                    run_id=stale.run_id,
+                    agent_id=stale.agent_id,
+                    type="approval.superseded",
+                    payload={
+                        "approval_id": str(stale.approval_id),
+                        "superseded_by_run_id": str(approval.run_id),
+                    },
+                )
+            )
             self.approvals.remove(stale.approval_id)
 
         approval_results = {}
@@ -477,29 +493,54 @@ class Kernel:
             batch_approval = ApprovalRequest.model_validate(item["approval"])
             batch_approved = bool(item["decision"])
             if batch_approved:
-                deps.approved_scopes.add(
-                    (batch_approval.action_family, batch_approval.path)
-                )
+                deps.approved_scopes.add((batch_approval.action_family, batch_approval.path))
                 approval_results[batch_approval.tool_call_id] = ToolApproved()
             else:
-                approval_results[batch_approval.tool_call_id] = ToolDenied(
-                    "Denied by the user."
-                )
+                approval_results[batch_approval.tool_call_id] = ToolDenied("Denied by the user.")
             self.approvals.remove(batch_approval.approval_id)
         agent = self._build_agent(
-            request.agent_id, agents, provider_factory, budgets, depth=1,
-            skills=self.config.skills(), runtime_skills=request.skills,
-            workspace=deps.workspace, security_mode=request.security_mode,
-            provider_override=request.provider_id, model_override=request.model,
+            request.agent_id,
+            agents,
+            provider_factory,
+            budgets,
+            depth=1,
+            skills=self.config.skills(),
+            runtime_skills=request.skills,
+            workspace=deps.workspace,
+            security_mode=request.security_mode,
+            provider_override=request.provider_id,
+            model_override=request.model,
         )
         messages = ModelMessagesTypeAdapter.validate_json(state["messages"])
         deferred = DeferredToolResults(approvals=approval_results)
         self.active_runs[request.session_id] = deps
+        self.events.append(
+            Event(
+                session_id=request.session_id,
+                run_id=run_id,
+                agent_id=request.agent_id,
+                type="run.resumed",
+                payload={"state": "resuming", "approval_count": len(batch)},
+            )
+        )
+        self.events.append(
+            Event(
+                session_id=request.session_id,
+                run_id=run_id,
+                agent_id=request.agent_id,
+                type="run.transitioned",
+                payload={"state": "running", "from": "resuming"},
+            )
+        )
         try:
             result = await agent.run(
-                None, message_history=messages, deferred_tool_results=deferred, deps=deps,
+                None,
+                message_history=messages,
+                deferred_tool_results=deferred,
+                deps=deps,
                 model_settings=ModelSettings(thinking=request.reasoning)
-                if request.reasoning else None,
+                if request.reasoning
+                else None,
                 usage_limits=UsageLimits(request_limit=budgets.max_requests_per_agent),
             )
         except asyncio.CancelledError as exc:
@@ -509,33 +550,79 @@ class Kernel:
         else:
             if isinstance(result.output, DeferredToolRequests):
                 self.active_runs.pop(request.session_id, None)
-                return self._persist_pending(request, run_id, deps, result)
+                response = self._persist_pending(request, run_id, deps, result)
+                self.executor.suspend(
+                    session_id=request.session_id,
+                    run_id=run_id,
+                    agent_id=request.agent_id,
+                )
+                return response
             response = RunResult(
-                session_id=request.session_id, run_id=run_id, agent_id=request.agent_id,
-                status=RunStatus.SUCCESS, output=str(result.output), usage=asdict(result.usage),
+                session_id=request.session_id,
+                run_id=run_id,
+                agent_id=request.agent_id,
+                status=RunStatus.SUCCESS,
+                output=str(result.output),
+                usage=asdict(result.usage),
             )
-            self.events.append(Event(
-                session_id=request.session_id, run_id=run_id, agent_id=request.agent_id,
-                type="messages.snapshot",
-                payload={"messages": json.loads(result.all_messages_json())},
-            ))
-        self.events.append(Event(
-            session_id=request.session_id, run_id=run_id, agent_id=request.agent_id,
-            type="session.completed", payload=response.model_dump(mode="json"),
-        ))
+            self.events.append(
+                Event(
+                    session_id=request.session_id,
+                    run_id=run_id,
+                    agent_id=request.agent_id,
+                    type="messages.snapshot",
+                    payload=self.snapshots.save(
+                        request.session_id,
+                        json.loads(result.all_messages_json()),
+                    ),
+                )
+            )
+        self.executor.terminal(response)
         self.active_runs.pop(request.session_id, None)
         return response
 
-    async def resolve_approval_batch(
-        self, approval_ids: list, approved: bool
-    ) -> RunResult:
+    async def resolve_approval_batch(self, approval_ids: list, approved: bool) -> RunResult:
         if not approval_ids:
             raise ConfigurationError("approval batch cannot be empty")
-        result: RunResult | None = None
-        for approval_id in approval_ids:
-            result = await self.resolve_approval(approval_id, approved)
-        assert result is not None
-        return result
+        ids = [item if isinstance(item, UUID) else UUID(str(item)) for item in approval_ids]
+        pending_states = [self.approvals.load_state(item) for item in ids]
+        if any(state is None for state in pending_states):
+            raise ConfigurationError("approval batch contains an unknown approval")
+        pending_approvals = [
+            ApprovalRequest.model_validate(state["approval"])
+            for state in pending_states
+            if state is not None
+        ]
+        if len({(item.session_id, item.run_id) for item in pending_approvals}) != 1:
+            raise ConfigurationError("all approvals in a batch must belong to the same run")
+        try:
+            states = self.approvals.resolve_many(ids, approved)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ConfigurationError(str(exc)) from exc
+        approvals = [ApprovalRequest.model_validate(item["approval"]) for item in states]
+        for approval in approvals:
+            resolution = ApprovalResolution(
+                approval_id=approval.approval_id,
+                approved=approved,
+            )
+            self.events.append(
+                Event(
+                    session_id=approval.session_id,
+                    run_id=approval.run_id,
+                    agent_id=approval.agent_id,
+                    type="approval.resolved",
+                    payload={
+                        **resolution.model_dump(mode="json"),
+                        "action_family": approval.action_family,
+                        "path": approval.path,
+                    },
+                )
+            )
+        return await self.resolve_approval(
+            approvals[-1].approval_id,
+            approved,
+            _pre_resolved=True,
+        )
 
     def _run_native_secret_command(
         self,
@@ -549,9 +636,7 @@ class Kernel:
             if command == "/secret":
                 parts = request.prompt.strip().split(maxsplit=2)
                 if len(parts) != 3:
-                    raise ValueError(
-                        "syntaxe attendue : `/secret NOM_DE_VARIABLE valeur`"
-                    )
+                    raise ValueError("syntaxe attendue : `/secret NOM_DE_VARIABLE valeur`")
                 name, value = parts[1], parts[2]
                 self.secrets.set(name, value)
                 output = (
@@ -560,13 +645,10 @@ class Kernel:
                 )
             else:
                 names = self.secrets.names()
-                output = (
-                    "### Secrets disponibles\n\n"
-                    + (
-                        "\n".join(f"- `{name}`" for name in names)
-                        if names else
-                        "Aucun secret enregistré."
-                    )
+                output = "### Secrets disponibles\n\n" + (
+                    "\n".join(f"- `{name}`" for name in names)
+                    if names
+                    else "Aucun secret enregistré."
                 )
             return RunResult(
                 session_id=request.session_id,
@@ -582,9 +664,7 @@ class Kernel:
                 agent_id=request.agent_id,
                 status=RunStatus.FAILED,
                 output=f"Impossible d’exécuter `{command}` : {exc}",
-                errors=[
-                    RunError(type="validation", message=str(exc), retryable=False)
-                ],
+                errors=[RunError(type="validation", message=str(exc), retryable=False)],
             )
 
     def _persist_pending(self, request, run_id, deps, result) -> RunResult:
@@ -592,12 +672,17 @@ class Kernel:
             approval = deps.pending_approvals.get(call.tool_call_id)
             if approval is None:
                 continue
-            self.approvals.save_state(approval, {
-                "request": request.model_dump(mode="json"),
-                "messages": result.all_messages_json().decode(),
-            })
+            self.approvals.save_state(
+                approval,
+                {
+                    "request": request.model_dump(mode="json"),
+                    "messages": result.all_messages_json().decode(),
+                },
+            )
         return RunResult(
-            session_id=request.session_id, run_id=run_id, agent_id=request.agent_id,
+            session_id=request.session_id,
+            run_id=run_id,
+            agent_id=request.agent_id,
             status=RunStatus.APPROVAL_PENDING,
             output="Approval required before the run can continue.",
         )
@@ -619,49 +704,57 @@ class Kernel:
             if manifest.enabled
             for tool in manifest.tools
         ]
-        indexed.append({
-            "name": "agent_delegate",
-            "description": "Delegate an isolated task to one configured child agent.",
-            "category": "orchestration",
-            "risk_tags": [],
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "agent_name": {"type": "string"},
-                    "task": {"type": "string"},
+        indexed.append(
+            {
+                "name": "agent_delegate",
+                "description": "Delegate an isolated task to one configured child agent.",
+                "category": "orchestration",
+                "risk_tags": [],
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "agent_name": {"type": "string"},
+                        "task": {"type": "string"},
+                    },
+                    "required": ["agent_name", "task"],
+                    "additionalProperties": False,
                 },
-                "required": ["agent_name", "task"],
-                "additionalProperties": False,
-            },
-            "output_schema": {"type": "string"},
-            "timeout_seconds": None,
-            "cancellable": True,
-            "persistent": False,
-            "module": "kernel",
-        })
-        indexed.append({
-            "name": "subagent_spawn",
-            "description": "Spawn a neutral isolated subagent with a temporary role and bounded task.",
-            "category": "orchestration",
-            "risk_tags": [],
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "role": {"type": "string"},
-                    "task": {"type": "string"},
-                    "expected_output": {"type": "string"},
-                    "scope": {"type": "array", "items": {"type": "string"}},
-                    "justification": {"type": "string"},
+                "output_schema": {"type": "string"},
+                "timeout_seconds": None,
+                "cancellable": True,
+                "persistent": False,
+                "module": "kernel",
+            }
+        )
+        indexed.append(
+            {
+                "name": "subagent_spawn",
+                "description": (
+                    "Spawn a neutral isolated subagent with a temporary role and bounded task."
+                ),
+                "category": "orchestration",
+                "risk_tags": [],
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "role": {"type": "string"},
+                        "task": {"type": "string"},
+                        "expected_output": {"type": "string"},
+                        "scope": {"type": "array", "items": {"type": "string"}},
+                        "plan_id": {"type": "string"},
+                        "step_id": {"type": "string"},
+                        "justification": {"type": "string"},
+                    },
+                    "required": ["role", "task", "expected_output"],
+                    "additionalProperties": False,
                 },
-                "required": ["role", "task", "expected_output"],
-                "additionalProperties": False,
-            },
-            "output_schema": {"type": "object"},
-            "timeout_seconds": None,
-            "cancellable": True,
-            "persistent": False,
-            "module": "kernel",
-        })
+                "output_schema": {"type": "object"},
+                "timeout_seconds": None,
+                "cancellable": True,
+                "persistent": False,
+                "module": "kernel",
+            }
+        )
         return indexed
 
     def _run_artifacts(self, session_id, run_id) -> list[RunArtifact]:
@@ -683,27 +776,29 @@ class Kernel:
         workspace: Path,
     ) -> RunResult:
         run_id = uuid4()
-        self.events.append(Event(
-            session_id=request.session_id,
-            run_id=run_id,
-            agent_id=request.agent_id,
-            type="session.started",
-            payload={
-                "prompt": display_prompt,
-                "skills": request.skills,
-                "resolved_command": command,
-                "workspace": str(workspace),
-                "security_mode": request.security_mode,
-                "provider_id": provider_id,
-                "model": model_name,
-                "reasoning": request.reasoning,
-                "trigger": request.trigger,
-                "cron_job_id": request.cron_job_id,
-                "images": [],
-            },
-        ))
+        self.events.append(
+            Event(
+                session_id=request.session_id,
+                run_id=run_id,
+                agent_id=request.agent_id,
+                type="session.started",
+                payload={
+                    "prompt": display_prompt,
+                    "skills": request.skills,
+                    "resolved_command": command,
+                    "workspace": str(workspace),
+                    "security_mode": request.security_mode,
+                    "provider_id": provider_id,
+                    "model": model_name,
+                    "reasoning": request.reasoning,
+                    "trigger": request.trigger,
+                    "cron_job_id": request.cron_job_id,
+                    "images": [],
+                },
+            )
+        )
         if command == "/model-context":
-            raw_value = display_prompt.lstrip()[len(command):].strip()
+            raw_value = display_prompt.lstrip()[len(command) :].strip()
             try:
                 size = self._parse_context_size(raw_value)
                 self._store_model_context_window(provider_id, model_name, size)
@@ -732,48 +827,51 @@ class Kernel:
             events = self.events.read(request.session_id)
             snapshot = next(
                 (
-                    event for event in reversed(events)
+                    event
+                    for event in reversed(events)
                     if event.type == "messages.snapshot"
-                    and isinstance(event.payload.get("messages"), list)
+                    and self.snapshots.load(request.session_id, event.payload) is not None
                 ),
                 None,
             )
+            snapshot_messages = (
+                self.snapshots.load(request.session_id, snapshot.payload) if snapshot else []
+            )
             estimated = self._estimate_tokens(
                 json.dumps(
-                    snapshot.payload["messages"] if snapshot else [],
+                    snapshot_messages,
                     ensure_ascii=False,
                 )
             )
-            ratio = (
-                estimated / context_window_tokens
-                if context_window_tokens else None
+            ratio = estimated / context_window_tokens if context_window_tokens else None
+            compactions = [event for event in events if event.type == "context.compacted"]
+            output = "\n".join(
+                [
+                    "### État du contexte",
+                    "",
+                    f"- Provider : `{provider_id}`",
+                    f"- Modèle : `{model_name or 'non résolu'}`",
+                    (
+                        f"- Fenêtre connue : **{context_window_tokens:,} tokens**"
+                        if context_window_tokens
+                        else "- Fenêtre connue : **non**"
+                    ),
+                    f"- Historique estimé : **{estimated:,} tokens**",
+                    (
+                        f"- Occupation estimée : **{ratio:.1%}**"
+                        if ratio is not None
+                        else "- Occupation estimée : indisponible"
+                    ),
+                    (
+                        f"- Seuil automatique (70 %) : "
+                        f"**{math.floor(context_window_tokens * 0.7):,} tokens**"
+                        if context_window_tokens
+                        else "- Seuil automatique : inconnu — utilise `/model-context <tokens>`"
+                    ),
+                    f"- Compactions enregistrées : **{len(compactions)}**",
+                    "- Source de vérité complète : journal JSONL append-only",
+                ]
             )
-            compactions = [
-                event for event in events if event.type == "context.compacted"
-            ]
-            output = "\n".join([
-                "### État du contexte",
-                "",
-                f"- Provider : `{provider_id}`",
-                f"- Modèle : `{model_name or 'non résolu'}`",
-                (
-                    f"- Fenêtre connue : **{context_window_tokens:,} tokens**"
-                    if context_window_tokens else "- Fenêtre connue : **non**"
-                ),
-                f"- Historique estimé : **{estimated:,} tokens**",
-                (
-                    f"- Occupation estimée : **{ratio:.1%}**"
-                    if ratio is not None else "- Occupation estimée : indisponible"
-                ),
-                (
-                    f"- Seuil automatique (70 %) : "
-                    f"**{math.floor(context_window_tokens * 0.7):,} tokens**"
-                    if context_window_tokens else
-                    "- Seuil automatique : inconnu — utilise `/model-context <tokens>`"
-                ),
-                f"- Compactions enregistrées : **{len(compactions)}**",
-                "- Source de vérité complète : journal JSONL append-only",
-            ])
             status = RunStatus.SUCCESS
             event_type = "context.inspected"
             event_payload = {
@@ -784,13 +882,15 @@ class Kernel:
                 "estimated_ratio": ratio,
                 "compaction_count": len(compactions),
             }
-        self.events.append(Event(
-            session_id=request.session_id,
-            run_id=run_id,
-            agent_id="kernel",
-            type=event_type,
-            payload=event_payload,
-        ))
+        self.events.append(
+            Event(
+                session_id=request.session_id,
+                run_id=run_id,
+                agent_id="kernel",
+                type=event_type,
+                payload=event_payload,
+            )
+        )
         result = RunResult(
             session_id=request.session_id,
             run_id=run_id,
@@ -799,16 +899,19 @@ class Kernel:
             output=output,
             errors=(
                 [RunError(type="validation", message=event_payload["error"])]
-                if status is RunStatus.FAILED else []
+                if status is RunStatus.FAILED
+                else []
             ),
         )
-        self.events.append(Event(
-            session_id=request.session_id,
-            run_id=run_id,
-            agent_id=request.agent_id,
-            type="session.completed",
-            payload=result.model_dump(mode="json"),
-        ))
+        self.events.append(
+            Event(
+                session_id=request.session_id,
+                run_id=run_id,
+                agent_id=request.agent_id,
+                type="session.completed",
+                payload=result.model_dump(mode="json"),
+            )
+        )
         return result
 
     @staticmethod
@@ -840,24 +943,22 @@ class Kernel:
         except json.JSONDecodeError as exc:
             raise ConfigurationError(f"registre invalide : {exc}") from exc
         models = [
-            item for item in data.get("models", [])
-            if not (
-                item.get("provider_id") == provider_id
-                and item.get("model") == model_name
-            )
+            item
+            for item in data.get("models", [])
+            if not (item.get("provider_id") == provider_id and item.get("model") == model_name)
         ]
-        models.append({
-            "provider_id": provider_id,
-            "model": model_name,
-            "context_window_tokens": size,
-            "source": "user-confirmed-rppl",
-            "updated_at": datetime.now().astimezone().isoformat(),
-        })
+        models.append(
+            {
+                "provider_id": provider_id,
+                "model": model_name,
+                "context_window_tokens": size,
+                "source": "user-confirmed-rppl",
+                "updated_at": datetime.now().astimezone().isoformat(),
+            }
+        )
         data = {
             "schema_version": 1,
-            "models": sorted(
-                models, key=lambda item: (item["provider_id"], item["model"])
-            ),
+            "models": sorted(models, key=lambda item: (item["provider_id"], item["model"])),
         }
         temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         temporary.write_text(
@@ -876,38 +977,53 @@ class Kernel:
         """Return a measured context status without creating a model turn."""
         window = self._model_context_window(provider_id, model_name)
         estimated = 0
+        observed = None
         compaction_count = 0
+        calibration_factor = 1.0
+        calibration_samples = 0
+        session = None
         if session_id is not None:
-            events = self.events.read(session_id)
-            snapshot = next(
-                (
-                    event for event in reversed(events)
-                    if event.type == "messages.snapshot"
-                    and isinstance(event.payload.get("messages"), list)
-                ),
-                None,
+            projected = self.events.projection.context(session_id)
+            if projected is not None:
+                estimated = int(projected["estimated_history_tokens"])
+                observed = projected["observed_input_tokens"]
+                compaction_count = int(projected["compaction_count"])
+                calibration_factor = float(projected["calibration_factor"])
+                calibration_samples = int(projected["calibration_samples"])
+            session = self.events.projection.session(session_id)
+        try:
+            agent = self.config.agents()["main"]
+            skills = self.config.skills(
+                Path(session["workspace"]) if session and session.get("workspace") else None
             )
-            if snapshot is not None:
-                estimated = self._estimate_tokens(
-                    json.dumps(snapshot.payload["messages"], ensure_ascii=False)
-                )
-            compaction_count = sum(
-                event.type == "context.compacted" for event in events
+            overhead = self._context_overhead_tokens(
+                agent,
+                skills,
+                "",
+                Path(session["workspace"]) if session and session.get("workspace") else None,
             )
-        ratio = estimated / window if window else None
+        except (KeyError, OSError, ValueError):
+            overhead = 0
+        calibrated_history = round(estimated * calibration_factor)
+        complete_estimate = calibrated_history + overhead
+        gauge_value = int(observed) if isinstance(observed, int) else complete_estimate
+        ratio = gauge_value / window if window else None
         return {
             "provider_id": provider_id,
             "model": model_name,
             "context_window_tokens": window,
             "estimated_history_tokens": estimated,
+            "estimated_request_tokens": complete_estimate,
+            "observed_input_tokens": observed,
             "estimated_ratio": ratio,
             "compaction_threshold_ratio": 0.7,
             "compaction_count": compaction_count,
+            "measurement": "observed" if observed is not None else "estimated",
+            "calibration_factor": calibration_factor,
+            "calibration_samples": calibration_samples,
         }
 
-    def _model_context_window(
-        self, provider_id: str, model_name: str | None
-    ) -> int | None:
+    def _model_context_window(self, provider_id: str, model_name: str | None) -> int | None:
         if not model_name:
             return None
         path = self.config.content_root / "models-infos.json"
@@ -942,9 +1058,7 @@ class Kernel:
             self._secret_catalog_instruction(),
         ]
         components.extend(
-            skills[name].instructions
-            for name in agent_config.skills
-            if name in skills
+            skills[name].instructions for name in agent_config.skills if name in skills
         )
         try:
             components.append(self.module_registry.index_path.read_text(encoding="utf-8"))
@@ -956,15 +1070,17 @@ class Kernel:
         names = self.secrets.names()
         if not names:
             return ""
-        return "\n".join([
-            "# Available secret references",
-            (
-                "Only these variable names are visible. Their values are held by "
-                "the kernel and must never be requested from secrets.json or "
-                "repeated in arguments, output, or traces."
-            ),
-            *(f"- `{name}`" for name in names),
-        ])
+        return "\n".join(
+            [
+                "# Available secret references",
+                (
+                    "Only these variable names are visible. Their values are held by "
+                    "the kernel and must never be requested from secrets.json or "
+                    "repeated in arguments, output, or traces."
+                ),
+                *(f"- `{name}`" for name in names),
+            ]
+        )
 
     def _latest_message_history(
         self,
@@ -982,12 +1098,13 @@ class Kernel:
         snapshot_index = -1
         for index in range(len(events) - 1, -1, -1):
             event = events[index]
-            if event.type == "messages.snapshot" and isinstance(
-                event.payload.get("messages"), list
-            ):
-                history = list(ModelMessagesTypeAdapter.validate_python(
-                    event.payload["messages"]
-                ))
+            messages = (
+                self.snapshots.load(session_id, event.payload)
+                if event.type == "messages.snapshot"
+                else None
+            )
+            if messages is not None:
+                history = list(ModelMessagesTypeAdapter.validate_python(messages))
                 if not supports_vision:
                     history = _without_images(history)
                 snapshot_index = index
@@ -996,23 +1113,25 @@ class Kernel:
         # A provider or usage-limit failure may happen before Pydantic returns a
         # model snapshot. Preserve those user turns from the append-only audit
         # so “continue” in the same session still has the original request.
-        for event in events[snapshot_index + 1:]:
+        for event in events[snapshot_index + 1 :]:
             if (
                 event.type == "session.started"
                 and event.run_id != run_id
                 and isinstance(event.payload.get("prompt"), str)
             ):
-                history.append(ModelRequest(parts=[
-                    UserPromptPart(content=event.payload["prompt"])
-                ]))
+                history.append(
+                    ModelRequest(parts=[UserPromptPart(content=event.payload["prompt"])])
+                )
         if context_window_tokens is None and run_id is not None:
-            self.events.append(Event(
-                session_id=session_id,
-                run_id=run_id,
-                agent_id=agent_id,
-                type="context.window_unknown",
-                payload={"compaction_threshold": 0.7},
-            ))
+            self.events.append(
+                Event(
+                    session_id=session_id,
+                    run_id=run_id,
+                    agent_id=agent_id,
+                    type="context.window_unknown",
+                    payload={"compaction_threshold": 0.7},
+                )
+            )
         if not history:
             return None
         # Compaction is intentionally deferred to ContextWindowCompaction,
@@ -1043,13 +1162,9 @@ class Kernel:
                     message_history=message_history,
                     deps=deps,
                     model_settings=(
-                        ModelSettings(thinking=request.reasoning)
-                        if request.reasoning
-                        else None
+                        ModelSettings(thinking=request.reasoning) if request.reasoning else None
                     ),
-                    usage_limits=UsageLimits(
-                        request_limit=budgets.max_requests_per_agent
-                    ),
+                    usage_limits=UsageLimits(request_limit=budgets.max_requests_per_agent),
                 )
             except ModelHTTPError as exc:
                 if not _transient_http_status(exc.status_code):
@@ -1146,9 +1261,7 @@ class Kernel:
                 model_name=resolved_model_name,
                 context_window_tokens=context_window_tokens,
             ),
-            self.workspace_maps.build(
-                workspace or self.config.root
-            ).render(),
+            self.workspace_maps.build(workspace or self.config.root).render(),
             self._secret_catalog_instruction(),
             config.instructions,
         ]
@@ -1180,9 +1293,9 @@ class Kernel:
                         and (not selected or tool_def.name in selected)
                     ),
                 )
-                toolsets.append(GuardianToolset(
-                    filtered, agent_id=agent_id, risks=risks, timeouts=timeouts
-                ))
+                toolsets.append(
+                    GuardianToolset(filtered, agent_id=agent_id, risks=risks, timeouts=timeouts)
+                )
             for module_toolset in module.toolsets():
                 neutral_filtered = FilteredToolset(
                     module_toolset,
@@ -1213,9 +1326,7 @@ class Kernel:
                 agent_id=config.id,
                 context_window_tokens=context_window_tokens,
                 all_tool_names=known_tools,
-                overhead_tokens=self._context_overhead_tokens(
-                    config, skills, "", workspace
-                ),
+                overhead_tokens=self._context_overhead_tokens(config, skills, "", workspace),
                 force=force_compaction,
             )
         )
@@ -1237,9 +1348,7 @@ class Kernel:
                     model_name=resolved_model_name,
                     context_window_tokens=context_window_tokens,
                 ),
-                self.workspace_maps.build(
-                    workspace or self.config.root
-                ).render(),
+                self.workspace_maps.build(workspace or self.config.root).render(),
                 self._secret_catalog_instruction(),
                 (
                     "You are a neutral ephemeral subagent. Your role, bounded task, "
@@ -1253,17 +1362,13 @@ class Kernel:
                     agent_id="subagent",
                     context_window_tokens=context_window_tokens,
                     all_tool_names=known_tools,
-                    overhead_tokens=self._context_overhead_tokens(
-                        config, skills, "", workspace
-                    ),
+                    overhead_tokens=self._context_overhead_tokens(config, skills, "", workspace),
                 )
             ],
             output_type=str,
             max_concurrency=budgets.max_concurrency,
         )
-        toolsets.append(
-            make_neutral_subagent_toolset(config.id, neutral_agent, budgets)
-        )
+        toolsets.append(make_neutral_subagent_toolset(config.id, neutral_agent, budgets))
         return Agent(
             provider_factory.build(
                 provider_override or config.provider,
@@ -1279,8 +1384,8 @@ class Kernel:
             max_concurrency=budgets.max_concurrency,
         )
 
-    @staticmethod
-    def _failed(request, run_id, status, exc, retryable) -> RunResult:
+    def _failed(self, request, run_id, status, exc, retryable) -> RunResult:
+        message = self.secrets.redact(str(exc))
         return RunResult(
             session_id=request.session_id,
             run_id=run_id,
@@ -1289,7 +1394,7 @@ class Kernel:
             errors=[
                 RunError(
                     type=type(exc).__name__,
-                    message=str(exc),
+                    message=str(message),
                     retryable=retryable,
                 )
             ],
@@ -1305,9 +1410,7 @@ def _without_images(messages: list[Any]) -> list[Any]:
             continue
         parts: list[Any] = []
         for part in message.parts:
-            if not isinstance(part, UserPromptPart) or not isinstance(
-                part.content, list
-            ):
+            if not isinstance(part, UserPromptPart) or not isinstance(part.content, list):
                 parts.append(part)
                 continue
             content: list[Any] = []
@@ -1316,8 +1419,7 @@ def _without_images(messages: list[Any]) -> list[Any]:
                     isinstance(item, BinaryContent) and item.is_image
                 ):
                     content.append(
-                        "[Image jointe omise : le modèle actif ne prend pas "
-                        "en charge la vision.]"
+                        "[Image jointe omise : le modèle actif ne prend pas en charge la vision.]"
                     )
                 else:
                     content.append(item)

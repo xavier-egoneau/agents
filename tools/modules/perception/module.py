@@ -18,7 +18,11 @@ MAX_TEXT_BYTES = 200_000
 
 def _path(ctx: RunContext[Any], raw: str) -> Path:
     candidate = Path(raw).expanduser()
-    return (ctx.deps.workspace / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+    return (
+        (ctx.deps.workspace / candidate).resolve()
+        if not candidate.is_absolute()
+        else candidate.resolve()
+    )
 
 
 def _failure(kind: str, message: str) -> dict[str, Any]:
@@ -115,9 +119,9 @@ async def image_inspect(
                 if separator and key in {"pixelWidth", "pixelHeight"}:
                     data[key] = int(value.strip())
     try:
-        observation = await LocalVisionService(
-            ctx.deps.events.directory.parent
-        ).analyze_path(target, question, detail)
+        observation = await LocalVisionService(ctx.deps.events.directory.parent).analyze_path(
+            target, question, detail
+        )
     except VisionUnavailable as exc:
         return _failure("vision_unavailable", str(exc))
     data["observation"] = observation
@@ -159,7 +163,9 @@ async def screenshot_capture(
 
 class PerceptionModule:
     def toolsets(self):
-        return [FunctionToolset(tools=[pdf_extract, ocr_extract, image_inspect, screenshot_capture])]
+        return [
+            FunctionToolset(tools=[pdf_extract, ocr_extract, image_inspect, screenshot_capture])
+        ]
 
     def instructions(self):
         return [

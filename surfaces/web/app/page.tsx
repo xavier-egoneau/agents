@@ -1,6 +1,16 @@
 "use client";
 
-import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  Fragment,
+  SetStateAction,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -37,9 +47,13 @@ type SlashCommand = {
 type PlanStep = {
   id: string;
   title: string;
-  status: "pending" | "in_progress" | "completed" | "blocked" | "failed";
+  status: "pending" | "claimed" | "in_progress" | "validating" | "completed" | "blocked" | "failed";
   dependencies: string[];
   parallelizable: boolean;
+  write_scopes?: string[];
+  claimed_by?: string | null;
+  lease_until?: string | null;
+  run_id?: string | null;
   note?: string | null;
 };
 type CurrentPlan = {
@@ -329,7 +343,8 @@ type SessionSummary = {
 };
 
 const visibleTraceTypes = new Set([
-  "session.started", "agent.started", "agent.retrying", "agent.completed", "agent.failed",
+  "session.started", "run.suspended", "run.resumed", "run.transitioned",
+  "agent.queued", "agent.started", "agent.retrying", "agent.completed", "agent.failed",
   "tool.proposed", "guardian.reviewed", "approval.requested", "approval.resolved",
   "tool.started", "tool.completed", "tool.failed", "tool.trashed", "session.completed",
   "security.changed", "context.pre_compaction_snapshot", "context.compacted",
@@ -397,8 +412,16 @@ function ProcessTrace({
   events: TraceEvent[];
   live: boolean;
 }) {
+  return <ProcessTraceState key={live ? "live" : "terminal"} events={events} live={live} />;
+}
+
+function ProcessTraceState({
+  events, live,
+}: {
+  events: TraceEvent[];
+  live: boolean;
+}) {
   const [expanded, setExpanded] = useState(live);
-  useEffect(() => setExpanded(live), [live]);
   const visible = events.filter((event) => visibleTraceTypes.has(event.type));
   if (visible.length === 0) return null;
   return (
@@ -477,6 +500,8 @@ function MessageArtifacts({
         return artifact.kind === "image" || artifact.media_type.startsWith("image/") ? (
           <figure key={artifact.artifact_id}>
             <a href={source} target="_blank" rel="noreferrer">
+              {/* Runtime artifact URLs are not statically optimizable by Next Image. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={source} alt={artifact.name} loading="lazy" />
             </a>
             <figcaption>{artifact.name}</figcaption>
@@ -497,15 +522,61 @@ const starterPrompts = [
   "Résume les décisions récentes avec leurs conséquences.",
 ];
 
+type ConversationState = {
+  messages: Message[];
+  approvals: Approval[];
+  activeSessionId: string | null;
+  traceEvents: TraceEvent[];
+  activeRunId: string | null;
+};
+
+type ConversationAction = {
+  type: "set";
+  field: keyof ConversationState;
+  value: unknown;
+};
+
+function conversationReducer(
+  state: ConversationState,
+  action: ConversationAction,
+): ConversationState {
+  const current = state[action.field];
+  const next = typeof action.value === "function"
+    ? (action.value as (previous: typeof current) => typeof current)(current)
+    : action.value;
+  return { ...state, [action.field]: next };
+}
+
 export default function Home() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [catalogError, setCatalogError] = useState("");
   const [agentId, setAgentId] = useState("main");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [prompt, setPrompt] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [conversation, dispatchConversation] = useReducer(conversationReducer, {
+    messages: [],
+    approvals: [],
+    activeSessionId: null,
+    traceEvents: [],
+    activeRunId: null,
+  });
+  const { messages, approvals, activeSessionId, traceEvents, activeRunId } = conversation;
+  const setMessages = useCallback((value: SetStateAction<Message[]>) => {
+    dispatchConversation({ type: "set", field: "messages", value });
+  }, []);
+  const setApprovals = useCallback((value: SetStateAction<Approval[]>) => {
+    dispatchConversation({ type: "set", field: "approvals", value });
+  }, []);
+  const setActiveSessionId = useCallback((value: SetStateAction<string | null>) => {
+    dispatchConversation({ type: "set", field: "activeSessionId", value });
+  }, []);
+  const setTraceEvents = useCallback((value: SetStateAction<TraceEvent[]>) => {
+    dispatchConversation({ type: "set", field: "traceEvents", value });
+  }, []);
+  const setActiveRunId = useCallback((value: SetStateAction<string | null>) => {
+    dispatchConversation({ type: "set", field: "activeRunId", value });
+  }, []);
   const [running, setRunning] = useState(false);
-  const [approvals, setApprovals] = useState<Approval[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState("");
   const [workspaceInput, setWorkspaceInput] = useState("");
@@ -513,9 +584,6 @@ export default function Home() {
   const [pickingWorkspace, setPickingWorkspace] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(new Set());
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [approvalProgress, setApprovalProgress] = useState("");
   const [securityMode, setSecurityMode] = useState<"safe" | "limited" | "power">("limited");
   const [providerId, setProviderId] = useState("");
@@ -872,6 +940,9 @@ export default function Home() {
       }
     }
     setSessions(nextSessions);
+  // openSession is a hoisted event action; adding it would recreate this polling
+  // callback on every render without changing the synchronized inputs.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWorkspace]);
 
   useEffect(() => {

@@ -39,9 +39,7 @@ def render_skill(skills: dict[str, SkillConfig], name: str) -> str:
         "from this directory."
     )
     tool_guidance = (
-        "\nRequested tools: " + ", ".join(skill.allowed_tools) + "."
-        if skill.allowed_tools
-        else ""
+        "\nRequested tools: " + ", ".join(skill.allowed_tools) + "." if skill.allowed_tools else ""
     )
     return (
         f"# Skill: {skill.name}\n\n{skill.description}\n\n{support}{tool_guidance}"

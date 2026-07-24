@@ -12,7 +12,11 @@ from pydantic_ai import FunctionToolset, RunContext
 
 def _path(ctx: RunContext[Any], raw: str) -> Path:
     candidate = Path(raw).expanduser()
-    return (ctx.deps.workspace / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+    return (
+        (ctx.deps.workspace / candidate).resolve()
+        if not candidate.is_absolute()
+        else candidate.resolve()
+    )
 
 
 def _result(data: Any, **metadata: Any) -> dict[str, Any]:
@@ -53,7 +57,8 @@ async def csv_query(
         selected = columns or fields
         unknown = set(selected) - set(fields)
         if unknown or (where_column and where_column not in fields):
-            raise ValueError(f"unknown columns: {sorted(unknown | ({where_column} - set(fields) if where_column else set()))}")
+            invalid = unknown | ({where_column} - set(fields) if where_column else set())
+            raise ValueError(f"unknown columns: {sorted(invalid)}")
         rows = []
         total = 0
         for row in reader:

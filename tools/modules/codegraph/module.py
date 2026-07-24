@@ -20,8 +20,10 @@ DEFAULT_TIMEOUT = 90
 
 def _failure(kind: str, message: str, **metadata: Any) -> dict[str, Any]:
     return {
-        "ok": False, "data": None,
-        "error": {"type": kind, "message": message}, "metadata": metadata,
+        "ok": False,
+        "data": None,
+        "error": {"type": kind, "message": message},
+        "metadata": metadata,
     }
 
 
@@ -58,21 +60,18 @@ async def _run(
     env = {**os.environ, "CODEGRAPH_TELEMETRY": "0", "DO_NOT_TRACK": "1"}
     if prepare:
         command = "sync" if (workspace / ".codegraph").is_dir() else "init"
-        prepared = await _subprocess(
-            [executable, command, "."], workspace, timeout_seconds, env
-        )
+        prepared = await _subprocess([executable, command, "."], workspace, timeout_seconds, env)
         if isinstance(prepared, dict):
             return prepared
         if prepared.returncode != 0:
             return _failure(
                 "index_failed",
                 f"CodeGraph {command} exited {prepared.returncode}.",
-                stdout=prepared.stdout[:4000], stderr=prepared.stderr[:4000],
+                stdout=prepared.stdout[:4000],
+                stderr=prepared.stderr[:4000],
                 returncode=prepared.returncode,
             )
-    completed = await _subprocess(
-        [executable, *arguments], workspace, timeout_seconds, env
-    )
+    completed = await _subprocess([executable, *arguments], workspace, timeout_seconds, env)
     if isinstance(completed, dict):
         return completed
     stdout, stderr = completed.stdout or "", completed.stderr or ""
@@ -94,8 +93,9 @@ async def _run(
         "ok": completed.returncode == 0,
         "data": data if completed.returncode == 0 else None,
         "error": (
-            None if completed.returncode == 0 else
-            {"type": "execution", "message": f"CodeGraph exited {completed.returncode}."}
+            None
+            if completed.returncode == 0
+            else {"type": "execution", "message": f"CodeGraph exited {completed.returncode}."}
         ),
         "metadata": {
             "workspace": str(workspace),
@@ -120,8 +120,10 @@ async def _subprocess(
         )
     except subprocess.TimeoutExpired as exc:
         return _failure(
-            "timeout", f"CodeGraph timed out after {timeout}s.",
-            stdout=_text(exc.stdout)[:4000], stderr=_text(exc.stderr)[:4000],
+            "timeout",
+            f"CodeGraph timed out after {timeout}s.",
+            stdout=_text(exc.stdout)[:4000],
+            stderr=_text(exc.stderr)[:4000],
         )
     except OSError as exc:
         return _failure("execution", str(exc))
@@ -135,25 +137,28 @@ def _text(value: bytes | str | None) -> str:
 
 def _artifact(ctx: RunContext[Any], name: str, content: str) -> dict[str, Any]:
     artifact_id = uuid4().hex
-    root = (
-        ctx.deps.events.directory / "artifacts"
-        / str(ctx.deps.session_id) / artifact_id
-    )
+    root = ctx.deps.events.directory / "artifacts" / str(ctx.deps.session_id) / artifact_id
     root.mkdir(parents=True, exist_ok=True)
     path = root / name
     path.write_text(content, encoding="utf-8")
     payload = {
-        "artifact_id": artifact_id, "name": name, "media_type": "text/plain",
-        "kind": "file", "bytes": path.stat().st_size, "path": str(path),
+        "artifact_id": artifact_id,
+        "name": name,
+        "media_type": "text/plain",
+        "kind": "file",
+        "bytes": path.stat().st_size,
+        "path": str(path),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
-    ctx.deps.events.append(Event(
-        session_id=ctx.deps.session_id,
-        run_id=ctx.deps.root_run_id,
-        agent_id="kernel",
-        type="artifact.created",
-        payload=payload,
-    ))
+    ctx.deps.events.append(
+        Event(
+            session_id=ctx.deps.session_id,
+            run_id=ctx.deps.root_run_id,
+            agent_id="kernel",
+            type="artifact.created",
+            payload=payload,
+        )
+    )
     return {key: payload[key] for key in ("artifact_id", "name", "bytes", "sha256")}
 
 
@@ -230,9 +235,7 @@ async def codegraph_affected(
     return await _run(ctx, ["affected", *files, "--depth", str(depth), "--json"])
 
 
-async def codegraph_status(
-    ctx: RunContext[Any], justification: str = ""
-) -> dict[str, Any]:
+async def codegraph_status(ctx: RunContext[Any], justification: str = "") -> dict[str, Any]:
     """Read index statistics and staleness without rebuilding it."""
     return await _run(ctx, ["status", ".", "--json"], prepare=False)
 
@@ -243,8 +246,8 @@ async def codegraph_sync(
     justification: str = "",
 ) -> dict[str, Any]:
     """Explicitly synchronize or fully rebuild the technical project index."""
-    command = "index" if full else (
-        "sync" if (ctx.deps.workspace / ".codegraph").is_dir() else "init"
+    command = (
+        "index" if full else ("sync" if (ctx.deps.workspace / ".codegraph").is_dir() else "init")
     )
     arguments = [command, "."]
     if full:
@@ -254,11 +257,21 @@ async def codegraph_sync(
 
 class CodeGraphModule:
     def toolsets(self):
-        return [FunctionToolset(tools=[
-            codegraph_explore, codegraph_query, codegraph_node,
-            codegraph_callers, codegraph_callees, codegraph_impact,
-            codegraph_affected, codegraph_status, codegraph_sync,
-        ])]
+        return [
+            FunctionToolset(
+                tools=[
+                    codegraph_explore,
+                    codegraph_query,
+                    codegraph_node,
+                    codegraph_callers,
+                    codegraph_callees,
+                    codegraph_impact,
+                    codegraph_affected,
+                    codegraph_status,
+                    codegraph_sync,
+                ]
+            )
+        ]
 
     def instructions(self):
         return [

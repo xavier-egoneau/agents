@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -67,7 +68,9 @@ class SecurityModeBody(BaseModel):
 
 
 class PlanStepStatusBody(BaseModel):
-    status: str = Field(pattern=r"^(pending|in_progress|completed|blocked|failed)$")
+    status: str = Field(
+        pattern=r"^(pending|claimed|in_progress|validating|completed|blocked|failed)$"
+    )
 
 
 class WorkspaceRequest(BaseModel):
@@ -114,10 +117,12 @@ def _session_messages(events: list) -> list[dict[str, object]]:
         if event.type == "session.completed":
             completions[str(event.run_id)] = event
         elif event.type == "artifact.created":
-            artifacts.setdefault(str(event.run_id), []).append({
-                key: event.payload.get(key)
-                for key in ("artifact_id", "name", "media_type", "kind", "bytes")
-            })
+            artifacts.setdefault(str(event.run_id), []).append(
+                {
+                    key: event.payload.get(key)
+                    for key in ("artifact_id", "name", "media_type", "kind", "bytes")
+                }
+            )
 
     visible: list[dict[str, object]] = []
     for started in starts:
@@ -137,13 +142,15 @@ def _session_messages(events: list) -> list[dict[str, object]]:
                 if isinstance(item, dict) and item.get("message")
             )
         if output:
-            visible.append({
-                "role": "assistant",
-                "content": output,
-                "run_id": run_id,
-                "error": completed.payload.get("status") in {"failed", "timeout"},
-                "artifacts": artifacts.get(run_id, []),
-            })
+            visible.append(
+                {
+                    "role": "assistant",
+                    "content": output,
+                    "run_id": run_id,
+                    "error": completed.payload.get("status") in {"failed", "timeout"},
+                    "artifacts": artifacts.get(run_id, []),
+                }
+            )
     return visible
 
 
@@ -152,10 +159,40 @@ def create_app(root: Path | str = ".") -> FastAPI:
     kernel = Kernel(root)
     running_tasks: dict[UUID, asyncio.Task[RunResult]] = {}
     cron_service = CronService(project.content_root / "state.db")
-    cron_service.import_legacy_once(
-        project.content_root / "agents" / "crons.json", project.root
+    cron_service.import_legacy_once(project.content_root / "agents" / "crons.json", project.root)
+
+    async def launch(request: RunRequest) -> RunResult:
+        if request.session_id in running_tasks:
+            raise SchedulerError(f"Un run est déjà actif pour la session {request.session_id}")
+        task = asyncio.create_task(kernel.run(request))
+        running_tasks[request.session_id] = task
+        try:
+            return await task
+        finally:
+            running_tasks.pop(request.session_id, None)
+
+    scheduler = CronScheduler(cron_service, launch)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        scheduler_task = asyncio.create_task(
+            scheduler.run_forever(),
+            name="amk-cron-scheduler",
+        )
+        try:
+            yield
+        finally:
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except asyncio.CancelledError:
+                pass
+
+    app = FastAPI(
+        title="Agentic Markdown Kernel",
+        version="0.1.0",
+        lifespan=lifespan,
     )
-    app = FastAPI(title="Agentic Markdown Kernel", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -186,37 +223,6 @@ def create_app(root: Path | str = ".") -> FastAPI:
             provider_id=resolved_provider,
             model_name=model or provider.model,
         )
-
-    async def launch(request: RunRequest) -> RunResult:
-        if request.session_id in running_tasks:
-            raise SchedulerError(
-                f"Un run est déjà actif pour la session {request.session_id}"
-            )
-        task = asyncio.create_task(kernel.run(request))
-        running_tasks[request.session_id] = task
-        try:
-            return await task
-        finally:
-            running_tasks.pop(request.session_id, None)
-
-    scheduler = CronScheduler(cron_service, launch)
-    scheduler_task: asyncio.Task[None] | None = None
-
-    @app.on_event("startup")
-    async def start_scheduler() -> None:
-        nonlocal scheduler_task
-        scheduler_task = asyncio.create_task(
-            scheduler.run_forever(), name="amk-cron-scheduler"
-        )
-
-    @app.on_event("shutdown")
-    async def stop_scheduler() -> None:
-        if scheduler_task is not None:
-            scheduler_task.cancel()
-            try:
-                await scheduler_task
-            except asyncio.CancelledError:
-                pass
 
     def workspace_info(raw_path: str | Path) -> WorkspaceInfo:
         import os
@@ -479,7 +485,9 @@ def create_app(root: Path | str = ".") -> FastAPI:
     @app.put("/api/admin/agents/{agent_id}")
     async def update_agent(agent_id: str, payload: MarkdownResourceBody) -> dict[str, str]:
         if payload.id != agent_id:
-            raise HTTPException(status_code=422, detail="Le renommage d’un agent n’est pas implicite")
+            raise HTTPException(
+                status_code=422, detail="Le renommage d’un agent n’est pas implicite"
+            )
         target = project.content_root / "agents" / f"{agent_id}.md"
         if not target.exists():
             raise HTTPException(status_code=404, detail="Agent introuvable")
@@ -545,7 +553,9 @@ def create_app(root: Path | str = ".") -> FastAPI:
     @app.put("/api/admin/skills/{skill_id}")
     async def update_skill(skill_id: str, payload: MarkdownResourceBody) -> dict[str, str]:
         if payload.id != skill_id:
-            raise HTTPException(status_code=422, detail="Le renommage d’une skill n’est pas implicite")
+            raise HTTPException(
+                status_code=422, detail="Le renommage d’une skill n’est pas implicite"
+            )
         target = project.content_root / "skills" / skill_id / "SKILL.md"
         if not target.exists():
             raise HTTPException(status_code=404, detail="Skill introuvable")
@@ -562,9 +572,7 @@ def create_app(root: Path | str = ".") -> FastAPI:
 
     @app.delete("/api/admin/skills/{skill_id}")
     async def delete_skill(skill_id: str) -> dict[str, str]:
-        references = [
-            agent.id for agent in project.agents().values() if skill_id in agent.skills
-        ]
+        references = [agent.id for agent in project.agents().values() if skill_id in agent.skills]
         if references:
             raise HTTPException(
                 status_code=409,
@@ -578,9 +586,7 @@ def create_app(root: Path | str = ".") -> FastAPI:
         return {"id": skill_id, "status": "deleted"}
 
     def provider_document() -> dict[str, object]:
-        return json.loads(
-            (project.content_root / "providers.json").read_text(encoding="utf-8")
-        )
+        return json.loads((project.content_root / "providers.json").read_text(encoding="utf-8"))
 
     def save_provider_document(document: dict[str, object]) -> None:
         ProviderRegistry.model_validate(document)
@@ -591,6 +597,7 @@ def create_app(root: Path | str = ".") -> FastAPI:
             encoding="utf-8",
         )
         os.replace(temporary, target)
+        target.chmod(0o600)
 
     @app.get("/api/admin/providers")
     async def admin_providers() -> dict[str, object]:
@@ -626,9 +633,7 @@ def create_app(root: Path | str = ".") -> FastAPI:
         return {"id": payload.id, "status": "created"}
 
     @app.put("/api/admin/providers/{provider_id}")
-    async def update_provider(
-        provider_id: str, payload: ProviderResourceBody
-    ) -> dict[str, str]:
+    async def update_provider(provider_id: str, payload: ProviderResourceBody) -> dict[str, str]:
         if payload.id != provider_id:
             raise HTTPException(status_code=422, detail="Le renommage n’est pas implicite")
         document = provider_document()
@@ -666,7 +671,8 @@ def create_app(root: Path | str = ".") -> FastAPI:
             )
         providers = document.get("providers", [])
         remaining = [
-            item for item in providers
+            item
+            for item in providers
             if not isinstance(item, dict) or item.get("id") != provider_id
         ]
         if len(remaining) == len(providers):
@@ -678,18 +684,20 @@ def create_app(root: Path | str = ".") -> FastAPI:
     @app.post("/api/runs", response_model=RunResult)
     async def run_agent(payload: WebRunRequest) -> RunResult:
         try:
-            return await launch(RunRequest(
-                prompt=payload.prompt,
-                agent_id=payload.agent_id,
-                skills=payload.skills,
-                workspace=payload.workspace or project.root,
-                security_mode=payload.security_mode,
-                session_id=payload.session_id,
-                provider_id=payload.provider_id,
-                model=payload.model,
-                reasoning=payload.reasoning,
-                images=payload.images,
-            ))
+            return await launch(
+                RunRequest(
+                    prompt=payload.prompt,
+                    agent_id=payload.agent_id,
+                    skills=payload.skills,
+                    workspace=payload.workspace or project.root,
+                    security_mode=payload.security_mode,
+                    session_id=payload.session_id,
+                    provider_id=payload.provider_id,
+                    model=payload.model,
+                    reasoning=payload.reasoning,
+                    images=payload.images,
+                )
+            )
         except SchedulerError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -706,29 +714,29 @@ def create_app(root: Path | str = ".") -> FastAPI:
             raise HTTPException(
                 status_code=409, detail="Seules les sessions interrompues peuvent être reprises"
             )
-        started = next(
-            event for event in reversed(events) if event.type == "session.started"
-        )
+        started = next(event for event in reversed(events) if event.type == "session.started")
         prompt = payload.prompt or (
             "Reprends la tâche interrompue à partir des traces, artefacts et résultats "
             "déjà persistés. Ne rejoue pas les outils déjà terminés. Vérifie l'état "
             "courant et poursuis par la prochaine action utile."
         )
         try:
-            return await launch(RunRequest(
-                prompt=prompt,
-                agent_id=started.agent_id,
-                skills=list(started.payload.get("skills", [])),
-                session_id=session_id,
-                workspace=Path(str(started.payload.get("workspace") or project.root)),
-                security_mode=SecurityMode(
-                    str(started.payload.get("security_mode") or "limited")
-                ),
-                provider_id=started.payload.get("provider_id"),
-                model=started.payload.get("model"),
-                reasoning=started.payload.get("reasoning"),
-                trigger="resume",
-            ))
+            return await launch(
+                RunRequest(
+                    prompt=prompt,
+                    agent_id=started.agent_id,
+                    skills=list(started.payload.get("skills", [])),
+                    session_id=session_id,
+                    workspace=Path(str(started.payload.get("workspace") or project.root)),
+                    security_mode=SecurityMode(
+                        str(started.payload.get("security_mode") or "limited")
+                    ),
+                    provider_id=started.payload.get("provider_id"),
+                    model=started.payload.get("model"),
+                    reasoning=started.payload.get("reasoning"),
+                    trigger="resume",
+                )
+            )
         except SchedulerError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -762,8 +770,9 @@ def create_app(root: Path | str = ".") -> FastAPI:
         try:
             return cron_service.update(job_id, payload).model_dump(mode="json")
         except SchedulerError as exc:
-            raise HTTPException(status_code=404 if "introuvable" in str(exc) else 422,
-                                detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=404 if "introuvable" in str(exc) else 422, detail=str(exc)
+            ) from exc
 
     @app.delete("/api/crons/{job_id}")
     async def delete_cron(job_id: str) -> dict[str, str]:
@@ -805,58 +814,141 @@ def create_app(root: Path | str = ".") -> FastAPI:
             status = 404 if "introuvable" in str(exc) else 409
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
-    def session_payload(session_id: UUID) -> dict[str, object]:
-        events = kernel.events.read(session_id)
-        if not events:
+    def read_event_page(
+        session_id: UUID,
+        *,
+        limit: int,
+        before_sequence: int | None = None,
+    ) -> list[dict[str, object]]:
+        positions = kernel.events.projection.event_positions(
+            session_id,
+            limit=limit,
+            before_sequence=before_sequence,
+        )
+        path = kernel.events.path_for(session_id)
+        if not positions or not path.exists():
+            return []
+        result: list[dict[str, object]] = []
+        with path.open("rb") as source:
+            for position in positions:
+                source.seek(position["source_offset"])
+                try:
+                    payload = json.loads(source.read(position["source_length"]))
+                except json.JSONDecodeError:
+                    continue
+                payload["sequence"] = position["sequence"]
+                result.append(payload)
+        return result
+
+    def session_payload(
+        session_id: UUID,
+        *,
+        message_limit: int = 200,
+        event_limit: int = 500,
+    ) -> dict[str, object]:
+        session = kernel.events.projection.session(session_id)
+        if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
-        starts = [event for event in events if event.type == "session.started"]
-        first_started = starts[0] if starts else events[0]
-        # A durable cron session can be edited between executions (notably its
-        # workspace, provider or prompt). Its current identity comes from the
-        # latest run, while its creation date remains that of the first run.
-        started = starts[-1] if starts else events[0]
-        completions = [event for event in events if event.type == "session.completed"]
-        latest = completions[-1].payload if completions else {}
-        messages = _session_messages(events)
+        messages = kernel.events.projection.messages(
+            session_id,
+            limit=max(1, min(message_limit, 500)),
+        )
+        events = read_event_page(
+            session_id,
+            limit=max(1, min(event_limit, 1000)),
+        )
         return {
-            "session_id": str(session_id),
-            "agent_id": started.agent_id,
-            "prompt": started.payload.get("prompt", ""),
-            "workspace": started.payload.get("workspace"),
-            "trigger": started.payload.get("trigger", "user"),
-            "cron_job_id": started.payload.get("cron_job_id"),
-            "created_at": first_started.timestamp.isoformat(),
-            "updated_at": events[-1].timestamp.isoformat(),
-            "status": latest.get("status", "running"),
-            "output": latest.get("output"),
-            "errors": latest.get("errors", []),
-            "event_count": len(events),
-            "messages": messages,
-            "events": [event.model_dump(mode="json") for event in events],
+            **{
+                key: value
+                for key, value in session.items()
+                if key not in {"errors_json", "last_sequence"}
+            },
+            "messages": [
+                {
+                    "role": message["role"],
+                    "content": message["content"],
+                    "run_id": message["run_id"],
+                    "error": message["status"] in {"failed", "timeout"},
+                    "artifacts": message["artifacts"],
+                }
+                for message in messages
+            ],
+            "events": events,
+            "messages_has_more": len(messages) == max(1, min(message_limit, 500)),
+            "events_has_more": len(events) == max(1, min(event_limit, 1000)),
         }
 
     @app.get("/api/sessions")
-    async def list_sessions(workspace: str | None = None) -> list[dict[str, object]]:
-        sessions: list[dict[str, object]] = []
-        for session_id in kernel.events.list_session_ids():
-            payload = session_payload(session_id)
-            if workspace is None or payload["workspace"] == str(Path(workspace).expanduser().resolve()):
-                sessions.append({
-                    key: value
-                    for key, value in payload.items()
-                    if key not in {"events", "messages"}
-                })
-        return sessions
+    async def list_sessions(
+        workspace: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, object]]:
+        resolved_workspace = str(Path(workspace).expanduser().resolve()) if workspace else None
+        rows = kernel.events.projection.list_sessions(
+            resolved_workspace,
+            limit=max(1, min(limit, 500)),
+            offset=max(0, offset),
+        )
+        return [
+            {
+                key: value
+                for key, value in row.items()
+                if key not in {"errors_json", "last_sequence"}
+            }
+            for row in rows
+        ]
 
     @app.get("/api/sessions/{session_id}")
-    async def get_session(session_id: UUID) -> dict[str, object]:
-        return session_payload(session_id)
+    async def get_session(
+        session_id: UUID,
+        message_limit: int = 200,
+        event_limit: int = 500,
+    ) -> dict[str, object]:
+        return session_payload(
+            session_id,
+            message_limit=message_limit,
+            event_limit=event_limit,
+        )
+
+    @app.get("/api/sessions/{session_id}/event-page")
+    async def get_event_page(
+        session_id: UUID,
+        limit: int = 200,
+        before_sequence: int | None = None,
+    ) -> dict[str, object]:
+        events = read_event_page(
+            session_id,
+            limit=max(1, min(limit, 1000)),
+            before_sequence=before_sequence,
+        )
+        return {
+            "events": events,
+            "has_more": len(events) == max(1, min(limit, 1000)),
+        }
+
+    @app.get("/api/sessions/{session_id}/messages")
+    async def get_messages(
+        session_id: UUID,
+        limit: int = 100,
+        before_sequence: int | None = None,
+    ) -> dict[str, object]:
+        messages = kernel.events.projection.messages(
+            session_id,
+            limit=max(1, min(limit, 500)),
+            before_sequence=before_sequence,
+        )
+        return {
+            "messages": messages,
+            "has_more": len(messages) == max(1, min(limit, 500)),
+        }
 
     @app.get("/api/artifacts/{session_id}/{artifact_id}")
     async def get_artifact(session_id: UUID, artifact_id: str) -> FileResponse:
         event = next(
             (
-                item for item in reversed(kernel.events.read(session_id))
+                item
+                for item in reversed(kernel.events.read(session_id))
                 if item.type == "artifact.created"
                 and item.payload.get("artifact_id") == artifact_id
             ),
@@ -865,9 +957,7 @@ def create_app(root: Path | str = ".") -> FastAPI:
         if event is None:
             raise HTTPException(status_code=404, detail="Artefact introuvable")
         path = Path(str(event.payload.get("path", ""))).resolve()
-        artifact_root = (
-            kernel.events.directory / "artifacts" / str(session_id)
-        ).resolve()
+        artifact_root = (kernel.events.directory / "artifacts" / str(session_id)).resolve()
         try:
             path.relative_to(artifact_root)
         except ValueError as exc:
@@ -894,21 +984,33 @@ def create_app(root: Path | str = ".") -> FastAPI:
         path = kernel.events.path_for(session_id)
 
         async def stream():
-            offset = 0
+            raw_last = request.headers.get("last-event-id", "0")
+            try:
+                sequence = max(0, int(raw_last))
+            except ValueError:
+                sequence = 0
             idle_ticks = 0
             while not await request.is_disconnected():
-                if path.exists():
-                    with path.open("r", encoding="utf-8") as source:
-                        source.seek(offset)
-                        lines = source.readlines()
-                        offset = source.tell()
-                    for line in lines:
-                        try:
-                            event = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        yield f"event: trace\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                        idle_ticks = 0
+                positions = kernel.events.projection.positions_after(
+                    session_id,
+                    sequence,
+                )
+                if positions and path.exists():
+                    with path.open("rb") as source:
+                        for position in positions:
+                            source.seek(position["source_offset"])
+                            line = source.read(position["source_length"])
+                            sequence = position["sequence"]
+                            try:
+                                event = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            yield (
+                                f"id: {sequence}\n"
+                                f"event: trace\n"
+                                f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                            )
+                            idle_ticks = 0
                 idle_ticks += 1
                 if idle_ticks % 15 == 0:
                     yield ": keepalive\n\n"
@@ -961,14 +1063,10 @@ app = create_app()
 def _validate_managed_agent(project: ProjectConfig, agent_id: str, target: Path) -> None:
     agent = project.agents().get(agent_id)
     if agent is None or Path(agent.source).resolve() != target.resolve():
-        raise ConfigurationError(
-            f"Le front matter doit déclarer exactement id: {agent_id}"
-        )
+        raise ConfigurationError(f"Le front matter doit déclarer exactement id: {agent_id}")
 
 
 def _validate_managed_skill(project: ProjectConfig, skill_id: str, target: Path) -> None:
     skill = project.skills().get(skill_id)
     if skill is None or Path(skill.source).resolve() != target.resolve():
-        raise ConfigurationError(
-            f"Le front matter doit déclarer exactement name: {skill_id}"
-        )
+        raise ConfigurationError(f"Le front matter doit déclarer exactement name: {skill_id}")

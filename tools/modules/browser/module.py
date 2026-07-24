@@ -4,13 +4,17 @@ import asyncio
 import time
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlparse
 from uuid import uuid4
 
 from playwright.async_api import Browser, Page, Playwright, async_playwright
 from pydantic_ai import FunctionToolset, RunContext
 
 from agentic_kernel.models import Event
+from agentic_kernel.network_policy import (
+    NetworkTargetError,
+    network_scope,
+    validate_http_target,
+)
 
 MAX_TEXT = 50_000
 MAX_ELEMENTS = 200
@@ -40,7 +44,8 @@ def _failure(kind: str, message: str) -> dict[str, Any]:
 
 async def _expire() -> None:
     expired = [
-        key for key, value in _sessions.items()
+        key
+        for key, value in _sessions.items()
         if time.monotonic() - value.touched_at > SESSION_TTL_SECONDS
     ]
     for key in expired:
@@ -93,12 +98,33 @@ async def _page(ctx: RunContext[Any], page_id: str) -> tuple[BrowserSession, Pag
     return current, page
 
 
-def _validate_url(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("browser accepts only absolute HTTP(S) URLs")
-    if parsed.username or parsed.password:
-        raise ValueError("credentials in browser URLs are forbidden")
+def _private_approved(ctx: RunContext[Any], url: str, initial_scope: str) -> bool:
+    scope = network_scope(url)
+    if scope is None:
+        return False
+    if bool(getattr(ctx, "tool_call_approved", False)) and scope == initial_scope:
+        return True
+    scopes = getattr(ctx.deps, "approved_scopes", set())
+    return ("network", scope) in scopes
+
+
+async def _guard_requests(context, ctx: RunContext[Any], *, initial_scope: str) -> None:
+    async def guard(route) -> None:
+        try:
+            await validate_http_target(
+                route.request.url,
+                allow_private=_private_approved(
+                    ctx,
+                    route.request.url,
+                    initial_scope,
+                ),
+            )
+        except NetworkTargetError:
+            await route.abort("blockedbyclient")
+            return
+        await route.continue_()
+
+    await context.route("**/*", guard)
 
 
 async def browser_open(
@@ -109,7 +135,9 @@ async def browser_open(
     justification: str = "",
 ) -> dict[str, Any]:
     """Open a rendered JavaScript page or navigate an existing browser page."""
-    _validate_url(url)
+    initial_scope = network_scope(url) or ""
+    allow_private = _private_approved(ctx, url, initial_scope)
+    await validate_http_target(url, allow_private=allow_private)
     current = await _session(ctx)
     if page_id:
         page = current.pages.get(page_id)
@@ -122,15 +150,18 @@ async def browser_open(
             locale="fr-FR",
             color_scheme="light",
         )
+        await _guard_requests(context, ctx, initial_scope=initial_scope)
         page = await context.new_page()
         current.pages[page_id] = page
     response = await page.goto(url, wait_until=wait_until, timeout=60_000)
-    return _result({
-        "page_id": page_id,
-        "url": page.url,
-        "title": await page.title(),
-        "status_code": response.status if response else None,
-    })
+    return _result(
+        {
+            "page_id": page_id,
+            "url": page.url,
+            "title": await page.title(),
+            "status_code": response.status if response else None,
+        }
+    )
 
 
 async def browser_snapshot(
@@ -155,23 +186,34 @@ async def browser_snapshot(
             f"[role=button],[role=link],[contenteditable=true]), {index + 1})"
         )
         refs[ref] = selector
-        elements.append({
-            "ref": ref,
-            "tag": await item.evaluate("(el) => el.tagName.toLowerCase()"),
-            "text": (await item.inner_text() if await item.evaluate(
-                "(el) => !['INPUT','TEXTAREA','SELECT'].includes(el.tagName)"
-            ) else await item.get_attribute("aria-label") or await item.get_attribute("placeholder") or "")[:300],
-            "name": await item.get_attribute("name"),
-            "type": await item.get_attribute("type"),
-        })
+        elements.append(
+            {
+                "ref": ref,
+                "tag": await item.evaluate("(el) => el.tagName.toLowerCase()"),
+                "text": (
+                    await item.inner_text()
+                    if await item.evaluate(
+                        "(el) => !['INPUT','TEXTAREA','SELECT'].includes(el.tagName)"
+                    )
+                    else await item.get_attribute("aria-label")
+                    or await item.get_attribute("placeholder")
+                    or ""
+                )[:300],
+                "name": await item.get_attribute("name"),
+                "type": await item.get_attribute("type"),
+            }
+        )
     current.refs[page_id] = refs
-    return _result({
-        "page_id": page_id,
-        "url": page.url,
-        "title": await page.title(),
-        "text": body[:MAX_TEXT],
-        "elements": elements,
-    }, truncated=len(body) > MAX_TEXT)
+    return _result(
+        {
+            "page_id": page_id,
+            "url": page.url,
+            "title": await page.title(),
+            "text": body[:MAX_TEXT],
+            "elements": elements,
+        },
+        truncated=len(body) > MAX_TEXT,
+    )
 
 
 def _selector(current: BrowserSession, page_id: str, selector_or_ref: str) -> str:
@@ -225,7 +267,9 @@ async def browser_screenshot(
     if not safe_name.casefold().endswith(".png"):
         safe_name += ".png"
     directory = (
-        ctx.deps.events.directory / "artifacts" / str(ctx.deps.session_id)
+        ctx.deps.events.directory
+        / "artifacts"
+        / str(ctx.deps.session_id)
         / str(ctx.deps.root_run_id)
     )
     directory.mkdir(parents=True, exist_ok=True)
@@ -240,13 +284,15 @@ async def browser_screenshot(
         "bytes": target.stat().st_size,
         "url": page.url,
     }
-    ctx.deps.events.append(Event(
-        session_id=ctx.deps.session_id,
-        run_id=ctx.deps.root_run_id,
-        agent_id="browser",
-        type="artifact.created",
-        payload=payload,
-    ))
+    ctx.deps.events.append(
+        Event(
+            session_id=ctx.deps.session_id,
+            run_id=ctx.deps.root_run_id,
+            agent_id="browser",
+            type="artifact.created",
+            payload=payload,
+        )
+    )
     return _result(payload)
 
 
@@ -275,10 +321,18 @@ async def browser_close(
 
 class BrowserModule:
     def toolsets(self):
-        return [FunctionToolset(tools=[
-            browser_open, browser_snapshot, browser_click, browser_type,
-            browser_screenshot, browser_close,
-        ])]
+        return [
+            FunctionToolset(
+                tools=[
+                    browser_open,
+                    browser_snapshot,
+                    browser_click,
+                    browser_type,
+                    browser_screenshot,
+                    browser_close,
+                ]
+            )
+        ]
 
     def instructions(self):
         return [

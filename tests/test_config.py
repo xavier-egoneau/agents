@@ -59,11 +59,11 @@ Review carefully.
         encoding="utf-8",
     )
     (codex_agents / "writer.toml").write_text(
-        '''name = "writer"
+        """name = "writer"
 description = "Writes changes"
 model = "gpt-5.2-codex"
 developer_instructions = "Write precise changes."
-''',
+""",
         encoding="utf-8",
     )
     agents = ProjectConfig(project).agents()
@@ -110,13 +110,15 @@ def test_native_reprise_command_is_always_available(project: Path) -> None:
     command = config.resolve_command("/reprise vérifie d'abord le serveur", project)
     assert command is not None
     assert command["kind"] == "native"
-    expanded = config.expand_native_command(
-        "/reprise vérifie d'abord le serveur", "/reprise"
-    )
+    expanded = config.expand_native_command("/reprise vérifie d'abord le serveur", "/reprise")
     assert "Ne rejoue pas" in expanded
     assert "vérifie d'abord le serveur" in expanded
     commands = {item["command"] for item in config.commands(project)}
     assert {
-        "/compact", "/context", "/model-context", "/reprise", "/secret",
+        "/compact",
+        "/context",
+        "/model-context",
+        "/reprise",
+        "/secret",
         "/secret_list",
     } <= commands

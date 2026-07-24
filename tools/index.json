@@ -2000,6 +2000,12 @@
                   "parallelizable": {
                     "default": false,
                     "type": "boolean"
+                  },
+                  "write_scopes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
                   }
                 },
                 "required": [
@@ -2058,7 +2064,9 @@
               "status": {
                 "enum": [
                   "pending",
+                  "claimed",
                   "in_progress",
+                  "validating",
                   "completed",
                   "blocked",
                   "failed"
@@ -2162,6 +2170,51 @@
           "timeout_seconds": 15.0,
           "cancellable": false,
           "persistent": false
+        },
+        {
+          "name": "plan_claim",
+          "description": "Réserver une tâche prête avec un lease et verrouiller son périmètre d’écriture.",
+          "category": "planning",
+          "risk_tags": [
+            "write"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "plan_id": {
+                "type": "string"
+              },
+              "step_id": {
+                "type": "string"
+              },
+              "claimed_by": {
+                "type": "string"
+              },
+              "lease_seconds": {
+                "default": 900,
+                "maximum": 3600,
+                "minimum": 30,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "plan_id",
+              "step_id",
+              "claimed_by"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": true
         },
         {
           "name": "evaluate_result",

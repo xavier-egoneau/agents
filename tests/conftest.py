@@ -69,4 +69,3 @@ module = Module()
         encoding="utf-8",
     )
     return tmp_path
-

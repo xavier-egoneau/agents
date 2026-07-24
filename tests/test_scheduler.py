@@ -50,10 +50,21 @@ def test_legacy_crons_are_imported_only_once(tmp_path: Path) -> None:
     workspace = tmp_path / "project"
     workspace.mkdir()
     source = tmp_path / "crons.json"
-    source.write_text(json.dumps({"jobs": [{
-        "name": "Legacy", "schedule": "0 8 * * *", "message": "Hello",
-        "enabled": True,
-    }]}), encoding="utf-8")
+    source.write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "name": "Legacy",
+                        "schedule": "0 8 * * *",
+                        "message": "Hello",
+                        "enabled": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     assert service.import_legacy_once(source, workspace) == 1
     assert service.import_legacy_once(source, workspace) == 0
     assert [job.name for job in service.list()] == ["Legacy"]
@@ -90,7 +101,8 @@ async def test_scheduler_uses_one_session_and_resumes_failed_job(tmp_path: Path)
             agent_id=request.agent_id,
             status=RunStatus.FAILED if len(calls) == 1 else RunStatus.SUCCESS,
             errors=[RunError(type="provider", message="temporary", retryable=True)]
-            if len(calls) == 1 else [],
+            if len(calls) == 1
+            else [],
         )
 
     scheduler = CronScheduler(service, launch)

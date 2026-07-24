@@ -131,6 +131,34 @@ class ToolDescriptor(BaseModel):
     persistent: bool = False
 
 
+class ToolError(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str
+    message: str
+    retryable: bool = False
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolResult(BaseModel):
+    """Framework-independent result contract shared by every executable tool."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    data: Any = None
+    error: ToolError | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_error_state(self) -> ToolResult:
+        if self.ok and self.error is not None:
+            raise ValueError("a successful tool result cannot contain an error")
+        if not self.ok and self.error is None:
+            raise ValueError("a failed tool result must contain an error")
+        return self
+
+
 class ModuleManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -270,6 +298,7 @@ class Event(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = 1
+    event_id: UUID = Field(default_factory=uuid4)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     session_id: UUID
     run_id: UUID

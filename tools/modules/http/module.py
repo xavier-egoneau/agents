@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-import asyncio
-import ipaddress
 import os
-import socket
 from typing import Annotated, Any, Literal
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import httpx
 from pydantic import Field
 from pydantic_ai import FunctionToolset, RunContext
+
+from agentic_kernel.network_policy import (
+    NetworkTargetError,
+    network_scope,
+    validate_http_target,
+)
 
 MAX_RESPONSE_BYTES = 200_000
 SENSITIVE_HEADERS = {"authorization", "proxy-authorization", "cookie", "set-cookie"}
@@ -17,32 +20,12 @@ Method = Literal["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
 
 def _failure(kind: str, message: str, **metadata: Any) -> dict[str, Any]:
-    return {"ok": False, "data": None, "error": {"type": kind, "message": message}, "metadata": metadata}
-
-
-async def _validate_public_url(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("only absolute HTTP(S) URLs are accepted")
-    if parsed.username or parsed.password:
-        raise ValueError("credentials in URLs are forbidden")
-    if parsed.hostname.casefold() == "localhost" or parsed.hostname.casefold().endswith(".local"):
-        raise ValueError("local network targets are forbidden")
-    try:
-        direct = [ipaddress.ip_address(parsed.hostname)]
-    except ValueError:
-        loop = asyncio.get_running_loop()
-        records = await loop.getaddrinfo(
-            parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80),
-            type=socket.SOCK_STREAM,
-        )
-        direct = list({ipaddress.ip_address(record[4][0]) for record in records})
-    if not direct or any(
-        address.is_private or address.is_loopback or address.is_link_local
-        or address.is_reserved or address.is_multicast or address.is_unspecified
-        for address in direct
-    ):
-        raise ValueError("private, local, reserved, and unresolved targets are forbidden")
+    return {
+        "ok": False,
+        "data": None,
+        "error": {"type": kind, "message": message},
+        "metadata": metadata,
+    }
 
 
 async def http_request(
@@ -59,9 +42,22 @@ async def http_request(
     justification: str = "",
 ) -> dict[str, Any]:
     """Perform one bounded public HTTP(S) request without exposing credentials."""
+    initial_scope = network_scope(url)
+    approved_scopes = getattr(ctx.deps, "approved_scopes", set())
+
+    def private_allowed(target: str) -> bool:
+        scope = network_scope(target)
+        return bool(
+            scope
+            and (
+                ("network", scope) in approved_scopes
+                or (bool(getattr(ctx, "tool_call_approved", False)) and scope == initial_scope)
+            )
+        )
+
     try:
-        await _validate_public_url(url)
-    except (ValueError, OSError, socket.gaierror) as exc:
+        await validate_http_target(url, allow_private=private_allowed(url))
+    except (NetworkTargetError, OSError) as exc:
         return _failure("ssrf_blocked", str(exc))
     request_headers = dict(headers or {})
     if any(name.casefold() in SENSITIVE_HEADERS for name in request_headers):
@@ -71,7 +67,9 @@ async def http_request(
         token = resolver(credential_env) if callable(resolver) else None
         token = token or os.getenv(credential_env)
         if not token:
-            return _failure("authentication", f"credential reference is unavailable: {credential_env}")
+            return _failure(
+                "authentication", f"credential reference is unavailable: {credential_env}"
+            )
         request_headers["Authorization"] = f"Bearer {token}"
     if json_body is not None and text_body is not None:
         return _failure("validation", "json_body and text_body are mutually exclusive")
@@ -90,9 +88,14 @@ async def http_request(
                 )
                 if response.is_redirect and response.headers.get("location"):
                     if redirects >= max_redirects:
-                        return _failure("redirect", "maximum redirects exceeded", redirects=redirects)
+                        return _failure(
+                            "redirect", "maximum redirects exceeded", redirects=redirects
+                        )
                     current_url = urljoin(current_url, response.headers["location"])
-                    await _validate_public_url(current_url)
+                    await validate_http_target(
+                        current_url,
+                        allow_private=private_allowed(current_url),
+                    )
                     redirects += 1
                     continue
                 raw = response.content
@@ -100,7 +103,8 @@ async def http_request(
                     response.encoding or "utf-8", errors="replace"
                 )
                 public_headers = {
-                    name: value for name, value in response.headers.items()
+                    name: value
+                    for name, value in response.headers.items()
                     if name.casefold() not in SENSITIVE_HEADERS
                 }
                 return {

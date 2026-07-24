@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import Protocol
 
 import anthropic
 import httpx
@@ -43,12 +44,101 @@ class CodexResponsesModel(OpenAIResponsesModel):
         return streamed.get()
 
 
+class ProviderAdapter(Protocol):
+    """Internal provider boundary; no SDK-specific type crosses the public API."""
+
+    def build(
+        self,
+        config: ProviderConfig,
+        model_name: str,
+        oauth: OAuthManager,
+    ) -> object: ...
+
+
+class LocalOpenAIAdapter:
+    def build(
+        self,
+        config: ProviderConfig,
+        model_name: str,
+        oauth: OAuthManager,
+    ) -> object:
+        base_url = _local_base_url(config)
+        if not base_url.endswith("/v1"):
+            base_url += "/v1"
+        return OpenAIChatModel(
+            model_name,
+            provider=OpenAIProvider(base_url=base_url, api_key="local"),
+        )
+
+
+class ApiKeyOpenAIAdapter:
+    def build(
+        self,
+        config: ProviderConfig,
+        model_name: str,
+        oauth: OAuthManager,
+    ) -> object:
+        env_name = config.api_key_env or _default_key_env(config.kind)
+        api_key = config.api_key or os.getenv(env_name)
+        if not api_key:
+            raise AuthenticationError(f"missing API key: set {env_name} or providers.json api_key")
+        return OpenAIChatModel(
+            model_name,
+            provider=OpenAIProvider(
+                base_url=config.base_url or _default_base_url(config.kind),
+                api_key=api_key,
+            ),
+        )
+
+
+class CodexOAuthAdapter:
+    def build(
+        self,
+        config: ProviderConfig,
+        model_name: str,
+        oauth: OAuthManager,
+    ) -> object:
+        credential = oauth.access_token("openai-codex")
+        client = AsyncOpenAI(
+            api_key=credential.access,
+            base_url="https://chatgpt.com/backend-api/codex",
+            default_headers={"chatgpt-account-id": credential["account_id"]},
+        )
+        return CodexResponsesModel(
+            model_name,
+            provider=OpenAIProvider(openai_client=client),
+            settings={"openai_store": False},
+        )
+
+
+class ClaudeOAuthAdapter:
+    def build(
+        self,
+        config: ProviderConfig,
+        model_name: str,
+        oauth: OAuthManager,
+    ) -> object:
+        credential = oauth.access_token("claude")
+        client = anthropic.AsyncAnthropic(
+            auth_token=credential.access,
+            default_headers={"anthropic-beta": "claude-code-20250219,oauth-2025-04-20"},
+        )
+        return AnthropicModel(
+            model_name,
+            provider=AnthropicProvider(anthropic_client=client),
+        )
+
+
 class ProviderFactory:
-    def __init__(
-        self, registry: ProviderRegistry, oauth: OAuthManager | None = None
-    ) -> None:
+    def __init__(self, registry: ProviderRegistry, oauth: OAuthManager | None = None) -> None:
         self.registry = registry
         self.oauth = oauth or OAuthManager()
+        self.adapters: dict[str, ProviderAdapter] = {
+            "local": LocalOpenAIAdapter(),
+            "api_key": ApiKeyOpenAIAdapter(),
+            "openai-codex": CodexOAuthAdapter(),
+            "claude": ClaudeOAuthAdapter(),
+        }
 
     def get_config(self, provider_id: str) -> ProviderConfig:
         for provider in self.registry.providers:
@@ -63,54 +153,13 @@ class ProviderFactory:
             raise ConfigurationError(
                 f"provider {provider_id} requires a model selected for this run"
             )
-        if config.connection_type == ConnectionType.LOCAL:
-            base_url = _local_base_url(config)
-            if not base_url.endswith("/v1"):
-                base_url += "/v1"
-            return OpenAIChatModel(
-                model_name,
-                provider=OpenAIProvider(base_url=base_url, api_key="local"),
-            )
-        if config.connection_type == ConnectionType.API_KEY:
-            env_name = config.api_key_env or _default_key_env(config.kind)
-            api_key = config.api_key or os.getenv(env_name)
-            if not api_key:
-                raise AuthenticationError(
-                    f"missing API key: set {env_name} or providers.json api_key"
-                )
-            base_url = config.base_url or _default_base_url(config.kind)
-            return OpenAIChatModel(
-                model_name,
-                provider=OpenAIProvider(base_url=base_url, api_key=api_key),
-            )
+        adapter_key = config.connection_type.value
         if config.connection_type == ConnectionType.AUTH:
-            auth_id = "openai-codex" if config.kind == "openai-codex" else "claude"
-            credential = self.oauth.access_token(auth_id)
-            if auth_id == "openai-codex":
-                client = AsyncOpenAI(
-                    api_key=credential.access,
-                    base_url="https://chatgpt.com/backend-api/codex",
-                    default_headers={"chatgpt-account-id": credential["account_id"]},
-                )
-                return CodexResponsesModel(
-                    model_name,
-                    provider=OpenAIProvider(openai_client=client),
-                    # ChatGPT's Codex endpoint is deliberately stateless from
-                    # the API's perspective. AMK owns persistence locally and
-                    # resends the validated history when an ASK is resumed.
-                    settings={"openai_store": False},
-                )
-            client = anthropic.AsyncAnthropic(
-                auth_token=credential.access,
-                default_headers={
-                    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20"
-                },
-            )
-            return AnthropicModel(
-                model_name,
-                provider=AnthropicProvider(anthropic_client=client),
-            )
-        raise ConfigurationError(f"unsupported connection type for {provider_id}")
+            adapter_key = "openai-codex" if config.kind == "openai-codex" else "claude"
+        adapter = self.adapters.get(adapter_key)
+        if adapter is None:
+            raise ConfigurationError(f"unsupported connection type for {provider_id}")
+        return adapter.build(config, model_name, self.oauth)
 
     async def check(self, provider_id: str) -> tuple[bool, str]:
         config = self.get_config(provider_id)
@@ -167,16 +216,20 @@ class ProviderFactory:
                 auth_id = "openai-codex" if config.kind == "openai-codex" else "claude"
                 credential = self.oauth.access_token(auth_id)
                 if auth_id == "openai-codex":
-                    headers.update({
-                        "authorization": f"Bearer {credential.access}",
-                        "chatgpt-account-id": credential["account_id"],
-                    })
+                    headers.update(
+                        {
+                            "authorization": f"Bearer {credential.access}",
+                            "chatgpt-account-id": credential["account_id"],
+                        }
+                    )
                 else:
-                    headers.update({
-                        "authorization": f"Bearer {credential.access}",
-                        "anthropic-version": "2023-06-01",
-                        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
-                    })
+                    headers.update(
+                        {
+                            "authorization": f"Bearer {credential.access}",
+                            "anthropic-version": "2023-06-01",
+                            "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+                        }
+                    )
             if not base_url:
                 raise ConfigurationError("provider has no model-list endpoint")
             candidates: list[tuple[str, dict[str, str] | None]] = [
@@ -209,8 +262,7 @@ class ProviderFactory:
                         names = [
                             item.get("id") or item.get("name") or item.get("slug")
                             for item in items
-                            if isinstance(item, dict)
-                            and item.get("visibility") != "hide"
+                            if isinstance(item, dict) and item.get("visibility") != "hide"
                         ]
                         live = sorted({name for name in names if isinstance(name, str)})
                         if live:

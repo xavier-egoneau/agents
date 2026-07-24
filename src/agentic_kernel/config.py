@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import tomllib
 from pathlib import Path
@@ -12,7 +12,6 @@ from pydantic import ValidationError
 
 from .errors import ConfigurationError
 from .models import AgentConfig, ProviderRegistry, SkillConfig
-
 
 NATIVE_RPPL_COMMANDS: dict[str, dict[str, str]] = {
     "/compact": {
@@ -69,6 +68,10 @@ class ProjectConfig:
         self.root = Path(root).resolve()
         self.content_root = self.root / "content-agents"
         self.tools_root = self.root / "tools"
+        for sensitive in ("providers.json", "secrets.json"):
+            path = self.content_root / sensitive
+            if path.exists():
+                path.chmod(0o600)
 
     def system_instructions(self) -> str:
         path = self.content_root / "system.md"
@@ -182,11 +185,7 @@ class ProjectConfig:
                 raw = amk.get("commands", raw)
             if isinstance(cody, dict):
                 raw = cody.get("commands", raw)
-            descriptions = (
-                amk.get("command_descriptions", {})
-                if isinstance(amk, dict)
-                else {}
-            )
+            descriptions = amk.get("command_descriptions", {}) if isinstance(amk, dict) else {}
             for value in _string_list(raw):
                 command = "/" + value.strip().lstrip("/").lower()
                 if command == "/":
@@ -215,7 +214,7 @@ class ProjectConfig:
         if definition is None:
             return prompt
         stripped = prompt.lstrip()
-        suffix = stripped[len(command):].strip()
+        suffix = stripped[len(command) :].strip()
         return definition["prompt"] + (
             f"\n\nPrécision de l’utilisateur : {suffix}" if suffix else ""
         )
@@ -229,9 +228,7 @@ class ProjectConfig:
                     "id": skill.name,
                     "description": skill.description,
                     "source": str(Path(skill.source).relative_to(self.root)),
-                    "sha256": hashlib.sha256(
-                        Path(skill.source).read_bytes()
-                    ).hexdigest(),
+                    "sha256": hashlib.sha256(Path(skill.source).read_bytes()).hexdigest(),
                 }
                 for skill in sorted(skills.values(), key=lambda item: item.name)
             ],
@@ -256,7 +253,7 @@ class ProjectConfig:
             raise ConfigurationError(f"invalid disabled-tools file {path}: {exc}") from exc
         values = data.get("tools") if isinstance(data, dict) else data
         if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
-            raise ConfigurationError(f"{path} must contain a string list or {{\"tools\": [...]}}")
+            raise ConfigurationError(f'{path} must contain a string list or {{"tools": [...]}}')
         return set(values)
 
     def _markdown_agent(self, path: Path, default_provider: str) -> AgentConfig:
@@ -266,9 +263,7 @@ class ProjectConfig:
         provider = header.get("provider") or _provider_for_model(model, default_provider)
         description = header.get("description") or f"Agent loaded from {path.name}"
         declared_tools = _string_list(header.get("tools", []))
-        disallowed = _string_list(
-            header.get("disallowedTools", header.get("disallowed-tools", []))
-        )
+        disallowed = _string_list(header.get("disallowedTools", header.get("disallowed-tools", [])))
         compatibility_notes = []
         if declared_tools:
             compatibility_notes.append(
@@ -279,9 +274,7 @@ class ProjectConfig:
                 "Tools disallowed by the imported agent: " + ", ".join(disallowed) + "."
             )
         if header.get("permissionMode"):
-            compatibility_notes.append(
-                f"Imported permission mode: {header['permissionMode']}."
-            )
+            compatibility_notes.append(f"Imported permission mode: {header['permissionMode']}.")
         instructions = "\n\n".join([body, *compatibility_notes])
         data = {
             "id": agent_id,

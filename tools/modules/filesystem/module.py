@@ -22,7 +22,11 @@ _locks: dict[str, asyncio.Lock] = {}
 
 def _success(payload: dict[str, Any], **metadata: Any) -> dict[str, Any]:
     return {
-        "ok": True, "data": payload, "error": None, "metadata": metadata, **payload,
+        "ok": True,
+        "data": payload,
+        "error": None,
+        "metadata": metadata,
+        **payload,
     }
 
 
@@ -59,17 +63,19 @@ async def read(
         output = encoded[:MAX_READ_BYTES].decode("utf-8", errors="ignore")
     consumed = len(output.splitlines())
     has_more = byte_truncated or offset - 1 + len(selected) < len(lines)
-    return _success({
-        "ok": True,
-        "path": str(target),
-        "content": output,
-        "offset": offset,
-        "lines_returned": consumed,
-        "total_lines": len(lines),
-        "truncated": has_more,
-        "next_offset": offset + consumed if has_more else None,
-        "sha256": hashlib.sha256(raw).hexdigest(),
-    })
+    return _success(
+        {
+            "ok": True,
+            "path": str(target),
+            "content": output,
+            "offset": offset,
+            "lines_returned": consumed,
+            "total_lines": len(lines),
+            "truncated": has_more,
+            "next_offset": offset + consumed if has_more else None,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    )
 
 
 async def list(
@@ -82,19 +88,23 @@ async def list(
     target = _target(ctx, path)
     if not target.is_dir():
         raise ValueError(f"not a directory: {target}")
-    entries = await asyncio.to_thread(lambda: sorted(
-        target.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold(), item.name)
-    ))
-    return _success({
-        "ok": True,
-        "path": str(target),
-        "entries": [
-            {"name": item.name, "kind": "directory" if item.is_dir() else "file"}
-            for item in entries[:limit]
-        ],
-        "truncated": len(entries) > limit,
-        "total_entries": len(entries),
-    })
+    entries = await asyncio.to_thread(
+        lambda: sorted(
+            target.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold(), item.name)
+        )
+    )
+    return _success(
+        {
+            "ok": True,
+            "path": str(target),
+            "entries": [
+                {"name": item.name, "kind": "directory" if item.is_dir() else "file"}
+                for item in entries[:limit]
+            ],
+            "truncated": len(entries) > limit,
+            "total_entries": len(entries),
+        }
+    )
 
 
 async def write(
@@ -117,11 +127,15 @@ async def write(
         finally:
             if temporary.exists():
                 temporary.unlink()
-        return _success({
-            "path": str(target), "changed": True, "bytes": len(encoded),
-            "before_sha256": hashlib.sha256(before).hexdigest() if before else None,
-            "sha256": hashlib.sha256(encoded).hexdigest(),
-        })
+        return _success(
+            {
+                "path": str(target),
+                "changed": True,
+                "bytes": len(encoded),
+                "before_sha256": hashlib.sha256(before).hexdigest() if before else None,
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+            }
+        )
 
 
 async def patch(
@@ -154,13 +168,15 @@ async def patch(
         finally:
             if temporary.exists():
                 temporary.unlink()
-        return _success({
-            "path": str(target),
-            "changed": True,
-            "replacements": count if replace_all else 1,
-            "before_sha256": hashlib.sha256(before.encode()).hexdigest(),
-            "sha256": hashlib.sha256(encoded).hexdigest(),
-        })
+        return _success(
+            {
+                "path": str(target),
+                "changed": True,
+                "replacements": count if replace_all else 1,
+                "before_sha256": hashlib.sha256(before.encode()).hexdigest(),
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+            }
+        )
 
 
 async def move(
@@ -208,20 +224,20 @@ async def mkdir(
     return _success({"path": str(target), "created": not existed})
 
 
-async def stat(
-    ctx: RunContext[Any], path: str, justification: str = ""
-) -> dict[str, Any]:
+async def stat(ctx: RunContext[Any], path: str, justification: str = "") -> dict[str, Any]:
     """Inspect deterministic metadata for a filesystem path."""
     target = _target(ctx, path)
     if not target.exists():
         raise ValueError(f"path not found: {target}")
     info = await asyncio.to_thread(target.stat)
-    return _success({
-        "path": str(target),
-        "kind": "directory" if target.is_dir() else "file",
-        "bytes": info.st_size,
-        "modified_at": datetime.fromtimestamp(info.st_mtime, UTC).isoformat(),
-    })
+    return _success(
+        {
+            "path": str(target),
+            "kind": "directory" if target.is_dir() else "file",
+            "bytes": info.st_size,
+            "modified_at": datetime.fromtimestamp(info.st_mtime, UTC).isoformat(),
+        }
+    )
 
 
 async def search_text(
@@ -235,16 +251,15 @@ async def search_text(
     if not query:
         raise ValueError("query must not be empty")
     root = _target(ctx, path)
-    candidates = [root] if root.is_file() else sorted(
-        (
-            item for item in root.rglob("*")
-            if item.is_file() and not _is_sensitive_path(item)
-        ),
-        key=lambda item: str(item).casefold(),
+    candidates = (
+        [root]
+        if root.is_file()
+        else sorted(
+            (item for item in root.rglob("*") if item.is_file() and not _is_sensitive_path(item)),
+            key=lambda item: str(item).casefold(),
+        )
     )
-    candidates = [
-        item for item in candidates if not _is_sensitive_path(item)
-    ]
+    candidates = [item for item in candidates if not _is_sensitive_path(item)]
     matches: list[dict[str, Any]] = []
     for candidate in candidates:
         if len(matches) >= limit:
@@ -257,28 +272,32 @@ async def search_text(
             continue
         for number, line in enumerate(content.splitlines(), 1):
             if query in line:
-                matches.append({
-                    "path": str(candidate),
-                    "line": number,
-                    "preview": line[:500],
-                })
+                matches.append(
+                    {
+                        "path": str(candidate),
+                        "line": number,
+                        "preview": line[:500],
+                    }
+                )
                 if len(matches) >= limit:
                     break
-    return _success({
-        "query": query, "matches": matches, "truncated": len(matches) >= limit,
-    })
+    return _success(
+        {
+            "query": query,
+            "matches": matches,
+            "truncated": len(matches) >= limit,
+        }
+    )
 
 
 def _is_sensitive_path(path: Path) -> bool:
-    return (
-        path.name in {
-            ".env", ".env.local", ".envrc", "providers.json", "secrets.json",
-        }
-        or bool(
-            set(path.parts)
-            & {".ssh", ".gnupg", ".aws", ".kube", ".git", ".codex"}
-        )
-    )
+    return path.name in {
+        ".env",
+        ".env.local",
+        ".envrc",
+        "providers.json",
+        "secrets.json",
+    } or bool(set(path.parts) & {".ssh", ".gnupg", ".aws", ".kube", ".git", ".codex"})
 
 
 async def delete(ctx: RunContext[Any], path: str, justification: str = "") -> dict[str, Any]:
@@ -292,15 +311,22 @@ async def delete(ctx: RunContext[Any], path: str, justification: str = "") -> di
         destination = trash / f"{uuid4().hex}-{target.name}"
         await asyncio.to_thread(shutil.move, str(target), str(destination))
         record = {
-            "original_path": str(target), "trash_path": str(destination),
-            "tool_call_id": str(ctx.tool_call_id), "deleted_at": datetime.now(UTC).isoformat(),
+            "original_path": str(target),
+            "trash_path": str(destination),
+            "tool_call_id": str(ctx.tool_call_id),
+            "deleted_at": datetime.now(UTC).isoformat(),
         }
         manifest = trash / "manifest.jsonl"
         await asyncio.to_thread(_append_manifest, manifest, record)
-        ctx.deps.events.append(__import__("agentic_kernel.models", fromlist=["Event"]).Event(
-            session_id=ctx.deps.session_id, run_id=ctx.deps.root_run_id,
-            agent_id="filesystem", type="tool.trashed", payload=record,
-        ))
+        ctx.deps.events.append(
+            __import__("agentic_kernel.models", fromlist=["Event"]).Event(
+                session_id=ctx.deps.session_id,
+                run_id=ctx.deps.root_run_id,
+                agent_id="filesystem",
+                type="tool.trashed",
+                payload=record,
+            )
+        )
         return _success({"recoverable": True, **record})
 
 
@@ -313,9 +339,22 @@ def _append_manifest(path: Path, record: dict[str, Any]) -> None:
 
 class FilesystemModule:
     def toolsets(self):
-        return [FunctionToolset(tools=[
-            read, list, write, patch, move, copy, mkdir, stat, search_text, delete,
-        ])]
+        return [
+            FunctionToolset(
+                tools=[
+                    read,
+                    list,
+                    write,
+                    patch,
+                    move,
+                    copy,
+                    mkdir,
+                    stat,
+                    search_text,
+                    delete,
+                ]
+            )
+        ]
 
     def instructions(self):
         return [

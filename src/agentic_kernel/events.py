@@ -7,21 +7,58 @@ from threading import Lock
 from uuid import UUID
 
 from .models import Event
+from .projections import SessionProjection
 
 
 class JsonlEventStore:
     def __init__(self, directory: Path) -> None:
         self.directory = directory
         self._lock = Lock()
+        self.projection = SessionProjection(directory.parent / "state.db")
 
     def append(self, event: Event) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
         path = self.path_for(event.session_id)
-        line = json.dumps(event.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
-        with self._lock, path.open("a", encoding="utf-8") as stream:
-            stream.write(line + "\n")
+        line = (
+            json.dumps(event.model_dump(mode="json"), ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        with self._lock, path.open("ab") as stream:
+            source_offset = stream.tell()
+            stream.write(line)
             stream.flush()
             os.fsync(stream.fileno())
+            self.projection.apply(
+                event,
+                source_offset=source_offset,
+                source_length=len(line),
+            )
+
+    def rebuild_projection(self) -> None:
+        if not self.directory.exists():
+            return
+        for session_id in self.list_session_ids():
+            path = self.path_for(session_id)
+            with path.open("rb") as stream:
+                offset = self.projection.source_offset(session_id)
+                if offset > path.stat().st_size:
+                    offset = 0
+                stream.seek(offset)
+                while True:
+                    source_offset = stream.tell()
+                    line = stream.readline()
+                    if not line:
+                        break
+                    try:
+                        event = Event.model_validate_json(line)
+                    except ValueError:
+                        continue
+                    self.projection.apply(
+                        event,
+                        source_offset=source_offset,
+                        source_length=len(line),
+                    )
+            if self.projection.needs_message_backfill(session_id):
+                self.projection.backfill_messages(session_id, self.read(session_id))
 
     def read(self, session_id: UUID) -> list[Event]:
         path = self.path_for(session_id)
@@ -54,4 +91,5 @@ class JsonlEventStore:
         if not path.exists():
             return False
         path.unlink()
+        self.projection.delete_session(session_id)
         return True

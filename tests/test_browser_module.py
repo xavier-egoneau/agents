@@ -33,11 +33,15 @@ async def test_playwright_browser_snapshot_and_screenshot(tmp_path: Path) -> Non
 
     session_id, run_id = uuid4(), uuid4()
     events = JsonlEventStore(tmp_path / "sessions")
-    ctx = SimpleNamespace(deps=SimpleNamespace(
-        session_id=session_id,
-        root_run_id=run_id,
-        events=events,
-    ))
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            session_id=session_id,
+            root_run_id=run_id,
+            events=events,
+            approved_scopes={("network", f"http://127.0.0.1:{port}")},
+        ),
+        tool_call_approved=True,
+    )
     try:
         opened = await browser_module.browser_open(ctx, f"http://127.0.0.1:{port}")
         page_id = opened["data"]["page_id"]
@@ -46,7 +50,9 @@ async def test_playwright_browser_snapshot_and_screenshot(tmp_path: Path) -> Non
         assert snapshot["data"]["title"] == "AMK test"
         assert snapshot["data"]["elements"][0]["text"] == "Bonjour"
         assert Path(screenshot["data"]["path"]).is_file()
-        artifact = next(event for event in events.read(session_id) if event.type == "artifact.created")
+        artifact = next(
+            event for event in events.read(session_id) if event.type == "artifact.created"
+        )
         assert artifact.run_id == run_id
         assert artifact.payload["media_type"] == "image/png"
     finally:

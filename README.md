@@ -121,7 +121,12 @@ retirer pour un agent avec `{ "tools": ["delete"] }`.
 
 Les décisions et phases d'exécution sont enregistrées dans le JSONL de session. Ces traces sont
 séparées des observations bornées renvoyées au modèle et leurs champs secrets sont masqués. Le
-guardian est une politique d'autorisation, pas une sandbox du système d'exploitation.
+guardian reste la politique d’autorisation. `command_run` et `process_start`
+ajoutent une isolation d’exécution : sur macOS, `sandbox-exec` limite les
+écritures au workspace, aux artefacts de la session et à son runtime temporaire.
+Sans sandbox, `safe` et `limited` refusent l’exécution; `power` exige une
+approbation explicite. Cette abstraction pourra être remplacée par un backend
+Docker sans modifier le contrat des tools.
 
 ## Agents, skills, modules et sessions
 
@@ -188,7 +193,13 @@ La recherche web utilise DuckDuckGo par défaut sans clé. Les autres backends e
 être configurés directement dans Ketch. Les pages récupérées sont considérées comme des données non
 fiables et les URL locales ou privées restent soumises au guardian, même en mode `power`.
 
-Chaque exécution produit un journal append-only dans `content-agents/sessions/<session-id>.jsonl`. Le kernel impose par défaut une profondeur de 5, 24 exécutions d’agents, 6 exécutions concurrentes, 20 requêtes par agent et 30 minutes par session.
+Chaque exécution produit un journal append-only dans
+`content-agents/sessions/<session-id>.jsonl`. SQLite (`content-agents/state.db`)
+en est une projection reconstructible utilisée pour paginer sessions, messages,
+événements, transitions et état de contexte. Les snapshots volumineux sont
+compressés, adressés par hash et écrits avant l’événement qui les référence.
+Le kernel impose par défaut une profondeur de 5, 24 exécutions d’agents,
+6 exécutions concurrentes, 100 requêtes modèle par agent et 30 minutes par session.
 
 À chaque run et à chaque reprise, le kernel ajoute aux instructions un contexte d'exécution dynamique
 avec la date, l'heure locale ISO, le fuseau horaire, le workspace/CWD actif et le niveau de sécurité.
@@ -200,9 +211,10 @@ Le scheduler de cronjobs appartient au kernel : il reste actif tant que
 chaque occurrence dans la boucle normale du kernel. Chaque routine conserve
 une seule session durable afin de ne pas encombrer l’historique.
 
-Le panel **Automatisations** permet de créer, éditer, suspendre, lancer et
-supprimer les routines. Les expressions utilisent le format cron standard à
-cinq champs et sont évaluées dans le fuseau local du serveur. Un arrêt
+Le panel **Automatisations** permet de créer, éditer, suspendre, tester, lancer
+et supprimer les routines. L’utilisateur choisit une fréquence lisible
+(minutes, heures, jour, semaine ou année); le kernel conserve sa représentation
+cron interne et l’évalue dans le fuseau local du serveur. Un arrêt
 transitoire peut être repris automatiquement à l’occurrence suivante; les
 échecs de configuration ou d’authentification et les demandes d’approbation
 restent bloqués pour intervention humaine.
@@ -215,7 +227,20 @@ session et reconstruit son contexte depuis les snapshots et traces persistés.
 
 Trois connexions sont reconnues : `local`, `api_key` et `auth`. llama.cpp utilise son API compatible OpenAI, DeepSeek lit `DEEPSEEK_API_KEY`, et les connexions OpenAI Codex/Claude passent par `amk auth login <provider>`. Les jetons OAuth sont renouvelés automatiquement et conservés dans le trousseau du système, jamais dans le dépôt.
 
+Les implémentations passent toutes par le protocole interne `ProviderAdapter`.
+Les types OpenAI, Anthropic et Pydantic AI ne font pas partie de l’API publique
+du kernel.
+
 ```bash
 uv run amk auth login openai-codex
 uv run amk auth login claude
+```
+
+## Validation
+
+La commande suivante exécute Ruff, tous les tests Python, ESLint, le build de la
+surface et les parcours Playwright. Les tests réseau réels restent opt-in.
+
+```bash
+./scripts/check.sh
 ```

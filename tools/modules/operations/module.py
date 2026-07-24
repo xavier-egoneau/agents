@@ -57,9 +57,19 @@ async def plan_update(
             note=note,
         )
     except PlanNotFound as exc:
-        return {"ok": False, "data": None, "error": {"type": "not_found", "message": str(exc)}, "metadata": {}}
+        return {
+            "ok": False,
+            "data": None,
+            "error": {"type": "not_found", "message": str(exc)},
+            "metadata": {},
+        }
     except PlanConflict as exc:
-        return {"ok": False, "data": None, "error": {"type": "dependency_blocked", "message": str(exc)}, "metadata": {}}
+        return {
+            "ok": False,
+            "data": None,
+            "error": {"type": "dependency_blocked", "message": str(exc)},
+            "metadata": {},
+        }
     return {"ok": True, "data": plan, "error": None, "metadata": {}}
 
 
@@ -79,19 +89,56 @@ async def plan_status(
     return (
         {"ok": True, "data": plan, "error": None, "metadata": {}}
         if plan
-        else {"ok": False, "data": None, "error": {"type": "not_found", "message": "plan not found"}, "metadata": {}}
+        else {
+            "ok": False,
+            "data": None,
+            "error": {"type": "not_found", "message": "plan not found"},
+            "metadata": {},
+        }
     )
 
 
-async def plan_ready(
-    ctx: RunContext[Any], plan_id: str, justification: str = ""
-) -> dict[str, Any]:
+async def plan_ready(ctx: RunContext[Any], plan_id: str, justification: str = "") -> dict[str, Any]:
     """Return only tasks whose dependencies are deterministically satisfied."""
     try:
         ready = _plans(ctx).ready(plan_id, ctx.deps.session_id)
     except PlanNotFound as exc:
-        return {"ok": False, "data": None, "error": {"type": "not_found", "message": str(exc)}, "metadata": {}}
+        return {
+            "ok": False,
+            "data": None,
+            "error": {"type": "not_found", "message": str(exc)},
+            "metadata": {},
+        }
     return {"ok": True, "data": ready, "error": None, "metadata": {}}
+
+
+async def plan_claim(
+    ctx: RunContext[Any],
+    plan_id: str,
+    step_id: str,
+    claimed_by: str,
+    lease_seconds: Annotated[int, Field(ge=30, le=3600)] = 900,
+    justification: str = "",
+) -> dict[str, Any]:
+    """Claim one ready plan step with a durable lease and write-scope lock."""
+    try:
+        plan = _plans(ctx).claim(
+            plan_id,
+            step_id,
+            session_id=ctx.deps.session_id,
+            claimed_by=claimed_by,
+            run_id=str(ctx.deps.run_id),
+            lease_seconds=lease_seconds,
+        )
+    except (PlanNotFound, PlanConflict) as exc:
+        return {
+            "ok": False,
+            "data": None,
+            "error": {"type": "plan_conflict", "message": str(exc)},
+            "metadata": {},
+        }
+    step = next(item for item in plan["steps"] if item["id"] == step_id)
+    return {"ok": True, "data": step, "error": None, "metadata": {}}
 
 
 async def evaluate_result(
@@ -110,21 +157,29 @@ async def evaluate_result(
     missing = [item["criterion"] for item in checks if not item["satisfied"]]
     return {
         "ok": True,
-        "data": {"checks": checks, "passed": not missing, "missing": missing, "result_preview": result[:2000]},
+        "data": {
+            "checks": checks,
+            "passed": not missing,
+            "missing": missing,
+            "result_preview": result[:2000],
+        },
         "error": None,
         "metadata": {"max_iterations": max_iterations},
     }
 
 
-async def session_status(
-    ctx: RunContext[Any], justification: str = ""
-) -> dict[str, Any]:
+async def session_status(ctx: RunContext[Any], justification: str = "") -> dict[str, Any]:
     """Summarize durable event counts for the current session."""
     events = ctx.deps.events.read(ctx.deps.session_id)
     counts: dict[str, int] = {}
     for event in events:
         counts[event.type] = counts.get(event.type, 0) + 1
-    return {"ok": True, "data": {"session_id": str(ctx.deps.session_id), "events": len(events), "types": counts}, "error": None, "metadata": {}}
+    return {
+        "ok": True,
+        "data": {"session_id": str(ctx.deps.session_id), "events": len(events), "types": counts},
+        "error": None,
+        "metadata": {},
+    }
 
 
 async def checkpoint_create(
@@ -157,18 +212,22 @@ async def trace_query(
     if event_type:
         events = [event for event in events if event.type == event_type]
     selected = events[-limit:]
-    return {"ok": True, "data": [event.model_dump(mode="json") for event in selected], "error": None, "metadata": {"total": len(events), "truncated": len(events) > limit}}
+    return {
+        "ok": True,
+        "data": [event.model_dump(mode="json") for event in selected],
+        "error": None,
+        "metadata": {"total": len(events), "truncated": len(events) > limit},
+    }
 
 
-async def metrics_summary(
-    ctx: RunContext[Any], justification: str = ""
-) -> dict[str, Any]:
+async def metrics_summary(ctx: RunContext[Any], justification: str = "") -> dict[str, Any]:
     """Aggregate tool completion, failure, approval, and duration metrics."""
     events = ctx.deps.events.read(ctx.deps.session_id)
     completed = [event for event in events if event.type == "tool.completed"]
     failed = [event for event in events if event.type == "tool.failed"]
     durations = [
-        float(event.payload["duration_ms"]) for event in completed + failed
+        float(event.payload["duration_ms"])
+        for event in completed + failed
         if isinstance(event.payload.get("duration_ms"), (int, float))
     ]
     return {
@@ -185,9 +244,7 @@ async def metrics_summary(
     }
 
 
-async def cron_list(
-    ctx: RunContext[Any], justification: str = ""
-) -> dict[str, Any]:
+async def cron_list(ctx: RunContext[Any], justification: str = "") -> dict[str, Any]:
     """List persistent scheduled jobs and their latest runtime state."""
     jobs = [job.model_dump(mode="json") for job in _crons(ctx).list()]
     return {"ok": True, "data": jobs, "error": None, "metadata": {"count": len(jobs)}}
@@ -205,17 +262,26 @@ async def cron_create(
 ) -> dict[str, Any]:
     """Create a persistent cron job scoped to the current workspace."""
     try:
-        job = _crons(ctx).create(CronJobInput(
-            name=name, schedule=schedule, prompt=prompt,
-            workspace=ctx.deps.workspace, agent_id=agent_id,
-            security_mode=ctx.deps.security_mode,
-            provider_id=ctx.deps.provider_id, model=ctx.deps.model_name,
-            enabled=enabled, auto_resume=auto_resume,
-        ))
+        job = _crons(ctx).create(
+            CronJobInput(
+                name=name,
+                schedule=schedule,
+                prompt=prompt,
+                workspace=ctx.deps.workspace,
+                agent_id=agent_id,
+                security_mode=ctx.deps.security_mode,
+                provider_id=ctx.deps.provider_id,
+                model=ctx.deps.model_name,
+                enabled=enabled,
+                auto_resume=auto_resume,
+            )
+        )
     except SchedulerError as exc:
         return {
-            "ok": False, "data": None,
-            "error": {"type": "validation", "message": str(exc)}, "metadata": {},
+            "ok": False,
+            "data": None,
+            "error": {"type": "validation", "message": str(exc)},
+            "metadata": {},
         }
     return {"ok": True, "data": job.model_dump(mode="json"), "error": None, "metadata": {}}
 
@@ -230,48 +296,77 @@ async def cron_set_enabled(
     service = _crons(ctx)
     try:
         current = service.get(job_id)
-        payload = CronJobInput.model_validate({
-            **current.model_dump(exclude={
-                "id", "session_id", "created_at", "updated_at", "next_run_at",
-                "last_run_at", "last_status", "last_error", "in_flight",
-                "last_retryable",
-            }),
-            "enabled": enabled,
-        })
+        payload = CronJobInput.model_validate(
+            {
+                **current.model_dump(
+                    exclude={
+                        "id",
+                        "session_id",
+                        "created_at",
+                        "updated_at",
+                        "next_run_at",
+                        "last_run_at",
+                        "last_status",
+                        "last_error",
+                        "in_flight",
+                        "last_retryable",
+                    }
+                ),
+                "enabled": enabled,
+            }
+        )
         job = service.update(job_id, payload)
     except SchedulerError as exc:
         return {
-            "ok": False, "data": None,
-            "error": {"type": "not_found", "message": str(exc)}, "metadata": {},
+            "ok": False,
+            "data": None,
+            "error": {"type": "not_found", "message": str(exc)},
+            "metadata": {},
         }
     return {"ok": True, "data": job.model_dump(mode="json"), "error": None, "metadata": {}}
 
 
-async def cron_delete(
-    ctx: RunContext[Any], job_id: str, justification: str = ""
-) -> dict[str, Any]:
+async def cron_delete(ctx: RunContext[Any], job_id: str, justification: str = "") -> dict[str, Any]:
     """Delete one persistent cron definition, never its session audit."""
     try:
         _crons(ctx).delete(job_id)
     except SchedulerError as exc:
         return {
-            "ok": False, "data": None,
-            "error": {"type": "not_found", "message": str(exc)}, "metadata": {},
+            "ok": False,
+            "data": None,
+            "error": {"type": "not_found", "message": str(exc)},
+            "metadata": {},
         }
-    return {"ok": True, "data": {"id": job_id, "status": "deleted"},
-            "error": None, "metadata": {}}
+    return {"ok": True, "data": {"id": job_id, "status": "deleted"}, "error": None, "metadata": {}}
 
 
 class OperationsModule:
     def toolsets(self):
-        return [FunctionToolset(tools=[
-            plan_create, plan_update, plan_status, plan_ready, evaluate_result,
-            session_status, checkpoint_create, trace_query, metrics_summary,
-            cron_list, cron_create, cron_set_enabled, cron_delete,
-        ])]
+        return [
+            FunctionToolset(
+                tools=[
+                    plan_create,
+                    plan_update,
+                    plan_status,
+                    plan_ready,
+                    plan_claim,
+                    evaluate_result,
+                    session_status,
+                    checkpoint_create,
+                    trace_query,
+                    metrics_summary,
+                    cron_list,
+                    cron_create,
+                    cron_set_enabled,
+                    cron_delete,
+                ]
+            )
+        ]
 
     def instructions(self):
-        return ["Use plan tools for multi-step work and keep plan states aligned with actual execution."]
+        return [
+            "Use plan tools for multi-step work and keep plan states aligned with actual execution."
+        ]
 
     def capabilities(self):
         return []

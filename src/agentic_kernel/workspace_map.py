@@ -55,7 +55,8 @@ class WorkspaceMap:
             (
                 f"- Git: {self.git_branch or 'not a repository'}, "
                 f"{'dirty' if self.git_dirty else 'clean'}"
-                if self.git_dirty is not None else "- Git: unavailable"
+                if self.git_dirty is not None
+                else "- Git: unavailable"
             ),
         ]
         for title, values in (
@@ -87,9 +88,7 @@ class WorkspaceMapService:
         patterns = list(DENY_PATTERNS)
         gitignore = resolved / ".gitignore"
         if gitignore.is_file():
-            patterns.extend(
-                gitignore.read_text(encoding="utf-8", errors="replace").splitlines()
-            )
+            patterns.extend(gitignore.read_text(encoding="utf-8", errors="replace").splitlines())
         spec = pathspec.GitIgnoreSpec.from_lines(patterns)
         files: list[Path] = []
         truncated = False
@@ -119,20 +118,38 @@ class WorkspaceMapService:
             if suffixes & extensions:
                 languages.append(name)
         managers = [
-            name for name, marker in (
-                ("uv", "uv.lock"), ("npm", "package-lock.json"),
-                ("pnpm", "pnpm-lock.yaml"), ("yarn", "yarn.lock"),
-                ("cargo", "Cargo.lock"), ("go", "go.mod"),
+            name
+            for name, marker in (
+                ("uv", "uv.lock"),
+                ("npm", "package-lock.json"),
+                ("pnpm", "pnpm-lock.yaml"),
+                ("yarn", "yarn.lock"),
+                ("cargo", "Cargo.lock"),
+                ("go", "go.mod"),
             )
             if (resolved / marker).exists()
         ]
         important_names = {
-            "README.md", "AGENTS.md", "DECISION.md", "DECISIONS.md",
-            "MEMORY.md", "pyproject.toml", "package.json", "Cargo.toml", "go.mod",
+            "README.md",
+            "AGENTS.md",
+            "DECISION.md",
+            "DECISIONS.md",
+            "MEMORY.md",
+            "pyproject.toml",
+            "package.json",
+            "Cargo.toml",
+            "go.mod",
         }
         entrypoint_names = {
-            "main.py", "app.py", "__main__.py", "index.js", "index.ts",
-            "app.tsx", "main.tsx", "main.rs", "main.go",
+            "main.py",
+            "app.py",
+            "__main__.py",
+            "index.js",
+            "index.ts",
+            "app.tsx",
+            "main.tsx",
+            "main.rs",
+            "main.go",
         }
         branch, dirty = _git_status(resolved)
         result = WorkspaceMap(
@@ -145,7 +162,8 @@ class WorkspaceMapService:
             entrypoints=tuple(p for p in relative_files if Path(p).name in entrypoint_names),
             docs=tuple(p for p in relative_files if Path(p).suffix.lower() == ".md"),
             tests=tuple(
-                p for p in relative_files
+                p
+                for p in relative_files
                 if "test" in Path(p).name.lower() or "tests" in Path(p).parts
             ),
             commands=tuple(_commands(resolved)),
@@ -178,12 +196,20 @@ def _commands(root: Path) -> list[str]:
 def _git_status(root: Path) -> tuple[str | None, bool | None]:
     try:
         branch = subprocess.run(
-            ["git", "branch", "--show-current"], cwd=root, capture_output=True,
-            text=True, timeout=2, check=False,
+            ["git", "branch", "--show-current"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
         )
         status = subprocess.run(
-            ["git", "status", "--porcelain"], cwd=root, capture_output=True,
-            text=True, timeout=2, check=False,
+            ["git", "status", "--porcelain"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None, None

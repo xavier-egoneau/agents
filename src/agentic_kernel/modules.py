@@ -92,14 +92,18 @@ class ModuleRegistry:
             for descriptor in manifest.tools:
                 runtime = runtime_tools.get(descriptor.name)
                 schema = getattr(runtime, "function_schema", None)
-                descriptors.append(descriptor.model_copy(update={
-                    "input_schema": descriptor.input_schema
-                    or dict(getattr(schema, "json_schema", {}) or {}),
-                    "output_schema": descriptor.output_schema
-                    or dict(getattr(schema, "return_schema", {}) or {}),
-                    "timeout_seconds": descriptor.timeout_seconds
-                    or getattr(runtime, "timeout", None),
-                }))
+                descriptors.append(
+                    descriptor.model_copy(
+                        update={
+                            "input_schema": descriptor.input_schema
+                            or dict(getattr(schema, "json_schema", {}) or {}),
+                            "output_schema": descriptor.output_schema
+                            or dict(getattr(schema, "return_schema", {}) or {}),
+                            "timeout_seconds": descriptor.timeout_seconds
+                            or getattr(runtime, "timeout", None),
+                        }
+                    )
+                )
             manifests.append(manifest.model_copy(update={"tools": descriptors}))
         return ModuleIndex(modules=manifests)
 
@@ -114,9 +118,7 @@ class ModuleRegistry:
     def load_enabled(self) -> list[tuple[ModuleManifest, KernelModule]]:
         index = self.check_index()
         return [
-            (manifest, self._load_one(manifest))
-            for manifest in index.modules
-            if manifest.enabled
+            (manifest, self._load_one(manifest)) for manifest in index.modules if manifest.enabled
         ]
 
     def _load_one(self, manifest: ModuleManifest) -> KernelModule:

@@ -5,8 +5,8 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 from agentic_kernel.api import create_app
-from agentic_kernel.modules import ModuleRegistry
 from agentic_kernel.models import Event
+from agentic_kernel.modules import ModuleRegistry
 from agentic_kernel.plans import PlanService, PlanStepInput
 
 
@@ -93,10 +93,13 @@ def test_plan_api_uses_shared_plan_service(project: Path) -> None:
         json={"status": "completed"},
     )
     assert blocked.status_code == 409
-    assert client.patch(
-        f"/api/plans/{plan['plan_id']}/steps/T1",
-        json={"status": "completed"},
-    ).status_code == 200
+    assert (
+        client.patch(
+            f"/api/plans/{plan['plan_id']}/steps/T1",
+            json={"status": "completed"},
+        ).status_code
+        == 200
+    )
 
 
 def test_cron_api_crud(project: Path) -> None:
@@ -127,13 +130,27 @@ def test_session_history_api(project: Path) -> None:
     app = create_app(project)
     session_id = uuid4()
     run_id = uuid4()
-    app.state  # keep a concrete app before entering the client context
     from agentic_kernel.events import JsonlEventStore
+
     store = JsonlEventStore(project / "content-agents" / "sessions")
-    store.append(Event(session_id=session_id, run_id=run_id, agent_id="main",
-                       type="session.started", payload={"prompt": "hello", "workspace": str(project)}))
-    store.append(Event(session_id=session_id, run_id=run_id, agent_id="main",
-                       type="session.completed", payload={"status": "success", "output": "world"}))
+    store.append(
+        Event(
+            session_id=session_id,
+            run_id=run_id,
+            agent_id="main",
+            type="session.started",
+            payload={"prompt": "hello", "workspace": str(project)},
+        )
+    )
+    store.append(
+        Event(
+            session_id=session_id,
+            run_id=run_id,
+            agent_id="main",
+            type="session.completed",
+            payload={"status": "success", "output": "world"},
+        )
+    )
     client = TestClient(app)
     history = client.get("/api/sessions").json()
     assert history[0]["session_id"] == str(session_id)
@@ -158,9 +175,7 @@ delegates: []
 ---
 Help carefully.
 """
-    created = client.post(
-        "/api/admin/agents", json={"id": "helper", "content": agent_markdown}
-    )
+    created = client.post("/api/admin/agents", json={"id": "helper", "content": agent_markdown})
     assert created.status_code == 200
     assert any(item["id"] == "helper" for item in client.get("/api/admin/agents").json())
     assert client.delete("/api/admin/agents/main").status_code == 403
@@ -176,14 +191,15 @@ Check the work.
         "/api/admin/skills", json={"id": "review", "content": skill_markdown}
     )
     assert created_skill.status_code == 200
-    index = json.loads(
-        (project / "content-agents" / "skills" / "index.json").read_text()
-    )
+    index = json.loads((project / "content-agents" / "skills" / "index.json").read_text())
     assert index["skills"][0]["id"] == "review"
-    assert client.put(
-        "/api/admin/skills/review",
-        json={"id": "review", "content": skill_markdown.replace("Check", "Inspect")},
-    ).status_code == 200
+    assert (
+        client.put(
+            "/api/admin/skills/review",
+            json={"id": "review", "content": skill_markdown.replace("Check", "Inspect")},
+        ).status_code
+        == 200
+    )
     assert client.delete("/api/admin/skills/review").status_code == 200
 
 

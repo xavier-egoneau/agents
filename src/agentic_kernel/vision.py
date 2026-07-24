@@ -27,9 +27,7 @@ class LocalVisionService:
         self._lock = asyncio.Lock()
         self._process: subprocess.Popen[bytes] | None = None
 
-    async def analyze_path(
-        self, path: Path, question: str, detail: str = "balanced"
-    ) -> str:
+    async def analyze_path(self, path: Path, question: str, detail: str = "balanced") -> str:
         try:
             data = await asyncio.to_thread(path.read_bytes)
         except OSError as exc:
@@ -63,18 +61,18 @@ class LocalVisionService:
         encoded = base64.b64encode(data).decode("ascii")
         payload = {
             "model": config["model"],
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{media_type};base64,{encoded}"
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{media_type};base64,{encoded}"},
                         },
-                    },
-                ],
-            }],
+                    ],
+                }
+            ],
             "temperature": 0.1,
             "max_tokens": int(config.get("max_tokens", 2048)),
         }
@@ -99,9 +97,7 @@ class LocalVisionService:
             raise VisionUnavailable("réponse Gemma 4 locale invalide") from exc
         if isinstance(content, list):
             content = "\n".join(
-                str(item.get("text", ""))
-                for item in content
-                if isinstance(item, dict)
+                str(item.get("text", "")) for item in content if isinstance(item, dict)
             )
         if not isinstance(content, str) or not content.strip():
             raise VisionUnavailable("Gemma 4 local n’a retourné aucune observation")
@@ -133,7 +129,9 @@ class LocalVisionService:
             defaults.update(raw)
         parsed = urlparse(str(defaults["base_url"]))
         if parsed.scheme != "http" or parsed.hostname not in {
-            "127.0.0.1", "localhost", "::1",
+            "127.0.0.1",
+            "localhost",
+            "::1",
         }:
             raise VisionUnavailable(
                 "le moteur vision doit utiliser une adresse HTTP loopback locale"
@@ -151,11 +149,7 @@ class LocalVisionService:
             if await self._wait_for_existing_server(config):
                 return
             binary_name = str(config.get("server_binary") or "llama-server")
-            binary = (
-                binary_name
-                if Path(binary_name).is_file()
-                else shutil.which(binary_name)
-            )
+            binary = binary_name if Path(binary_name).is_file() else shutil.which(binary_name)
             if not binary:
                 raise VisionUnavailable(
                     "`llama-server` est absent. Installe llama.cpp ou configure "
@@ -163,8 +157,10 @@ class LocalVisionService:
                 )
             command = [
                 binary,
-                "--host", "127.0.0.1",
-                "--port", str(config.get("port", 8081)),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(config.get("port", 8081)),
             ]
             model_path = config.get("model_path")
             hf_repo = config.get("hf_repo")
@@ -177,21 +173,16 @@ class LocalVisionService:
                 command.extend(["-hf", hf_repo.strip()])
             else:
                 raise VisionUnavailable(
-                    "Configure `model_path` ou `hf_repo` dans "
-                    "`content-agents/vision.json`."
+                    "Configure `model_path` ou `hf_repo` dans `content-agents/vision.json`."
                 )
             mmproj = config.get("mmproj_path")
             if isinstance(mmproj, str) and mmproj.strip():
                 projection = Path(mmproj).expanduser().resolve()
                 if not projection.is_file():
-                    raise VisionUnavailable(
-                        f"projection vision introuvable : {projection}"
-                    )
+                    raise VisionUnavailable(f"projection vision introuvable : {projection}")
                 command.extend(["--mmproj", str(projection)])
             extra = config.get("llama_args", [])
-            if isinstance(extra, list) and all(
-                isinstance(item, str) for item in extra
-            ):
+            if isinstance(extra, list) and all(isinstance(item, str) for item in extra):
                 command.extend(extra)
             logs = self.content_root / "vision"
             logs.mkdir(parents=True, exist_ok=True)
@@ -205,9 +196,7 @@ class LocalVisionService:
                 env={**os.environ, "LLAMA_ARG_NO_WEBUI": "1"},
             )
             stream.close()
-            (logs / "llama-server.pid").write_text(
-                str(self._process.pid), encoding="utf-8"
-            )
+            (logs / "llama-server.pid").write_text(str(self._process.pid), encoding="utf-8")
             deadline = asyncio.get_running_loop().time() + float(
                 config.get("startup_timeout_seconds", 120)
             )
@@ -221,9 +210,7 @@ class LocalVisionService:
                 await asyncio.sleep(0.5)
             raise VisionUnavailable("délai de démarrage de Gemma 4 dépassé")
 
-    async def _wait_for_existing_server(
-        self, config: dict[str, object]
-    ) -> bool:
+    async def _wait_for_existing_server(self, config: dict[str, object]) -> bool:
         pid_path = self.content_root / "vision" / "llama-server.pid"
         try:
             pid = int(pid_path.read_text(encoding="utf-8").strip())
@@ -249,9 +236,7 @@ class LocalVisionService:
     async def _reachable(base_url: str) -> bool:
         try:
             async with httpx.AsyncClient(timeout=1) as client:
-                response = await client.get(
-                    base_url.rstrip("/").removesuffix("/v1") + "/health"
-                )
+                response = await client.get(base_url.rstrip("/").removesuffix("/v1") + "/health")
             return response.status_code < 500
         except httpx.HTTPError:
             return False

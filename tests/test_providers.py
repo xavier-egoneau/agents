@@ -16,7 +16,8 @@ def registry(connection_type: str, **extra):
         **extra,
     }
     return ProviderRegistry(
-        default_provider="provider", providers=[provider]  # type: ignore[list-item]
+        default_provider="provider",
+        providers=[provider],  # type: ignore[list-item]
     )
 
 
@@ -65,13 +66,18 @@ def test_codex_requests_are_explicitly_not_stored() -> None:
 
     codex_registry = ProviderRegistry(
         default_provider="codex",
-        providers=[{
-            "id": "codex", "kind": "openai-codex",
-            "connection_type": "auth", "model": "gpt-5.5",
-        }],
+        providers=[
+            {
+                "id": "codex",
+                "kind": "openai-codex",
+                "connection_type": "auth",
+                "model": "gpt-5.5",
+            }
+        ],
     )
     model = ProviderFactory(
-        codex_registry, oauth=OAuth()  # type: ignore[arg-type]
+        codex_registry,
+        oauth=OAuth(),  # type: ignore[arg-type]
     ).build("codex")
 
     assert isinstance(model, OpenAIResponsesModel)
@@ -135,9 +141,7 @@ async def test_codex_model_discovery_uses_catalog_contract(monkeypatch) -> None:
         "agentic_kernel.providers.httpx.AsyncClient",
         lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs),
     )
-    monkeypatch.setattr(
-        "agentic_kernel.providers._codex_client_version", lambda: "0.145.0"
-    )
+    monkeypatch.setattr("agentic_kernel.providers._codex_client_version", lambda: "0.145.0")
     codex_registry = ProviderRegistry(
         default_provider="codex",
         providers=[
@@ -150,7 +154,8 @@ async def test_codex_model_discovery_uses_catalog_contract(monkeypatch) -> None:
         ],
     )
     models, source, error = await ProviderFactory(
-        codex_registry, oauth=OAuth()  # type: ignore[arg-type]
+        codex_registry,
+        oauth=OAuth(),  # type: ignore[arg-type]
     ).list_models("codex")
     assert models == ["gpt-5.6-sol", "gpt-5.6-terra"]
     assert source == "live"

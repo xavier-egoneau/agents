@@ -41,18 +41,21 @@ def run_agent(
     agent: str = typer.Option("main", "--agent", "-a"),
     skill: Annotated[list[str] | None, typer.Option("--skill", "-s")] = None,
     workspace: Annotated[Path | None, typer.Option("--workspace", "-w")] = None,
-    security_mode: Annotated[
-        SecurityMode, typer.Option("--security-mode")
-    ] = SecurityMode.LIMITED,
+    security_mode: Annotated[SecurityMode, typer.Option("--security-mode")] = SecurityMode.LIMITED,
 ) -> None:
     """Run an agent and print its final output."""
     try:
         kernel = Kernel(_root())
         result = asyncio.run(
-            kernel.run(RunRequest(
-                prompt=prompt, agent_id=agent, skills=skill or [],
-                workspace=(workspace or Path.cwd()), security_mode=security_mode,
-            ))
+            kernel.run(
+                RunRequest(
+                    prompt=prompt,
+                    agent_id=agent,
+                    skills=skill or [],
+                    workspace=(workspace or Path.cwd()),
+                    security_mode=security_mode,
+                )
+            )
         )
         while result.status is RunStatus.APPROVAL_PENDING:
             pending = [
@@ -81,9 +84,7 @@ def run_agent(
 @approvals_app.command("list")
 def approvals_list() -> None:
     for item in Kernel(_root()).list_approvals():
-        typer.echo(
-            f"{item.approval_id}\t{item.agent_id}\t{item.tool_name}\t{item.path or '-'}"
-        )
+        typer.echo(f"{item.approval_id}\t{item.agent_id}\t{item.tool_name}\t{item.path or '-'}")
 
 
 @approvals_app.command("resolve")
@@ -123,9 +124,7 @@ def providers_list() -> None:
     registry = ProjectConfig(_root()).providers()
     for provider in registry.providers:
         default = " *" if provider.id == registry.default_provider else ""
-        typer.echo(
-            f"{provider.id}\t{provider.connection_type.value}\t{provider.model}{default}"
-        )
+        typer.echo(f"{provider.id}\t{provider.connection_type.value}\t{provider.model}{default}")
 
 
 @providers_app.command("check")

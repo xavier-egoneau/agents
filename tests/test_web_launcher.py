@@ -31,9 +31,7 @@ def test_refuses_to_kill_unrelated_listener(tmp_path: Path, monkeypatch) -> None
         web_launcher.stop_previous_instances(tmp_path, 8765, 3000)
 
 
-def test_identifies_backend_and_frontend_by_command_and_cwd(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_identifies_backend_and_frontend_by_command_and_cwd(tmp_path: Path, monkeypatch) -> None:
     commands = {1: ".venv/bin/python .venv/bin/amk serve", 2: "node bin/vinext dev"}
     directories = {1: tmp_path, 2: tmp_path / "surfaces" / "web"}
     monkeypatch.setattr(web_launcher, "process_command", commands.get)

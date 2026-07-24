@@ -18,7 +18,6 @@ from pydantic_ai_harness.compaction import (
 from .models import Event
 from .orchestration import RuntimeDeps
 
-
 SUMMARY_PROMPT = """You maintain durable context for an autonomous agent.
 The conversation below will be replaced by your summary. Preserve facts; never
 invent, generalize away, or silently resolve uncertainty.
@@ -117,8 +116,7 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
         if context_window is None and not self.force:
             return request_context
         trigger = (
-            math.floor(context_window * self.trigger_ratio)
-            if context_window is not None else None
+            math.floor(context_window * self.trigger_ratio) if context_window is not None else None
         )
         if not self.force and trigger is not None and before < trigger:
             return request_context
@@ -137,6 +135,12 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
         )
         # Preserve the exact pre-compaction material in the append-only audit.
         # The live context may be reduced, but the source data remains recoverable.
+        exact_messages = ModelMessagesTypeAdapter.dump_python(request_context.messages, mode="json")
+        snapshot = (
+            ctx.deps.snapshot_store.save(ctx.deps.session_id, exact_messages)
+            if ctx.deps.snapshot_store is not None
+            else {"messages": exact_messages}
+        )
         ctx.deps.events.append(
             Event(
                 session_id=ctx.deps.session_id,
@@ -144,9 +148,7 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
                 agent_id=self.agent_id,
                 type="context.pre_compaction_snapshot",
                 payload={
-                    "messages": ModelMessagesTypeAdapter.dump_python(
-                        request_context.messages, mode="json"
-                    ),
+                    **snapshot,
                     "estimated_tokens": before,
                 },
             )
@@ -183,9 +185,7 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
             target_tokens=target,
             tokenizer=self._estimate_text,
         )
-        request_context.messages = await tiered.compact(
-            list(request_context.messages), ctx
-        )
+        request_context.messages = await tiered.compact(list(request_context.messages), ctx)
         after = self._tokens(request_context.messages)
         ctx.deps.events.append(
             Event(

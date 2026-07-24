@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -26,7 +25,9 @@ def _failure(kind: str, message: str) -> dict[str, Any]:
     return {"ok": False, "data": None, "error": {"type": kind, "message": message}, "metadata": {}}
 
 
-async def _rpc(ctx: RunContext[Any], server_id: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
+async def _rpc(
+    ctx: RunContext[Any], server_id: str, method: str, params: dict[str, Any]
+) -> dict[str, Any]:
     server = _config(ctx).get(server_id)
     if not server:
         raise ValueError(f"unknown MCP server: {server_id}")
@@ -76,14 +77,22 @@ async def mcp_search(
             for tool in listing.get("tools", []):
                 haystack = f"{tool.get('name', '')} {tool.get('description', '')}".casefold()
                 if query.casefold() in haystack:
-                    results.append({
-                        "server_id": current,
-                        "name": tool.get("name"),
-                        "description": tool.get("description"),
-                    })
+                    results.append(
+                        {
+                            "server_id": current,
+                            "name": tool.get("name"),
+                            "description": tool.get("description"),
+                        }
+                    )
                     if len(results) >= limit:
                         break
-    except (ValueError, PermissionError, RuntimeError, httpx.HTTPError, json.JSONDecodeError) as exc:
+    except (
+        ValueError,
+        PermissionError,
+        RuntimeError,
+        httpx.HTTPError,
+        json.JSONDecodeError,
+    ) as exc:
         return _failure(type(exc).__name__, str(exc))
     return {"ok": True, "data": results, "error": None, "metadata": {"count": len(results)}}
 
@@ -97,8 +106,16 @@ async def mcp_describe(
     """Load one MCP tool schema on demand."""
     try:
         listing = await _rpc(ctx, server_id, "tools/list", {})
-        tool = next((item for item in listing.get("tools", []) if item.get("name") == tool_name), None)
-    except (ValueError, PermissionError, RuntimeError, httpx.HTTPError, json.JSONDecodeError) as exc:
+        tool = next(
+            (item for item in listing.get("tools", []) if item.get("name") == tool_name), None
+        )
+    except (
+        ValueError,
+        PermissionError,
+        RuntimeError,
+        httpx.HTTPError,
+        json.JSONDecodeError,
+    ) as exc:
         return _failure(type(exc).__name__, str(exc))
     if not tool:
         return _failure("not_found", f"unknown MCP tool: {server_id}/{tool_name}")
@@ -117,7 +134,13 @@ async def mcp_call(
         result = await _rpc(
             ctx, server_id, "tools/call", {"name": tool_name, "arguments": arguments}
         )
-    except (ValueError, PermissionError, RuntimeError, httpx.HTTPError, json.JSONDecodeError) as exc:
+    except (
+        ValueError,
+        PermissionError,
+        RuntimeError,
+        httpx.HTTPError,
+        json.JSONDecodeError,
+    ) as exc:
         return _failure(type(exc).__name__, str(exc))
     encoded = json.dumps(result, ensure_ascii=False)
     truncated = len(encoded.encode()) > 200_000

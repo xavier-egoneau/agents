@@ -69,12 +69,9 @@ def stop_previous_instances(root: Path, api_port: int, web_port: int) -> list[in
                 conflicts.append((port, pid, process_command(pid)))
     if conflicts:
         details = "; ".join(
-            f"port {port}: PID {pid} ({command or 'unknown'})"
-            for port, pid, command in conflicts
+            f"port {port}: PID {pid} ({command or 'unknown'})" for port, pid, command in conflicts
         )
-        raise ConfigurationError(
-            f"refusing to stop non-AMK process(es): {details}"
-        )
+        raise ConfigurationError(f"refusing to stop non-AMK process(es): {details}")
     for pid in owned:
         _terminate(pid)
     return owned

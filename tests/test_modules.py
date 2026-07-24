@@ -33,3 +33,14 @@ def test_missing_entrypoint_is_rejected(project: Path) -> None:
     with pytest.raises(ModuleError, match="missing entrypoint"):
         registry.discover()
 
+
+def test_every_manifest_matches_runtime_and_exposes_contract_metadata(project: Path) -> None:
+    registry = ModuleRegistry(project / "tools")
+    index = registry.build_index()
+    registry.check_index()
+    for manifest in index.modules:
+        for tool in manifest.tools:
+            assert tool.input_schema, tool.name
+            assert tool.output_schema, tool.name
+            assert tool.category
+            assert tool.timeout_seconds is not None

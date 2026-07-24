@@ -1,22 +1,23 @@
 from __future__ import annotations
 
-import json
-import importlib.util
-import shutil
 import asyncio
+import importlib.util
+import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
 import pytest
+from pydantic_ai import ModelMessagesTypeAdapter
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+
 from agentic_kernel.events import JsonlEventStore
 from agentic_kernel.guardian import review_tool_call
 from agentic_kernel.kernel import Kernel
 from agentic_kernel.models import Event, GuardianVerdict, SecurityMode, ToolRisk
 from agentic_kernel.modules import ModuleRegistry
-from pydantic_ai import ModelMessagesTypeAdapter
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 
 def test_enriched_index_contains_runtime_schemas() -> None:
@@ -24,8 +25,10 @@ def test_enriched_index_contains_runtime_schemas() -> None:
     index = ModuleRegistry(root / "tools").check_index()
     command = next(
         tool
-        for module in index.modules if module.id == "process"
-        for tool in module.tools if tool.name == "command_run"
+        for module in index.modules
+        if module.id == "process"
+        for tool in module.tools
+        if tool.name == "command_run"
     )
     assert index.schema_version == 2
     assert command.category == "execution"
@@ -42,19 +45,31 @@ def test_command_guardian_modes(tmp_path: Path) -> None:
         "justification": "Launch the requested development server.",
     }
     safe = review_tool_call(
-        tool_name="process_start", tool_call_id="1", agent_id="main",
-        arguments=arguments, risks=[ToolRisk.EXECUTE],
-        mode=SecurityMode.SAFE, workspace=tmp_path,
+        tool_name="process_start",
+        tool_call_id="1",
+        agent_id="main",
+        arguments=arguments,
+        risks=[ToolRisk.EXECUTE],
+        mode=SecurityMode.SAFE,
+        workspace=tmp_path,
     )
     limited = review_tool_call(
-        tool_name="process_start", tool_call_id="2", agent_id="main",
-        arguments=arguments, risks=[ToolRisk.EXECUTE],
-        mode=SecurityMode.LIMITED, workspace=tmp_path,
+        tool_name="process_start",
+        tool_call_id="2",
+        agent_id="main",
+        arguments=arguments,
+        risks=[ToolRisk.EXECUTE],
+        mode=SecurityMode.LIMITED,
+        workspace=tmp_path,
     )
     install = review_tool_call(
-        tool_name="command_run", tool_call_id="3", agent_id="main",
-        arguments={**arguments, "args": ["install"]}, risks=[ToolRisk.EXECUTE],
-        mode=SecurityMode.LIMITED, workspace=tmp_path,
+        tool_name="command_run",
+        tool_call_id="3",
+        agent_id="main",
+        arguments={**arguments, "args": ["install"]},
+        risks=[ToolRisk.EXECUTE],
+        mode=SecurityMode.LIMITED,
+        workspace=tmp_path,
     )
     assert safe.verdict is GuardianVerdict.ASK
     assert limited.verdict is GuardianVerdict.ALLOW
@@ -105,11 +120,16 @@ async def test_command_and_persistent_process_lifecycle(tmp_path: Path) -> None:
 
     if not shutil.which("npm") or not shutil.which("node"):
         pytest.skip("Node.js toolchain is unavailable")
-    (tmp_path / "package.json").write_text(json.dumps({
-        "name": "amk-vite-lifecycle",
-        "private": True,
-        "scripts": {"dev": "node server.js"},
-    }), encoding="utf-8")
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "amk-vite-lifecycle",
+                "private": True,
+                "scripts": {"dev": "node server.js"},
+            }
+        ),
+        encoding="utf-8",
+    )
     (tmp_path / "server.js").write_text(
         "require('http').createServer((q,r)=>r.end('vite-ready'))"
         ".listen(8137,'127.0.0.1',()=>console.log('http://127.0.0.1:8137'))",
@@ -140,18 +160,22 @@ def test_long_history_is_loaded_intact_for_safe_request_time_compaction(
     session_id, run_id = uuid4(), uuid4()
     history = []
     for index in range(40):
-        history.extend([
-            ModelRequest(parts=[UserPromptPart(content=f"request-{index}-" + "x" * 5000)]),
-            ModelResponse(parts=[TextPart(content=f"response-{index}-" + "y" * 5000)]),
-        ])
+        history.extend(
+            [
+                ModelRequest(parts=[UserPromptPart(content=f"request-{index}-" + "x" * 5000)]),
+                ModelResponse(parts=[TextPart(content=f"response-{index}-" + "y" * 5000)]),
+            ]
+        )
     payload = ModelMessagesTypeAdapter.dump_python(history, mode="json")
-    kernel.events.append(Event(
-        session_id=session_id,
-        run_id=run_id,
-        agent_id="main",
-        type="messages.snapshot",
-        payload={"messages": payload},
-    ))
+    kernel.events.append(
+        Event(
+            session_id=session_id,
+            run_id=run_id,
+            agent_id="main",
+            type="messages.snapshot",
+            payload={"messages": payload},
+        )
+    )
     loaded = kernel._latest_message_history(
         session_id,
         uuid4(),
@@ -162,39 +186,42 @@ def test_long_history_is_loaded_intact_for_safe_request_time_compaction(
     assert len(loaded) == len(history)
     assert "response-39" in str(loaded[-1])
     snapshots = [
-        event for event in kernel.events.read(session_id)
-        if event.type == "messages.snapshot"
+        event for event in kernel.events.read(session_id) if event.type == "messages.snapshot"
     ]
-    assert len(snapshots[0].payload["messages"]) == len(history)
-    assert not any(
-        event.type == "context.compacted" for event in kernel.events.read(session_id)
-    )
+    assert len(kernel.snapshots.load(session_id, snapshots[0].payload)) == len(history)
+    assert not any(event.type == "context.compacted" for event in kernel.events.read(session_id))
 
 
 def test_failed_turn_prompt_is_recovered_for_continue(project: Path) -> None:
     kernel = Kernel(project)
     session_id, failed_run, current_run = uuid4(), uuid4(), uuid4()
-    kernel.events.append(Event(
-        session_id=session_id,
-        run_id=failed_run,
-        agent_id="main",
-        type="session.started",
-        payload={"prompt": "Build the requested project."},
-    ))
-    kernel.events.append(Event(
-        session_id=session_id,
-        run_id=failed_run,
-        agent_id="main",
-        type="session.completed",
-        payload={"status": "failed"},
-    ))
-    kernel.events.append(Event(
-        session_id=session_id,
-        run_id=current_run,
-        agent_id="main",
-        type="session.started",
-        payload={"prompt": "Continue."},
-    ))
+    kernel.events.append(
+        Event(
+            session_id=session_id,
+            run_id=failed_run,
+            agent_id="main",
+            type="session.started",
+            payload={"prompt": "Build the requested project."},
+        )
+    )
+    kernel.events.append(
+        Event(
+            session_id=session_id,
+            run_id=failed_run,
+            agent_id="main",
+            type="session.completed",
+            payload={"status": "failed"},
+        )
+    )
+    kernel.events.append(
+        Event(
+            session_id=session_id,
+            run_id=current_run,
+            agent_id="main",
+            type="session.started",
+            payload={"prompt": "Continue."},
+        )
+    )
     history = kernel._latest_message_history(session_id, current_run, "main")
     assert history is not None
     assert "Build the requested project." in str(history)
