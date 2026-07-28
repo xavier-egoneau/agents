@@ -2,8 +2,9 @@ import httpx
 import pytest
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 
-from agentic_kernel.errors import AuthenticationError
+from agentic_kernel.errors import AuthenticationError, ConfigurationError
 from agentic_kernel.models import ProviderRegistry
+from agentic_kernel.provider_adapters import ProviderAdapterRegistry
 from agentic_kernel.providers import ProviderFactory
 
 
@@ -49,6 +50,32 @@ def test_missing_api_key_explains_both_sources(monkeypatch) -> None:
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     with pytest.raises(AuthenticationError, match="providers.json api_key"):
         ProviderFactory(registry("api_key")).build("provider")
+
+
+def test_factory_uses_a_registered_adapter_boundary() -> None:
+    marker = object()
+
+    class Adapter:
+        key = "api_key"
+
+        def build(self, config, model_name, oauth):
+            assert config.id == "provider"
+            assert model_name == "model"
+            return marker
+
+    adapters = ProviderAdapterRegistry([Adapter()])
+    assert ProviderFactory(registry("api_key"), adapters=adapters).build("provider") is marker
+
+
+def test_adapter_registry_rejects_duplicate_keys() -> None:
+    class Adapter:
+        key = "local"
+
+        def build(self, config, model_name, oauth):
+            return object()
+
+    with pytest.raises(ConfigurationError, match="duplicate provider adapter"):
+        ProviderAdapterRegistry([Adapter(), Adapter()])
 
 
 def test_codex_requests_are_explicitly_not_stored() -> None:

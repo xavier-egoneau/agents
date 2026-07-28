@@ -77,6 +77,27 @@ def stop_previous_instances(root: Path, api_port: int, web_port: int) -> list[in
     return owned
 
 
+def available_web_port(
+    root: Path,
+    preferred: int,
+    api_port: int,
+    *,
+    attempts: int = 100,
+) -> int:
+    """Keep an owned AMK port restartable, but never evict another application."""
+    for port in range(preferred, preferred + attempts):
+        pids = [pid for pid in listening_pids(port) if pid != os.getpid()]
+        if not pids:
+            return port
+        if port == preferred and all(
+            is_amk_process(pid, root, port, api_port, preferred) for pid in pids
+        ):
+            return port
+    raise ConfigurationError(
+        f"no free web port found between {preferred} and {preferred + attempts - 1}"
+    )
+
+
 def _terminate(pid: int) -> None:
     try:
         os.kill(pid, signal.SIGTERM)
@@ -104,6 +125,13 @@ def run_web(root: Path, host: str, api_port: int, web_port: int) -> int:
     if npm is None:
         raise ConfigurationError("npm is required to launch the web surface")
     amk = shutil.which("amk") or str(Path(sys.executable).parent / "amk")
+    selected_web_port = available_web_port(root, web_port, api_port)
+    if selected_web_port != web_port:
+        print(
+            f"Port {web_port} is used by another application; "
+            f"AMK Web will use port {selected_web_port}."
+        )
+        web_port = selected_web_port
     stopped = stop_previous_instances(root, api_port, web_port)
     if stopped:
         print(f"Stopped previous AMK instance(s): {', '.join(map(str, stopped))}")

@@ -62,10 +62,16 @@ class PlanService:
                 title TEXT NOT NULL, status TEXT NOT NULL, dependencies_json TEXT NOT NULL,
                 parallelizable INTEGER NOT NULL, write_scopes_json TEXT NOT NULL,
                 note TEXT, claimed_by TEXT, claimed_at TEXT, lease_until TEXT, run_id TEXT,
+                validation_json TEXT,
                 PRIMARY KEY(plan_id, step_id),
                 FOREIGN KEY(plan_id) REFERENCES plans(plan_id) ON DELETE CASCADE
             )"""
         )
+        columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(plan_steps)").fetchall()
+        }
+        if "validation_json" not in columns:
+            db.execute("ALTER TABLE plan_steps ADD COLUMN validation_json TEXT")
         return db
 
     @staticmethod
@@ -114,6 +120,7 @@ class PlanService:
                     "claimed_at": None,
                     "lease_until": None,
                     "run_id": None,
+                    "validation": None,
                 }
             )
         self._validate_acyclic(payload)
@@ -233,6 +240,10 @@ class PlanService:
             ]
             if incomplete:
                 raise PlanConflict("step dependencies are not completed: " + ", ".join(incomplete))
+        if target.get("status") == "validating" and status == "completed":
+            raise PlanConflict(
+                "a delegated step must be completed with plan_validate and evidence"
+            )
         target.update(status=status, note=note)
         if status in {"completed", "blocked", "failed"}:
             target.update(
@@ -249,6 +260,48 @@ class PlanService:
             )
             self._replace_steps(db, plan_id, steps)
         return {**plan, "steps": steps, "updated_at": now}
+
+    def validate(
+        self,
+        plan_id: str,
+        step_id: str,
+        *,
+        session_id: UUID | str,
+        passed: bool,
+        evidence: list[str],
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a delegated validating step from explicit parent evidence."""
+        cleaned = list(dict.fromkeys(item.strip() for item in evidence if item.strip()))
+        if not cleaned:
+            raise PlanConflict("validation requires at least one evidence item")
+        plan = self.get(plan_id, session_id)
+        target = next((step for step in plan["steps"] if step["id"] == step_id), None)
+        if target is None:
+            raise PlanNotFound("step not found")
+        if target["status"] != "validating":
+            raise PlanConflict(f"step {step_id} is not awaiting validation")
+        now = datetime.now(UTC).isoformat()
+        target.update(
+            status="completed" if passed else "failed",
+            note=note,
+            validation={
+                "passed": passed,
+                "evidence": cleaned,
+                "validated_at": now,
+            },
+            claimed_by=None,
+            claimed_at=None,
+            lease_until=None,
+        )
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "UPDATE plans SET steps_json=?, updated_at=? WHERE plan_id=?",
+                (json.dumps(plan["steps"]), now, plan_id),
+            )
+            self._replace_steps(db, plan_id, plan["steps"])
+        return {**plan, "updated_at": now}
 
     def claim(
         self,
@@ -364,8 +417,8 @@ class PlanService:
             """INSERT INTO plan_steps
                (plan_id, step_id, ordinal, title, status, dependencies_json,
                 parallelizable, write_scopes_json, note, claimed_by, claimed_at,
-                lease_until, run_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                lease_until, run_id, validation_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     plan_id,
@@ -381,6 +434,11 @@ class PlanService:
                     step.get("claimed_at"),
                     step.get("lease_until"),
                     step.get("run_id"),
+                    (
+                        json.dumps(step["validation"])
+                        if step.get("validation") is not None
+                        else None
+                    ),
                 )
                 for index, step in enumerate(steps)
             ],
@@ -409,6 +467,11 @@ class PlanService:
                 "claimed_at": row["claimed_at"],
                 "lease_until": row["lease_until"],
                 "run_id": row["run_id"],
+                "validation": (
+                    json.loads(row["validation_json"])
+                    if row["validation_json"]
+                    else None
+                ),
             }
             for row in rows
         ]

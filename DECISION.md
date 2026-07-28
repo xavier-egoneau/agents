@@ -37,7 +37,10 @@ Les agents sont déclarés en Markdown et organisés en graphe acyclique de supe
 Chaque module possède son propre manifeste. `tools/index.json` est un artefact déterministe généré et vérifié, jamais la source primaire des métadonnées.
 
 ### 11. Secrets hors configuration
-Les clés sont référencées par variables d’environnement et les identifiants OAuth sont conservés dans le trousseau du système.
+Les identifiants OAuth sont conservés dans le trousseau du système. Les clés API
+peuvent être référencées par variable d’environnement, par le store local
+`secrets.json`, ou placées explicitement dans `providers.json`; ces deux fichiers
+sont écrits en `0600`, protégés des tools et masqués dans les traces.
 
 ### 12. Compatibilité des artefacts agents
 Le kernel consomme directement les agents Markdown Claude et `.agents`, les agents TOML Codex et le format partagé `SKILL.md`. Il normalise les métadonnées en mémoire sans réécrire ni déplacer les artefacts d’origine.
@@ -68,3 +71,24 @@ Le guardian décide, la sandbox réduit l’impact d’un contournement, et les
 résolveurs réseau bloquent DNS, redirections et sous-requêtes privées. Les
 valeurs de secrets connues sont masquées par valeur, pas seulement par nom de
 champ.
+
+### 18. RAG explicite et vérifiable
+Le corpus projet est découpé en chunks avec coordonnées de lignes, indexé dans
+SQLite FTS5 et associé à des embeddings configurables. La recherche fusionne
+lexical et vectoriel, mais le kernel n’injecte jamais automatiquement ses
+résultats : l’agent reçoit des extraits citables et reste tenu de vérifier les
+sources importantes. Les secrets, fichiers ignorés et journaux de session sont
+exclus avant toute indexation.
+
+### 19. Providers enregistrables
+`ProviderFactory` sélectionne un `ProviderAdapter` via un registre explicite.
+Les adaptateurs llama.cpp, API OpenAI-compatible, Codex OAuth et Claude OAuth
+restent internes et remplaçables. Aucun type SDK provider ne traverse l’API
+publique du kernel.
+
+### 20. Contexte compact, audit intégral
+La requête active est compactée à 70 % de la fenêtre connue et vise 50 % après
+réduction. Les lectures reproductibles sont dédupliquées avant un résumé
+sémantique structuré; les messages récents, mutations, approvals et preuves
+importantes sont protégés. Un snapshot exact compressé est écrit avant la
+compaction, et le JSONL reste intégralement reconstructible.

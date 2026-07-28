@@ -4,9 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
-import math
-import os
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,20 +18,18 @@ from pydantic_ai import (
     ModelSettings,
 )
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UsageLimitExceeded
-from pydantic_ai.messages import ImageUrl, ModelRequest, UserPromptPart
-from pydantic_ai.tools import DeferredToolResults, ToolApproved, ToolDenied
-from pydantic_ai.toolsets import FilteredToolset
+from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.usage import UsageLimits
 
+from .agent_factory import AgentFactory
+from .approval_service import ApprovalResume, ApprovalService
 from .approvals import ApprovalStore
-from .compaction import ContextWindowCompaction
 from .config import ProjectConfig
+from .context_service import ContextService, ModelContextRegistry, without_images
 from .errors import AuthenticationError, ConfigurationError, KernelError
 from .events import JsonlEventStore
-from .guardian import GuardianToolset
 from .models import (
     ApprovalRequest,
-    ApprovalResolution,
     Event,
     RunArtifact,
     RunError,
@@ -45,13 +41,10 @@ from .models import (
 from .modules import ModuleRegistry
 from .orchestration import (
     RuntimeDeps,
-    make_neutral_subagent_toolset,
-    make_subagents,
 )
 from .providers import ProviderFactory
 from .run_executor import RunExecutor
 from .secrets import SecretStore
-from .skills import skill_catalog_instruction, skill_toolset
 from .snapshots import SnapshotStore
 from .vision import LocalVisionService, VisionUnavailable
 from .workspace_map import WorkspaceMapService
@@ -67,9 +60,28 @@ class Kernel:
         self.events.rebuild_projection()
         self.snapshots = SnapshotStore(self.config.content_root / "sessions")
         self.approvals = ApprovalStore(self.config.content_root / "sessions")
+        self.approval_service = ApprovalService(self.approvals, self.events)
         self.secrets = SecretStore(self.config.content_root / "secrets.json")
         self.workspace_maps = WorkspaceMapService()
         self.vision = LocalVisionService(self.config.content_root)
+        self.context_registry = ModelContextRegistry(self.config.content_root)
+        self.context = ContextService(
+            config=self.config,
+            events=self.events,
+            snapshots=self.snapshots,
+            secrets=self.secrets,
+            module_registry=self.module_registry,
+            workspace_maps=self.workspace_maps,
+            registry=self.context_registry,
+        )
+        self.agent_factory = AgentFactory(
+            config=self.config,
+            module_registry=self.module_registry,
+            context=self.context,
+            context_registry=self.context_registry,
+            workspace_maps=self.workspace_maps,
+            runtime_instruction=_runtime_context_instruction,
+        )
         self.executor = RunExecutor(
             self.events,
             self.secrets,
@@ -391,7 +403,7 @@ class Kernel:
         return True
 
     def list_approvals(self) -> list[ApprovalRequest]:
-        return self.approvals.list_pending()
+        return self.approval_service.list_pending()
 
     async def resolve_approval(
         self,
@@ -400,16 +412,19 @@ class Kernel:
         *,
         _pre_resolved: bool = False,
     ) -> RunResult:
-        from uuid import UUID
+        prepared = self.approval_service.resolve(
+            approval_id,
+            approved,
+            pre_resolved=_pre_resolved,
+        )
+        if isinstance(prepared, RunResult):
+            return prepared
+        return await self._resume_approval(prepared)
 
-        approval_uuid = approval_id if isinstance(approval_id, UUID) else UUID(str(approval_id))
-        state = self.approvals.load_state(approval_uuid)
-        if state is None:
-            raise ConfigurationError(f"unknown pending approval: {approval_uuid}")
-        approval = ApprovalRequest.model_validate(state["approval"])
-        if "decision" in state and not _pre_resolved:
-            raise ConfigurationError(f"approval already resolved: {approval_uuid}")
-        request = RunRequest.model_validate(state["request"])
+    async def _resume_approval(self, prepared: ApprovalResume) -> RunResult:
+        request = prepared.request
+        approval = prepared.approval
+        state = prepared.state
         agents = self.config.agents()
         provider_factory = ProviderFactory(self.config.providers())
         active_provider_id = request.provider_id or agents[request.agent_id].provider
@@ -433,71 +448,7 @@ class Kernel:
             model_name=active_model,
             context_window_tokens=self._model_context_window(active_provider_id, active_model),
         )
-        if not _pre_resolved:
-            resolution = ApprovalResolution(approval_id=approval_uuid, approved=approved)
-            self.events.append(
-                Event(
-                    session_id=request.session_id,
-                    run_id=run_id,
-                    agent_id=approval.agent_id,
-                    type="approval.resolved",
-                    payload={
-                        **resolution.model_dump(mode="json"),
-                        "action_family": approval.action_family,
-                        "path": approval.path,
-                    },
-                )
-            )
-            self.approvals.save_state(
-                approval,
-                {key: value for key, value in state.items() if key != "approval"}
-                | {"decision": approved},
-            )
-        batch = self.approvals.states_for_run(request.session_id, approval.run_id)
-        unresolved = [item for item in batch if "decision" not in item]
-        if unresolved:
-            response = RunResult(
-                session_id=request.session_id,
-                run_id=run_id,
-                agent_id=request.agent_id,
-                status=RunStatus.APPROVAL_PENDING,
-                output=(
-                    f"Approval recorded. {len(unresolved)} approval(s) still pending "
-                    "before the run can continue."
-                ),
-            )
-            return response
-
-        # A session must only have one suspended model run. Older approvals can
-        # exist in data created before that invariant was enforced; once the
-        # latest run is resolved they are obsolete and must not block it again.
-        for stale in self.approvals.list_pending():
-            if stale.session_id != request.session_id or stale.run_id == approval.run_id:
-                continue
-            self.events.append(
-                Event(
-                    session_id=request.session_id,
-                    run_id=stale.run_id,
-                    agent_id=stale.agent_id,
-                    type="approval.superseded",
-                    payload={
-                        "approval_id": str(stale.approval_id),
-                        "superseded_by_run_id": str(approval.run_id),
-                    },
-                )
-            )
-            self.approvals.remove(stale.approval_id)
-
-        approval_results = {}
-        for item in batch:
-            batch_approval = ApprovalRequest.model_validate(item["approval"])
-            batch_approved = bool(item["decision"])
-            if batch_approved:
-                deps.approved_scopes.add((batch_approval.action_family, batch_approval.path))
-                approval_results[batch_approval.tool_call_id] = ToolApproved()
-            else:
-                approval_results[batch_approval.tool_call_id] = ToolDenied("Denied by the user.")
-            self.approvals.remove(batch_approval.approval_id)
+        deps.approved_scopes.update(prepared.approved_scopes)
         agent = self._build_agent(
             request.agent_id,
             agents,
@@ -512,7 +463,7 @@ class Kernel:
             model_override=request.model,
         )
         messages = ModelMessagesTypeAdapter.validate_json(state["messages"])
-        deferred = DeferredToolResults(approvals=approval_results)
+        deferred = DeferredToolResults(approvals=prepared.tool_results)
         self.active_runs[request.session_id] = deps
         self.events.append(
             Event(
@@ -520,7 +471,7 @@ class Kernel:
                 run_id=run_id,
                 agent_id=request.agent_id,
                 type="run.resumed",
-                payload={"state": "resuming", "approval_count": len(batch)},
+                payload={"state": "resuming", "approval_count": len(prepared.batch)},
             )
         )
         self.events.append(
@@ -582,47 +533,10 @@ class Kernel:
         return response
 
     async def resolve_approval_batch(self, approval_ids: list, approved: bool) -> RunResult:
-        if not approval_ids:
-            raise ConfigurationError("approval batch cannot be empty")
-        ids = [item if isinstance(item, UUID) else UUID(str(item)) for item in approval_ids]
-        pending_states = [self.approvals.load_state(item) for item in ids]
-        if any(state is None for state in pending_states):
-            raise ConfigurationError("approval batch contains an unknown approval")
-        pending_approvals = [
-            ApprovalRequest.model_validate(state["approval"])
-            for state in pending_states
-            if state is not None
-        ]
-        if len({(item.session_id, item.run_id) for item in pending_approvals}) != 1:
-            raise ConfigurationError("all approvals in a batch must belong to the same run")
-        try:
-            states = self.approvals.resolve_many(ids, approved)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            raise ConfigurationError(str(exc)) from exc
-        approvals = [ApprovalRequest.model_validate(item["approval"]) for item in states]
-        for approval in approvals:
-            resolution = ApprovalResolution(
-                approval_id=approval.approval_id,
-                approved=approved,
-            )
-            self.events.append(
-                Event(
-                    session_id=approval.session_id,
-                    run_id=approval.run_id,
-                    agent_id=approval.agent_id,
-                    type="approval.resolved",
-                    payload={
-                        **resolution.model_dump(mode="json"),
-                        "action_family": approval.action_family,
-                        "path": approval.path,
-                    },
-                )
-            )
-        return await self.resolve_approval(
-            approvals[-1].approval_id,
-            approved,
-            _pre_resolved=True,
-        )
+        prepared = self.approval_service.resolve_many(approval_ids, approved)
+        if isinstance(prepared, RunResult):
+            return prepared
+        return await self._resume_approval(prepared)
 
     def _run_native_secret_command(
         self,
@@ -668,31 +582,10 @@ class Kernel:
             )
 
     def _persist_pending(self, request, run_id, deps, result) -> RunResult:
-        for call in result.output.approvals:
-            approval = deps.pending_approvals.get(call.tool_call_id)
-            if approval is None:
-                continue
-            self.approvals.save_state(
-                approval,
-                {
-                    "request": request.model_dump(mode="json"),
-                    "messages": result.all_messages_json().decode(),
-                },
-            )
-        return RunResult(
-            session_id=request.session_id,
-            run_id=run_id,
-            agent_id=request.agent_id,
-            status=RunStatus.APPROVAL_PENDING,
-            output="Approval required before the run can continue.",
-        )
+        return self.approval_service.persist_pending(request, run_id, deps, result)
 
     def _approved_scopes(self, session_id):
-        scopes: set[tuple[str, str | None]] = set()
-        for event in self.events.read(session_id):
-            if event.type == "approval.resolved" and event.payload.get("approved"):
-                scopes.add((event.payload.get("action_family", "other"), event.payload.get("path")))
-        return scopes
+        return self.approval_service.approved_scopes(session_id)
 
     def _tool_catalog(self) -> list[dict[str, Any]]:
         indexed = [
@@ -775,197 +668,24 @@ class Kernel:
         context_window_tokens: int | None,
         workspace: Path,
     ) -> RunResult:
-        run_id = uuid4()
-        self.events.append(
-            Event(
-                session_id=request.session_id,
-                run_id=run_id,
-                agent_id=request.agent_id,
-                type="session.started",
-                payload={
-                    "prompt": display_prompt,
-                    "skills": request.skills,
-                    "resolved_command": command,
-                    "workspace": str(workspace),
-                    "security_mode": request.security_mode,
-                    "provider_id": provider_id,
-                    "model": model_name,
-                    "reasoning": request.reasoning,
-                    "trigger": request.trigger,
-                    "cron_job_id": request.cron_job_id,
-                    "images": [],
-                },
-            )
+        return self.context.run_native_command(
+            request=request,
+            display_prompt=display_prompt,
+            command=command,
+            provider_id=provider_id,
+            model_name=model_name,
+            context_window_tokens=context_window_tokens,
+            workspace=workspace,
         )
-        if command == "/model-context":
-            raw_value = display_prompt.lstrip()[len(command) :].strip()
-            try:
-                size = self._parse_context_size(raw_value)
-                self._store_model_context_window(provider_id, model_name, size)
-                status = RunStatus.SUCCESS
-                output = (
-                    f"Fenêtre enregistrée pour `{provider_id}/{model_name}` : "
-                    f"**{size:,} tokens**. La compaction automatique se déclenchera "
-                    f"à **{math.floor(size * 0.7):,} tokens**."
-                )
-                event_type = "context.window_updated"
-                event_payload = {
-                    "provider_id": provider_id,
-                    "model": model_name,
-                    "context_window_tokens": size,
-                    "source": "rppl:/model-context",
-                }
-            except (ValueError, ConfigurationError) as exc:
-                status = RunStatus.FAILED
-                output = (
-                    f"Impossible de définir la fenêtre : {exc}. "
-                    "Utilise par exemple `/model-context 128000`."
-                )
-                event_type = "context.window_update_failed"
-                event_payload = {"error": str(exc)}
-        else:
-            events = self.events.read(request.session_id)
-            snapshot = next(
-                (
-                    event
-                    for event in reversed(events)
-                    if event.type == "messages.snapshot"
-                    and self.snapshots.load(request.session_id, event.payload) is not None
-                ),
-                None,
-            )
-            snapshot_messages = (
-                self.snapshots.load(request.session_id, snapshot.payload) if snapshot else []
-            )
-            estimated = self._estimate_tokens(
-                json.dumps(
-                    snapshot_messages,
-                    ensure_ascii=False,
-                )
-            )
-            ratio = estimated / context_window_tokens if context_window_tokens else None
-            compactions = [event for event in events if event.type == "context.compacted"]
-            output = "\n".join(
-                [
-                    "### État du contexte",
-                    "",
-                    f"- Provider : `{provider_id}`",
-                    f"- Modèle : `{model_name or 'non résolu'}`",
-                    (
-                        f"- Fenêtre connue : **{context_window_tokens:,} tokens**"
-                        if context_window_tokens
-                        else "- Fenêtre connue : **non**"
-                    ),
-                    f"- Historique estimé : **{estimated:,} tokens**",
-                    (
-                        f"- Occupation estimée : **{ratio:.1%}**"
-                        if ratio is not None
-                        else "- Occupation estimée : indisponible"
-                    ),
-                    (
-                        f"- Seuil automatique (70 %) : "
-                        f"**{math.floor(context_window_tokens * 0.7):,} tokens**"
-                        if context_window_tokens
-                        else "- Seuil automatique : inconnu — utilise `/model-context <tokens>`"
-                    ),
-                    f"- Compactions enregistrées : **{len(compactions)}**",
-                    "- Source de vérité complète : journal JSONL append-only",
-                ]
-            )
-            status = RunStatus.SUCCESS
-            event_type = "context.inspected"
-            event_payload = {
-                "provider_id": provider_id,
-                "model": model_name,
-                "context_window_tokens": context_window_tokens,
-                "estimated_history_tokens": estimated,
-                "estimated_ratio": ratio,
-                "compaction_count": len(compactions),
-            }
-        self.events.append(
-            Event(
-                session_id=request.session_id,
-                run_id=run_id,
-                agent_id="kernel",
-                type=event_type,
-                payload=event_payload,
-            )
-        )
-        result = RunResult(
-            session_id=request.session_id,
-            run_id=run_id,
-            agent_id=request.agent_id,
-            status=status,
-            output=output,
-            errors=(
-                [RunError(type="validation", message=event_payload["error"])]
-                if status is RunStatus.FAILED
-                else []
-            ),
-        )
-        self.events.append(
-            Event(
-                session_id=request.session_id,
-                run_id=run_id,
-                agent_id=request.agent_id,
-                type="session.completed",
-                payload=result.model_dump(mode="json"),
-            )
-        )
-        return result
 
     @staticmethod
     def _parse_context_size(value: str) -> int:
-        normalized = value.strip().lower().replace("_", "").replace(" ", "")
-        multiplier = 1
-        if normalized.endswith("k"):
-            normalized, multiplier = normalized[:-1], 1_000
-        elif normalized.endswith("m"):
-            normalized, multiplier = normalized[:-1], 1_000_000
-        try:
-            result = int(float(normalized) * multiplier)
-        except ValueError as exc:
-            raise ValueError("taille absente ou invalide") from exc
-        if not 1_024 <= result <= 10_000_000:
-            raise ValueError("la taille doit être comprise entre 1 024 et 10 000 000")
-        return result
+        return ModelContextRegistry.parse_size(value)
 
     def _store_model_context_window(
         self, provider_id: str, model_name: str | None, size: int
     ) -> None:
-        if not model_name:
-            raise ConfigurationError("le modèle actif n’est pas résolu")
-        path = self.config.content_root / "models-infos.json"
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            data = {"schema_version": 1, "models": []}
-        except json.JSONDecodeError as exc:
-            raise ConfigurationError(f"registre invalide : {exc}") from exc
-        models = [
-            item
-            for item in data.get("models", [])
-            if not (item.get("provider_id") == provider_id and item.get("model") == model_name)
-        ]
-        models.append(
-            {
-                "provider_id": provider_id,
-                "model": model_name,
-                "context_window_tokens": size,
-                "source": "user-confirmed-rppl",
-                "updated_at": datetime.now().astimezone().isoformat(),
-            }
-        )
-        data = {
-            "schema_version": 1,
-            "models": sorted(models, key=lambda item: (item["provider_id"], item["model"])),
-        }
-        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-        temporary.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, path)
+        self.context_registry.set(provider_id, model_name, size)
 
     def context_status(
         self,
@@ -975,112 +695,26 @@ class Kernel:
         model_name: str | None,
     ) -> dict[str, Any]:
         """Return a measured context status without creating a model turn."""
-        window = self._model_context_window(provider_id, model_name)
-        estimated = 0
-        observed = None
-        compaction_count = 0
-        calibration_factor = 1.0
-        calibration_samples = 0
-        session = None
-        if session_id is not None:
-            projected = self.events.projection.context(session_id)
-            if projected is not None:
-                estimated = int(projected["estimated_history_tokens"])
-                observed = projected["observed_input_tokens"]
-                compaction_count = int(projected["compaction_count"])
-                calibration_factor = float(projected["calibration_factor"])
-                calibration_samples = int(projected["calibration_samples"])
-            session = self.events.projection.session(session_id)
-        try:
-            agent = self.config.agents()["main"]
-            skills = self.config.skills(
-                Path(session["workspace"]) if session and session.get("workspace") else None
-            )
-            overhead = self._context_overhead_tokens(
-                agent,
-                skills,
-                "",
-                Path(session["workspace"]) if session and session.get("workspace") else None,
-            )
-        except (KeyError, OSError, ValueError):
-            overhead = 0
-        calibrated_history = round(estimated * calibration_factor)
-        complete_estimate = calibrated_history + overhead
-        gauge_value = int(observed) if isinstance(observed, int) else complete_estimate
-        ratio = gauge_value / window if window else None
-        return {
-            "provider_id": provider_id,
-            "model": model_name,
-            "context_window_tokens": window,
-            "estimated_history_tokens": estimated,
-            "estimated_request_tokens": complete_estimate,
-            "observed_input_tokens": observed,
-            "estimated_ratio": ratio,
-            "compaction_threshold_ratio": 0.7,
-            "compaction_count": compaction_count,
-            "measurement": "observed" if observed is not None else "estimated",
-            "calibration_factor": calibration_factor,
-            "calibration_samples": calibration_samples,
-        }
+        return self.context.status(
+            session_id=session_id,
+            provider_id=provider_id,
+            model_name=model_name,
+        )
 
     def _model_context_window(self, provider_id: str, model_name: str | None) -> int | None:
-        if not model_name:
-            return None
-        path = self.config.content_root / "models-infos.json"
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        for item in data.get("models", []):
-            if (
-                isinstance(item, dict)
-                and item.get("provider_id") == provider_id
-                and item.get("model") == model_name
-                and isinstance(item.get("context_window_tokens"), int)
-            ):
-                return item["context_window_tokens"]
-        return None
+        return self.context_registry.get(provider_id, model_name)
 
     @staticmethod
     def _estimate_tokens(value: str) -> int:
-        # Provider-independent conservative estimate. Exact tokenizers differ;
-        # UTF-8 bytes / 3.5 avoids systematically undercounting non-ASCII text.
-        return max(1, math.ceil(len(value.encode("utf-8")) / 3.5))
+        return ContextService.estimate_tokens(value)
 
     def _context_overhead_tokens(
         self, agent_config, skills, prompt: str, workspace: Path | None = None
     ) -> int:
-        components = [
-            self.config.system_instructions(),
-            agent_config.instructions,
-            prompt,
-            self.workspace_maps.build(workspace or self.config.root).render(),
-            self._secret_catalog_instruction(),
-        ]
-        components.extend(
-            skills[name].instructions for name in agent_config.skills if name in skills
-        )
-        try:
-            components.append(self.module_registry.index_path.read_text(encoding="utf-8"))
-        except OSError:
-            pass
-        return self._estimate_tokens("\n".join(components))
+        return self.context.overhead_tokens(agent_config, skills, prompt, workspace)
 
     def _secret_catalog_instruction(self) -> str:
-        names = self.secrets.names()
-        if not names:
-            return ""
-        return "\n".join(
-            [
-                "# Available secret references",
-                (
-                    "Only these variable names are visible. Their values are held by "
-                    "the kernel and must never be requested from secrets.json or "
-                    "repeated in arguments, output, or traces."
-                ),
-                *(f"- `{name}`" for name in names),
-            ]
-        )
+        return self.context.secret_catalog_instruction()
 
     def _latest_message_history(
         self,
@@ -1092,52 +726,13 @@ class Kernel:
         overhead_tokens: int = 0,
         supports_vision: bool = True,
     ):
-        """Load, recover failed turns, and compact history without losing audit."""
-        events = self.events.read(session_id)
-        history: list[Any] = []
-        snapshot_index = -1
-        for index in range(len(events) - 1, -1, -1):
-            event = events[index]
-            messages = (
-                self.snapshots.load(session_id, event.payload)
-                if event.type == "messages.snapshot"
-                else None
-            )
-            if messages is not None:
-                history = list(ModelMessagesTypeAdapter.validate_python(messages))
-                if not supports_vision:
-                    history = _without_images(history)
-                snapshot_index = index
-                break
-
-        # A provider or usage-limit failure may happen before Pydantic returns a
-        # model snapshot. Preserve those user turns from the append-only audit
-        # so “continue” in the same session still has the original request.
-        for event in events[snapshot_index + 1 :]:
-            if (
-                event.type == "session.started"
-                and event.run_id != run_id
-                and isinstance(event.payload.get("prompt"), str)
-            ):
-                history.append(
-                    ModelRequest(parts=[UserPromptPart(content=event.payload["prompt"])])
-                )
-        if context_window_tokens is None and run_id is not None:
-            self.events.append(
-                Event(
-                    session_id=session_id,
-                    run_id=run_id,
-                    agent_id=agent_id,
-                    type="context.window_unknown",
-                    payload={"compaction_threshold": 0.7},
-                )
-            )
-        if not history:
-            return None
-        # Compaction is intentionally deferred to ContextWindowCompaction,
-        # immediately before the model request. That provider-safe pipeline
-        # preserves tool-call/result pairs and is shared by old and live turns.
-        return history
+        return self.context.latest_history(
+            session_id,
+            run_id,
+            agent_id,
+            context_window_tokens=context_window_tokens,
+            supports_vision=supports_vision,
+        )
 
     async def _run_root_with_retries(
         self, root_agent, request, deps, budgets, run_id, message_history=None
@@ -1218,170 +813,19 @@ class Kernel:
         model_override: str | None = None,
         force_compaction: bool = False,
     ) -> Agent[RuntimeDeps, Any]:
-        if depth > budgets.max_depth:
-            raise ConfigurationError(
-                f"agent graph exceeds configured depth {budgets.max_depth} at {agent_id}"
-            )
-        config = configs[agent_id]
-        resolved_provider_id = provider_override or config.provider
-        resolved_model_name = (
-            model_override
-            or config.model
-            or provider_factory.get_config(resolved_provider_id).model
-        )
-        context_window_tokens = self._model_context_window(
-            resolved_provider_id, resolved_model_name
-        )
-        loaded_modules = self.module_registry.load_enabled()
-        requested_skills = list(dict.fromkeys([*config.skills, *(runtime_skills or [])]))
-        missing_skills = set(requested_skills) - skills.keys()
-        if missing_skills:
-            raise ConfigurationError(
-                f"agent {agent_id} references unknown skills: {sorted(missing_skills)}"
-            )
-        child_agents = [
-            self._build_agent(
-                child,
-                configs,
-                provider_factory,
-                budgets,
-                depth + 1,
-                skills,
-                workspace=workspace,
-                security_mode=security_mode,
-            )
-            for child in config.delegates
-        ]
-        instructions = [
-            self.config.system_instructions(),
-            _runtime_context_instruction(
-                workspace or self.config.root,
-                security_mode or SecurityMode.LIMITED,
-                provider_id=resolved_provider_id,
-                model_name=resolved_model_name,
-                context_window_tokens=context_window_tokens,
-            ),
-            self.workspace_maps.build(workspace or self.config.root).render(),
-            self._secret_catalog_instruction(),
-            config.instructions,
-        ]
-        for skill_id in requested_skills:
-            skill = skills[skill_id]
-            instructions.append(
-                f"# Skill: {skill.name}\n\n{skill.description}\n\n{skill.instructions}"
-            )
-        toolsets: list[Any] = []
-        neutral_toolsets: list[Any] = []
-        capabilities: list[Any] = []
-        disabled_tools = self.config.disabled_tools(agent_id)
-        selected_tools = set(config.declared_tools)
-        known_tools = {tool.name for manifest, _ in loaded_modules for tool in manifest.tools}
-        unknown_disabled = disabled_tools - known_tools
-        if unknown_disabled:
-            raise ConfigurationError(
-                f"agent {agent_id} disables unknown tools: {sorted(unknown_disabled)}"
-            )
-        for manifest, module in loaded_modules:
-            instructions.extend(module.instructions())
-            risks = {tool.name: tool.risk_tags for tool in manifest.tools}
-            timeouts = {tool.name: tool.timeout_seconds for tool in manifest.tools}
-            for module_toolset in module.toolsets():
-                filtered = FilteredToolset(
-                    module_toolset,
-                    lambda _ctx, tool_def, disabled=disabled_tools, selected=selected_tools: (
-                        tool_def.name not in disabled
-                        and (not selected or tool_def.name in selected)
-                    ),
-                )
-                toolsets.append(
-                    GuardianToolset(filtered, agent_id=agent_id, risks=risks, timeouts=timeouts)
-                )
-            for module_toolset in module.toolsets():
-                neutral_filtered = FilteredToolset(
-                    module_toolset,
-                    lambda _ctx, tool_def, disabled=disabled_tools, selected=selected_tools: (
-                        tool_def.name not in disabled
-                        and (not selected or tool_def.name in selected)
-                    ),
-                )
-                neutral_toolsets.append(
-                    GuardianToolset(
-                        neutral_filtered,
-                        agent_id="subagent",
-                        risks=risks,
-                        timeouts=timeouts,
-                    )
-                )
-            capabilities.extend(module.capabilities())
-        catalog = skill_catalog_instruction(skills)
-        loader = skill_toolset(skills)
-        if catalog:
-            instructions.append(catalog)
-        if loader:
-            toolsets.append(loader)
-        if child_agents:
-            capabilities.append(make_subagents(config.id, child_agents, budgets))
-        capabilities.append(
-            ContextWindowCompaction(
-                agent_id=config.id,
-                context_window_tokens=context_window_tokens,
-                all_tool_names=known_tools,
-                overhead_tokens=self._context_overhead_tokens(config, skills, "", workspace),
-                force=force_compaction,
-            )
-        )
-        neutral_model = provider_factory.build(
-            resolved_provider_id,
-            resolved_model_name,
-        )
-        neutral_agent = Agent(
-            neutral_model,
-            name=f"{config.id}_subagent",
-            description="Neutral ephemeral subagent with a runtime-assigned role.",
-            deps_type=RuntimeDeps,
-            instructions=[
-                self.config.system_instructions(),
-                _runtime_context_instruction(
-                    workspace or self.config.root,
-                    security_mode or SecurityMode.LIMITED,
-                    provider_id=resolved_provider_id,
-                    model_name=resolved_model_name,
-                    context_window_tokens=context_window_tokens,
-                ),
-                self.workspace_maps.build(workspace or self.config.root).render(),
-                self._secret_catalog_instruction(),
-                (
-                    "You are a neutral ephemeral subagent. Your role, bounded task, "
-                    "scope and expected output are supplied in the user prompt. "
-                    "Do not expand them, delegate again, or modify the parent plan."
-                ),
-            ],
-            toolsets=neutral_toolsets,
-            capabilities=[
-                ContextWindowCompaction(
-                    agent_id="subagent",
-                    context_window_tokens=context_window_tokens,
-                    all_tool_names=known_tools,
-                    overhead_tokens=self._context_overhead_tokens(config, skills, "", workspace),
-                )
-            ],
-            output_type=str,
-            max_concurrency=budgets.max_concurrency,
-        )
-        toolsets.append(make_neutral_subagent_toolset(config.id, neutral_agent, budgets))
-        return Agent(
-            provider_factory.build(
-                provider_override or config.provider,
-                model_override or config.model,
-            ),
-            name=config.id,
-            description=config.description,
-            deps_type=RuntimeDeps,
-            instructions=instructions,
-            toolsets=toolsets,
-            capabilities=capabilities,
-            output_type=[str, DeferredToolRequests],
-            max_concurrency=budgets.max_concurrency,
+        return self.agent_factory.build(
+            agent_id,
+            configs,
+            provider_factory,
+            budgets,
+            depth,
+            skills,
+            runtime_skills=runtime_skills,
+            workspace=workspace,
+            security_mode=security_mode,
+            provider_override=provider_override,
+            model_override=model_override,
+            force_compaction=force_compaction,
         )
 
     def _failed(self, request, run_id, status, exc, retryable) -> RunResult:
@@ -1402,30 +846,7 @@ class Kernel:
 
 
 def _without_images(messages: list[Any]) -> list[Any]:
-    """Keep text history usable when switching from a vision to a text model."""
-    sanitized: list[Any] = []
-    for message in messages:
-        if not isinstance(message, ModelRequest):
-            sanitized.append(message)
-            continue
-        parts: list[Any] = []
-        for part in message.parts:
-            if not isinstance(part, UserPromptPart) or not isinstance(part.content, list):
-                parts.append(part)
-                continue
-            content: list[Any] = []
-            for item in part.content:
-                if isinstance(item, ImageUrl) or (
-                    isinstance(item, BinaryContent) and item.is_image
-                ):
-                    content.append(
-                        "[Image jointe omise : le modèle actif ne prend pas en charge la vision.]"
-                    )
-                else:
-                    content.append(item)
-            parts.append(replace(part, content=content))
-        sanitized.append(replace(message, parts=parts))
-    return sanitized
+    return without_images(messages)
 
 
 def _transient_http_status(status_code: int) -> bool:

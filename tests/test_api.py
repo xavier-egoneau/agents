@@ -102,6 +102,25 @@ def test_plan_api_uses_shared_plan_service(project: Path) -> None:
     )
 
 
+def test_completed_plan_is_archived_from_composer_state(project: Path) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    session_id = uuid4()
+    service = PlanService(project / "content-agents" / "state.db")
+    plan = service.create(
+        session_id,
+        "Finished iteration",
+        [PlanStepInput(id="T1", title="Done")],
+    )
+    service.update(plan["plan_id"], "T1", "completed", session_id=session_id)
+
+    response = TestClient(create_app(project)).get(
+        "/api/plans/current", params={"session_id": str(session_id)}
+    )
+
+    assert response.status_code == 200
+    assert response.json() is None
+
+
 def test_cron_api_crud(project: Path) -> None:
     ModuleRegistry(project / "tools").build_index()
     client = TestClient(create_app(project))

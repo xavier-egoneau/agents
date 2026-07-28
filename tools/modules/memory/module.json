@@ -2,7 +2,7 @@
   "schema_version": 2,
   "id": "memory",
   "name": "Memory",
-  "description": "Mémoire explicite SQLite et recherche de connaissances locales.",
+  "description": "Mémoire explicite SQLite et RAG hybride local avec chunks, FTS5 et embeddings.",
   "version": "1.0.0",
   "entrypoint": "module.py:module",
   "capabilities": ["tools"],
@@ -11,8 +11,8 @@
     {"name": "memory_search", "description": "Rechercher des mémoires dans une portée.", "category": "memory", "risk_tags": ["read"], "timeout_seconds": 15},
     {"name": "memory_get", "description": "Lire une mémoire par identifiant.", "category": "memory", "risk_tags": ["read"], "timeout_seconds": 15},
     {"name": "memory_forget", "description": "Supprimer explicitement une mémoire.", "category": "memory", "risk_tags": ["destructive"], "timeout_seconds": 15},
-    {"name": "knowledge_index", "description": "Indexer incrémentalement des fichiers texte du projet.", "category": "knowledge", "risk_tags": ["read", "write"], "timeout_seconds": 120, "cancellable": true},
-    {"name": "knowledge_search", "description": "Rechercher dans l'index local du projet.", "category": "knowledge", "risk_tags": ["read"], "timeout_seconds": 30}
+    {"name": "knowledge_index", "description": "Découper et indexer incrémentalement les fichiers avec FTS5 et embeddings.", "category": "knowledge", "risk_tags": ["read", "write"], "timeout_seconds": 120, "cancellable": true, "persistent": true},
+    {"name": "knowledge_search", "description": "Recherche hybride lexicale/vectorielle avec reranking et citations de lignes.", "category": "knowledge", "risk_tags": ["read"], "timeout_seconds": 30}
   ],
   "enabled": true
 }

@@ -141,6 +141,36 @@ async def plan_claim(
     return {"ok": True, "data": step, "error": None, "metadata": {}}
 
 
+async def plan_validate(
+    ctx: RunContext[Any],
+    plan_id: str,
+    step_id: str,
+    passed: bool,
+    evidence: list[str],
+    note: str | None = None,
+    justification: str = "",
+) -> dict[str, Any]:
+    """Validate a delegated result from explicit parent checks and evidence."""
+    try:
+        plan = _plans(ctx).validate(
+            plan_id,
+            step_id,
+            session_id=ctx.deps.session_id,
+            passed=passed,
+            evidence=evidence,
+            note=note,
+        )
+    except (PlanNotFound, PlanConflict) as exc:
+        return {
+            "ok": False,
+            "data": None,
+            "error": {"type": "validation_failed", "message": str(exc)},
+            "metadata": {},
+        }
+    step = next(item for item in plan["steps"] if item["id"] == step_id)
+    return {"ok": True, "data": step, "error": None, "metadata": {}}
+
+
 async def evaluate_result(
     ctx: RunContext[Any],
     result: str,
@@ -350,6 +380,7 @@ class OperationsModule:
                     plan_status,
                     plan_ready,
                     plan_claim,
+                    plan_validate,
                     evaluate_result,
                     session_status,
                     checkpoint_create,

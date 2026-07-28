@@ -60,6 +60,25 @@ async def test_context_commands_are_deterministic_kernel_operations(
     assert any(event.type == "context.inspected" for event in events)
 
 
+async def test_invalid_model_context_is_a_persisted_validation_failure(
+    project: Path,
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    kernel = Kernel(project)
+
+    result = await kernel.run(RunRequest(prompt="/model-context beaucoup"))
+
+    assert result.status == RunStatus.FAILED
+    assert result.errors[0].type == "validation"
+    events = kernel.events.read(result.session_id)
+    assert [event.type for event in events] == [
+        "session.started",
+        "context.window_update_failed",
+        "session.completed",
+    ]
+    assert events[-1].payload["status"] == "failed"
+
+
 async def test_secret_commands_never_reach_model_or_session_log(project: Path, monkeypatch) -> None:
     ModuleRegistry(project / "tools").build_index()
 

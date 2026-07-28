@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import Field
 from pydantic_ai import FunctionToolset, RunContext
 
+from agentic_kernel.rag import RagService, load_rag_config
+
 Scope = Literal["session", "project", "agent"]
-MAX_FILE_BYTES = 1_000_000
 
 
 def _db(ctx: RunContext[Any]) -> sqlite3.Connection:
@@ -25,14 +26,17 @@ def _db(ctx: RunContext[Any]) -> sqlite3.Connection:
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         )"""
     )
-    db.execute(
-        """CREATE TABLE IF NOT EXISTS knowledge (
-            project TEXT NOT NULL, path TEXT NOT NULL, sha256 TEXT NOT NULL,
-            content TEXT NOT NULL, indexed_at TEXT NOT NULL,
-            PRIMARY KEY(project, path)
-        )"""
-    )
     return db
+
+
+def _rag(ctx: RunContext[Any]) -> RagService:
+    state_db = Path(ctx.deps.state_db or (ctx.deps.events.directory.parent / "state.db"))
+    return RagService(
+        state_db,
+        Path(ctx.deps.workspace),
+        load_rag_config(state_db.parent),
+        secret_resolver=getattr(ctx.deps, "secret_resolver", None),
+    )
 
 
 def _scope_id(ctx: RunContext[Any], scope: Scope, agent_id: str | None) -> str:
@@ -146,57 +150,21 @@ async def knowledge_index(
     extensions: list[str] | None = None,
     justification: str = "",
 ) -> dict[str, Any]:
-    """Incrementally index bounded UTF-8 project files in local SQLite."""
+    """Incrementally chunk and embed bounded UTF-8 project files in local SQLite."""
     root = (ctx.deps.workspace / path).resolve()
     allowed = set(
         extensions
         or [".md", ".txt", ".py", ".js", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml"]
     )
-    candidates = (
-        [root]
-        if root.is_file()
-        else sorted(
-            (
-                item
-                for item in root.rglob("*")
-                if item.is_file() and item.suffix.casefold() in allowed
-            ),
-            key=lambda item: str(item).casefold(),
-        )
-    )
-    changed = skipped = 0
-    with _db(ctx) as db:
-        for candidate in candidates[:5000]:
-            try:
-                raw = candidate.read_bytes()
-                if len(raw) > MAX_FILE_BYTES:
-                    skipped += 1
-                    continue
-                content = raw.decode("utf-8")
-            except (OSError, UnicodeError):
-                skipped += 1
-                continue
-            digest = hashlib.sha256(raw).hexdigest()
-            relative = str(candidate.relative_to(ctx.deps.workspace))
-            existing = db.execute(
-                "SELECT sha256 FROM knowledge WHERE project = ? AND path = ?",
-                (str(ctx.deps.workspace), relative),
-            ).fetchone()
-            if existing and existing["sha256"] == digest:
-                continue
-            db.execute(
-                """INSERT INTO knowledge VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(project, path) DO UPDATE SET
-                   sha256=excluded.sha256, content=excluded.content,
-                   indexed_at=excluded.indexed_at""",
-                (str(ctx.deps.workspace), relative, digest, content, datetime.now(UTC).isoformat()),
-            )
-            changed += 1
+    data = await _rag(ctx).index(root, allowed)
     return {
         "ok": True,
-        "data": {"indexed": changed, "skipped": skipped},
+        "data": data,
         "error": None,
-        "metadata": {"embedding_backend": "lexical"},
+        "metadata": {
+            "backend": "hybrid_fts5_vector",
+            "incremental": True,
+        },
     }
 
 
@@ -206,24 +174,19 @@ async def knowledge_search(
     limit: Annotated[int, Field(ge=1, le=50)] = 10,
     justification: str = "",
 ) -> dict[str, Any]:
-    """Search the local project knowledge index with bounded excerpts."""
-    with _db(ctx) as db:
-        rows = db.execute(
-            """SELECT path, content FROM knowledge
-               WHERE project = ? AND lower(content) LIKE ? ORDER BY path LIMIT ?""",
-            (str(ctx.deps.workspace), f"%{query.casefold()}%", limit),
-        ).fetchall()
-    results = []
-    for row in rows:
-        content, needle = row["content"], query.casefold()
-        position = content.casefold().find(needle)
-        start = max(0, position - 500)
-        results.append({"path": row["path"], "excerpt": content[start : start + 1500]})
+    """Run hybrid lexical/vector retrieval with bounded, line-addressable evidence."""
+    data = await _rag(ctx).search(query, limit)
     return {
         "ok": True,
-        "data": results,
+        "data": data["results"],
         "error": None,
-        "metadata": {"count": len(results), "backend": "lexical"},
+        "metadata": {
+            "count": len(data["results"]),
+            "backend": data["backend"],
+            "embedding_backend": data["embedding_backend"],
+            "embedding_model": data["embedding_model"],
+            "query": data["query"],
+        },
     }
 
 
@@ -245,7 +208,8 @@ class MemoryModule:
     def instructions(self):
         return [
             "Memory is explicit: store only useful durable facts and mark verified facts. "
-            "Never treat an unverified memory as authoritative."
+            "Never treat an unverified memory as authoritative. Run knowledge_index after "
+            "material workspace changes, then use knowledge_search for cited hybrid retrieval."
         ]
 
     def capabilities(self):

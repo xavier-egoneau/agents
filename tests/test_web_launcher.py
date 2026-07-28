@@ -31,6 +31,30 @@ def test_refuses_to_kill_unrelated_listener(tmp_path: Path, monkeypatch) -> None
         web_launcher.stop_previous_instances(tmp_path, 8765, 3000)
 
 
+def test_selects_next_port_without_stopping_unrelated_app(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_launcher,
+        "listening_pids",
+        lambda port: [303] if port == 3000 else [],
+    )
+    monkeypatch.setattr(web_launcher, "is_amk_process", lambda *args: False)
+
+    assert web_launcher.available_web_port(tmp_path, 3000, 8765) == 3001
+
+
+def test_keeps_preferred_port_for_restartable_amk_instance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        web_launcher,
+        "listening_pids",
+        lambda port: [202] if port == 3000 else [],
+    )
+    monkeypatch.setattr(web_launcher, "is_amk_process", lambda *args: True)
+
+    assert web_launcher.available_web_port(tmp_path, 3000, 8765) == 3000
+
+
 def test_identifies_backend_and_frontend_by_command_and_cwd(tmp_path: Path, monkeypatch) -> None:
     commands = {1: ".venv/bin/python .venv/bin/amk serve", 2: "node bin/vinext dev"}
     directories = {1: tmp_path, 2: tmp_path / "surfaces" / "web"}

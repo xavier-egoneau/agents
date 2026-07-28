@@ -15,16 +15,31 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
-  Bot,
+  ApprovalPanel,
+  type Approval,
+} from "./components/approval-panel";
+import {
+  ComposerControls,
+  type ReasoningLevel,
+  type SecurityMode,
+} from "./components/composer-controls";
+import {
+  ContextMeter,
+  type ContextStatus,
+} from "./components/context-meter";
+import { SessionHistory } from "./components/session-history";
+import {
+  ResourceNavigation,
+  type ResourceSection,
+} from "./components/resource-navigation";
+import {
+  CurrentPlanPanel,
+  type CurrentPlan,
+  type PlanStep,
+} from "./components/current-plan-panel";
+import {
   CalendarClock,
-  ChevronDown,
-  ChevronRight,
-  FolderOpen,
-  GitBranch,
   MessageSquarePlus,
-  PlugZap,
-  Sparkles,
-  Trash2,
 } from "lucide-react";
 
 type Agent = {
@@ -43,23 +58,6 @@ type SlashCommand = {
   kind: string;
   skill: string;
   source: string;
-};
-type PlanStep = {
-  id: string;
-  title: string;
-  status: "pending" | "claimed" | "in_progress" | "validating" | "completed" | "blocked" | "failed";
-  dependencies: string[];
-  parallelizable: boolean;
-  write_scopes?: string[];
-  claimed_by?: string | null;
-  lease_until?: string | null;
-  run_id?: string | null;
-  note?: string | null;
-};
-type CurrentPlan = {
-  plan_id: string;
-  title: string;
-  steps: PlanStep[];
 };
 type Catalog = {
   default_provider: string;
@@ -93,18 +91,6 @@ type RunArtifact = {
   bytes?: number;
 };
 
-type Approval = {
-  approval_id: string;
-  session_id: string;
-  tool_name: string;
-  path: string | null;
-  reason: string;
-  justification: string;
-  risks: string[];
-  run_id?: string;
-  created_at?: string;
-};
-
 type Workspace = {
   path: string;
   name: string;
@@ -117,16 +103,6 @@ type ComposerImage = {
   name: string;
   mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
   dataUrl: string;
-};
-
-type ContextStatus = {
-  provider_id: string;
-  model: string | null;
-  context_window_tokens: number | null;
-  estimated_history_tokens: number;
-  estimated_ratio: number | null;
-  compaction_threshold_ratio: number;
-  compaction_count: number;
 };
 
 type ManagedResource = {
@@ -253,12 +229,6 @@ function describeCron(editor: CronEditor): string {
     return `Tous les ans, le ${editor.frequency_monthday} ${months[editor.frequency_month - 1]} à ${editor.frequency_time}`;
   }
   return `Tous les jours à ${editor.frequency_time}`;
-}
-
-function compactTokens(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${Math.round(value / 1_000)}k`;
-  return String(value);
 }
 
 const codexAuthHelpUrl = "https://learn.chatgpt.com/docs/auth?surface=cli";
@@ -585,15 +555,15 @@ export default function Home() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(new Set());
   const [approvalProgress, setApprovalProgress] = useState("");
-  const [securityMode, setSecurityMode] = useState<"safe" | "limited" | "power">("limited");
+  const [securityMode, setSecurityMode] = useState<SecurityMode>("limited");
   const [providerId, setProviderId] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
-  const [reasoning, setReasoning] = useState<"minimal" | "low" | "medium" | "high" | "xhigh">("medium");
+  const [reasoning, setReasoning] = useState<ReasoningLevel>("medium");
   const [composerImages, setComposerImages] = useState<ComposerImage[]>([]);
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
   const [attachmentError, setAttachmentError] = useState("");
   const [stopRequested, setStopRequested] = useState(false);
-  const [managementModal, setManagementModal] = useState<"projects" | "agents" | "skills" | "providers" | "crons" | null>(null);
+  const [managementModal, setManagementModal] = useState<ResourceSection | null>(null);
   const [managedResources, setManagedResources] = useState<ManagedResource[]>([]);
   const [resourceEditor, setResourceEditor] = useState<ResourceEditor | null>(null);
   const [managementError, setManagementError] = useState("");
@@ -1558,7 +1528,6 @@ export default function Home() {
           meta: session.agent_id,
         }];
     setMessages(restored);
-    setApprovals([]);
   }
 
   function newConversation() {
@@ -1876,113 +1845,28 @@ export default function Home() {
         </header>
 
         <div className="rail-content" ref={railContent}>
-          <nav className="context-nav" aria-label="Contexte du run">
-            <button className="context-card" onClick={() => setManagementModal("projects")}>
-              <span className="context-icon" aria-hidden="true"><FolderOpen /></span>
-              <span>
-                <small>Projet actif</small>
-                <strong>{activeWorkspaceInfo?.name || "Choisir un projet"}</strong>
-                <em>{activeWorkspaceInfo?.path || "Aucun CWD"}</em>
-              </span>
-              <ChevronRight className="context-chevron" aria-hidden="true" />
-            </button>
-            <button className="context-card" onClick={() => setManagementModal("agents")}>
-              <span className="context-icon agent-icon" aria-hidden="true"><Bot /></span>
-              <span>
-                <small>Agent actif</small>
-                <strong>{activeAgent?.id || "Aucun agent"}</strong>
-                <em>{activeAgent?.provider || "Non configuré"}</em>
-              </span>
-              <ChevronRight className="context-chevron" aria-hidden="true" />
-            </button>
-            <button className="context-card" onClick={() => setManagementModal("skills")}>
-              <span className="context-icon" aria-hidden="true"><Sparkles /></span>
-              <span>
-                <small>Skills</small>
-                <strong>{selectedSkills.length
-                  ? `${selectedSkills.length} sélectionnée${selectedSkills.length > 1 ? "s" : ""}`
-                  : "Aucune sélection"}</strong>
-                <em>{catalog?.skills.length || 0} disponible{(catalog?.skills.length || 0) > 1 ? "s" : ""}</em>
-              </span>
-              <ChevronRight className="context-chevron" aria-hidden="true" />
-            </button>
-            <button className="context-card" onClick={() => setManagementModal("providers")}>
-              <span className="context-icon" aria-hidden="true"><PlugZap /></span>
-              <span>
-                <small>Providers</small>
-                <strong>{catalog?.providers.length || 0} configuré{(catalog?.providers.length || 0) > 1 ? "s" : ""}</strong>
-                <em>Défaut · {catalog?.default_provider || "aucun"}</em>
-              </span>
-              <ChevronRight className="context-chevron" aria-hidden="true" />
-            </button>
-            <button className="context-card" onClick={() => setManagementModal("crons")}>
-              <span className="context-icon" aria-hidden="true"><CalendarClock /></span>
-              <span>
-                <small>Automatisations</small>
-                <strong>{cronJobs.filter((job) => job.enabled).length} active{cronJobs.filter((job) => job.enabled).length > 1 ? "s" : ""}</strong>
-                <em>Cronjobs et reprises</em>
-              </span>
-              <ChevronRight className="context-chevron" aria-hidden="true" />
-            </button>
-          </nav>
+          <ResourceNavigation
+            projectName={activeWorkspaceInfo?.name}
+            projectPath={activeWorkspaceInfo?.path}
+            agentId={activeAgent?.id}
+            agentProvider={activeAgent?.provider}
+            selectedSkillCount={selectedSkills.length}
+            availableSkillCount={catalog?.skills.length || 0}
+            providerCount={catalog?.providers.length || 0}
+            defaultProvider={catalog?.default_provider}
+            activeCronCount={cronJobs.filter((job) => job.enabled).length}
+            onOpen={setManagementModal}
+          />
 
-          <section className="rail-section history-section">
-          <div className="section-title">
-            <p className="eyebrow">Historique</p>
-            <span>{sessions.length}</span>
-          </div>
-          <div className="session-list">
-            {sessions.map((session) => (
-              <div
-                key={session.session_id}
-                className={[
-                  "session-entry",
-                  session.session_id === activeSessionId ? "active" : "",
-                  unreadSessionIds.has(session.session_id) ? "unread" : "",
-                ].filter(Boolean).join(" ")}
-              >
-                <button
-                  className="session-open"
-                  onClick={() => void openSession(session.session_id)}
-                  title={session.prompt}
-                >
-                  <span className={`session-state ${session.status}`} />
-                  <span>
-                    <strong>
-                      {session.prompt || "Session sans titre"}
-                      {session.trigger?.startsWith("cron") && (
-                        <em className="automation-chip">Routine</em>
-                      )}
-                    </strong>
-                    <small>{new Date(session.updated_at).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}</small>
-                  </span>
-                </button>
-                {unreadSessionIds.has(session.session_id) && (
-                  <span className="session-unread" title="Nouveau résultat" aria-label="Nouveau résultat" />
-                )}
-                <button
-                  className="session-resume"
-                  hidden={!["failed", "timeout", "partial", "cancelled"].includes(session.status)}
-                  onClick={() => void resumeSession(session.session_id)}
-                  disabled={running}
-                  aria-label="Reprendre la session"
-                  title="Reprendre à partir des traces persistées"
-                >↻</button>
-                <button
-                  className="session-delete"
-                  onClick={() => void deleteSession(session.session_id)}
-                  aria-label="Supprimer la session"
-                  title="Supprimer la session"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" />
-                  </svg>
-                </button>
-              </div>
-            ))}
-            {sessions.length === 0 && <p className="empty-label">Aucune session</p>}
-          </div>
-          </section>
+          <SessionHistory
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            unreadSessionIds={unreadSessionIds}
+            running={running}
+            onOpen={(sessionId) => void openSession(sessionId)}
+            onResume={(sessionId) => void resumeSession(sessionId)}
+            onDelete={(sessionId) => void deleteSession(sessionId)}
+          />
         </div>
 
         <footer className="rail-footer">
@@ -2856,117 +2740,23 @@ export default function Home() {
           )}
         </div>
 
-        {approvals.length > 0 && (
-          <section className="approval-stack" aria-live="polite">
-            {approvals.length > 1 ? (
-              <article className="approval-card approval-batch">
-                <div>
-                  <p className="eyebrow">Autorisation groupée · {approvals.length} actions</p>
-                  <strong>{approvals.length} actions proposées</strong>
-                  <ul>
-                    {approvals.map((approval) => (
-                      <li key={approval.approval_id}>{approval.justification}</li>
-                    ))}
-                  </ul>
-                  <small>Une seule décision sera appliquée à tout ce batch.</small>
-                </div>
-                <div className="approval-actions">
-                  <button disabled={running} onClick={() => void resolveApprovalBatch(false)}>
-                    Tout refuser
-                  </button>
-                  <button className="approve" disabled={running} onClick={() => void resolveApprovalBatch(true)}>
-                    Tout autoriser
-                  </button>
-                </div>
-              </article>
-            ) : approvals.map((approval) => (
-              <article className="approval-card" key={approval.approval_id}>
-                <div>
-                  <p className="eyebrow">Autorisation requise · {approval.risks.join(", ")}</p>
-                  <strong>{approval.tool_name}</strong>
-                  {approval.path && <code>{approval.path}</code>}
-                  <p>{approval.justification}</p>
-                  <small>{approval.reason}</small>
-                </div>
-                <div className="approval-actions">
-                  <button disabled={running} onClick={() => void resolveApproval(approval, false)}>
-                    Refuser
-                  </button>
-                  <button
-                    className="approve"
-                    disabled={running}
-                    onClick={() => void resolveApproval(approval, true)}
-                  >
-                    Autoriser
-                  </button>
-                </div>
-              </article>
-            ))}
-          </section>
-        )}
-
-        {approvalProgress && (
-          <div className="approval-progress" role="status" aria-live="polite">
-            <span className="approval-spinner" />
-            <strong>{approvalProgress}</strong>
-          </div>
-        )}
+        <ApprovalPanel
+          approvals={approvals}
+          running={running}
+          progress={approvalProgress}
+          onResolve={(approval, approved) => void resolveApproval(approval, approved)}
+          onResolveBatch={(approved) => void resolveApprovalBatch(approved)}
+        />
 
         {currentPlan && (
-          <section className={`current-plan ${planExpanded ? "expanded" : ""}`}>
-            <header>
-              <div>
-                <p className="eyebrow">Plan courant</p>
-                <strong>
-                  {currentPlan.steps.filter((step) => step.status === "completed").length}
-                  {" "}tâches sur {currentPlan.steps.length} terminées
-                </strong>
-                <small>{currentPlan.title}</small>
-              </div>
-              <div className="plan-actions">
-                <button
-                  type="button"
-                  onClick={() => void deleteCurrentPlan()}
-                  aria-label="Supprimer le plan"
-                  title="Supprimer le plan"
-                ><Trash2 size={19} /></button>
-                <button
-                  type="button"
-                  onClick={() => setPlanExpanded((value) => !value)}
-                  aria-label={planExpanded ? "Replier le plan" : "Ouvrir le plan"}
-                ><ChevronDown size={22} /></button>
-              </div>
-            </header>
-            {planExpanded && (
-              <div className="plan-steps">
-                {currentPlan.steps.map((step) => (
-                  <label className={`plan-step ${step.status}`} key={step.id}>
-                    <input
-                      type="checkbox"
-                      checked={step.status === "completed"}
-                      disabled={running}
-                      onChange={(event) => void updatePlanStep(step, event.target.checked)}
-                    />
-                    <span className="plan-step-copy">
-                      <strong>{step.id} · {step.title}</strong>
-                      <small>
-                        {step.dependencies?.length
-                          ? `Dépend de ${step.dependencies.join(", ")}`
-                          : "Sans dépendance"}
-                        {step.note ? ` · ${step.note}` : ""}
-                      </small>
-                    </span>
-                    {step.parallelizable && (
-                      <span className="parallel-badge">
-                        <GitBranch size={14} /> parallélisable
-                      </span>
-                    )}
-                    {step.status === "in_progress" && <span className="step-running" />}
-                  </label>
-                ))}
-              </div>
-            )}
-          </section>
+          <CurrentPlanPanel
+            plan={currentPlan}
+            expanded={planExpanded}
+            running={running}
+            onExpandedChange={setPlanExpanded}
+            onDelete={() => void deleteCurrentPlan()}
+            onStepChange={(step, completed) => void updatePlanStep(step, completed)}
+          />
         )}
 
         <form className="composer" onSubmit={submit}>
@@ -3068,126 +2858,28 @@ export default function Home() {
             rows={2}
             aria-label="Message au kernel"
           />
-          <div
-            className={[
-              "context-meter",
-              contextStatus?.estimated_ratio == null ? "unknown" : "",
-              (contextStatus?.estimated_ratio || 0) >= 0.7 ? "critical"
-                : (contextStatus?.estimated_ratio || 0) >= 0.5 ? "warning" : "",
-            ].filter(Boolean).join(" ")}
-            title={
-              contextStatus?.context_window_tokens
-                ? `${contextStatus.estimated_history_tokens.toLocaleString("fr-FR")} tokens estimés sur ${contextStatus.context_window_tokens.toLocaleString("fr-FR")}`
-                : "Fenêtre de contexte inconnue — utilise /model-context"
-            }
-          >
-            <div className="context-meter-label">
-              <span>Contexte</span>
-              {contextStatus?.estimated_ratio != null && contextStatus.context_window_tokens ? (
-                <strong>
-                  {Math.min(100, Math.round(contextStatus.estimated_ratio * 100))} %
-                  <small>
-                    {compactTokens(contextStatus.estimated_history_tokens)}
-                    {" / "}
-                    {compactTokens(contextStatus.context_window_tokens)}
-                  </small>
-                </strong>
-              ) : (
-                <strong>Fenêtre inconnue <small>/model-context</small></strong>
-              )}
-            </div>
-            <div className="context-meter-track" aria-hidden="true">
-              <span
-                className="context-meter-fill"
-                style={{
-                  width: contextStatus?.estimated_ratio == null
-                    ? "100%"
-                    : `${Math.min(100, contextStatus.estimated_ratio * 100)}%`,
-                }}
-              />
-              <i className="context-threshold" title="Compaction automatique à 70 %" />
-            </div>
-          </div>
+          <ContextMeter status={contextStatus} />
           {attachmentError && <small className="attachment-error">{attachmentError}</small>}
-          <div className="composer-footer">
-            <div className="composer-controls">
-              <button
-                type="button"
-                className="composer-icon-button"
-                onClick={() => imageInput.current?.click()}
-                disabled={running || composerImages.length >= 4}
-                aria-label="Ajouter une image"
-                title={
-                  activeProvider?.vision
-                    ? "Ajouter une image"
-                    : "Ajouter une image · analyse locale Gemma 4"
-                }
-              >+</button>
-              <label title="Niveau de permission">
-                <span className={`permission-dot ${securityMode}`} />
-                <select
-                  value={securityMode}
-                  onChange={(event) => void changeSecurityMode(event.target.value as typeof securityMode)}
-                  aria-label="Niveau de permission"
-                >
-                  <option value="safe">safe</option>
-                  <option value="limited">limited</option>
-                  <option value="power">power</option>
-                </select>
-              </label>
-              <label className="model-control" title="Provider et modèle">
-                <select
-                  value={`${providerId}::${selectedModel}`}
-                  disabled={running}
-                  onChange={(event) => {
-                    const [nextProvider, ...modelParts] = event.target.value.split("::");
-                    selectProvider(nextProvider);
-                    setSelectedModel(modelParts.join("::"));
-                  }}
-                  aria-label="Provider et modèle"
-                >
-                  {catalog?.providers.map((provider) => (
-                    <optgroup key={provider.id} label={provider.id}>
-                      {provider.models.map((model) => (
-                        <option key={`${provider.id}:${model}`} value={`${provider.id}::${model}`}>
-                          {model}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
-              </label>
-              <label title="Niveau de raisonnement">
-                <select
-                  value={reasoning}
-                  disabled={running}
-                  onChange={(event) => setReasoning(event.target.value as typeof reasoning)}
-                  aria-label="Niveau de raisonnement"
-                >
-                  <option value="minimal">minimal</option>
-                  <option value="low">low</option>
-                  <option value="medium">medium</option>
-                  <option value="high">high</option>
-                  <option value="xhigh">xhigh</option>
-                </select>
-              </label>
-            </div>
-            <div className="composer-run-actions">
-              {running && (
-                <button
-                  type="button"
-                  className="stop"
-                  onClick={() => void stopRun()}
-                  disabled={stopRequested}
-                  aria-label="Arrêter le run"
-                  title="Arrêter le run"
-                ><span /></button>
-              )}
-              <button className="send" disabled={!prompt.trim() || running} aria-label="Envoyer">
-                ↑
-              </button>
-            </div>
-          </div>
+          <ComposerControls
+            providers={catalog?.providers || []}
+            providerId={providerId}
+            model={selectedModel}
+            securityMode={securityMode}
+            reasoning={reasoning}
+            running={running}
+            stopRequested={stopRequested}
+            canAttach={!running && composerImages.length < 4}
+            canSend={Boolean(prompt.trim()) && !running}
+            vision={Boolean(activeProvider?.vision)}
+            onAttach={() => imageInput.current?.click()}
+            onSecurityModeChange={(mode) => void changeSecurityMode(mode)}
+            onModelChange={(nextProvider, model) => {
+              selectProvider(nextProvider);
+              setSelectedModel(model);
+            }}
+            onReasoningChange={setReasoning}
+            onStop={() => void stopRun()}
+          />
         </form>
       </section>
     </main>

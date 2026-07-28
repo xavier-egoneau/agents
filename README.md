@@ -1,6 +1,8 @@
 # Agentic Markdown Kernel
 
-Ce projet pose les bases d’un système agentique très modulaire, orienté Markdown et pensé pour évoluer sans couplage fort.
+AMK est un kernel agentique local, modulaire et multi-agent, orienté Markdown.
+Il fournit une CLI, une API et une surface web autour de contrats stables pour
+les agents, providers, tools, sessions, approvals et automatisations.
 
 ## Vision
 
@@ -18,8 +20,8 @@ L’objectif est de construire une base minimale où :
 - content-agents/ : espace utilisateur, contenant les données et préférences utilisateur.
 - content-agents/system.md : prompt système de base, considéré comme une variable utilisateur.
 - content-agents/skills/ : compétences ou modules définis côté utilisateur.
-- content-agents/providers.json : configuration future des providers.
-- content-agents/whitelist_paths.json : liste des chemins autorisés.
+- content-agents/providers.json : registre des providers et références de connexion.
+- content-agents/state.db : projection SQLite reconstructible des sessions, plans et crons.
 - tools/ : espace applicatif, considéré comme partie de l’application.
 
 ## Boucle minimale
@@ -27,7 +29,7 @@ L’objectif est de construire une base minimale où :
 1. Charger le prompt système depuis content-agents/system.md.
 2. Résoudre le provider de génération à utiliser via content-agents/providers.json.
 3. Appeler le kernel pour orchestrer la logique.
-4. Enregistrer les résultats et les observations dans MEMORY.md.
+4. Persister les événements dans le JSONL append-only et mettre à jour les projections SQLite.
 
 ## Principes
 
@@ -70,11 +72,14 @@ Après le premier `npm install` dans `surfaces/web`, une seule commande lance le
 uv run amk web
 ```
 
-La commande arrête d'abord les anciennes instances AMK écoutant sur les ports 8765 et 3000, puis
-lance l'API et la surface ensemble. Elle refuse de tuer un programme sans rapport qui utiliserait
-l'un de ces ports. `Ctrl+C` arrête proprement les deux services.
+La commande arrête d'abord les anciennes instances AMK, puis lance l'API et la surface ensemble.
+Elle ne tue jamais un programme sans rapport : si le port web 3000 est déjà utilisé, elle choisit
+automatiquement le prochain port libre et affiche l'URL retenue. Un conflit sur le port API reste
+une erreur explicite. `Ctrl+C` arrête proprement les deux services.
 
-Ouvrir ensuite `http://localhost:3000`. La surface utilise `AMK_KERNEL_URL=http://127.0.0.1:8765` par défaut; cette variable peut pointer vers un backend kernel déployé.
+Ouvrir l'URL `AMK Web` affichée au démarrage. La surface utilise
+`AMK_KERNEL_URL=http://127.0.0.1:8765` par défaut; cette variable peut pointer vers un backend
+kernel déployé.
 
 La section **Projets / CWD** permet d'ajouter un dossier par son chemin, de mémoriser les projets
 récents dans le navigateur et de sélectionner le workspace envoyé à chaque run. Le backend valide
@@ -141,6 +146,23 @@ uv run amk run --agent main --skill mon-skill "Exécute cette tâche"
 ```
 
 Les modules exécutables vivent sous `tools/modules/<id>/`, chacun avec un `module.json`. `tools/index.json` est généré, déterministe et vérifié avant tout chargement.
+Les 74 tools actuels partagent le contrat `ToolResult`
+(`ok`, `data`, `error`, `metadata`). `amk modules build-index` et
+`amk modules check` vérifient automatiquement la correspondance exacte entre
+manifestes et implémentations, les schémas, les timeouts et les doublons.
+
+### Plans et parallélisation
+
+Les commandes `/plan` et `/build` utilisent un plan normalisé dans SQLite. Une
+étape parallélisable doit déclarer au moins un `write_scope`. Avant de lancer un
+subagent, le kernel réserve l’étape avec un lease durable; deux scopes identiques
+ou imbriqués ne peuvent pas être actifs en même temps. Un lease expiré redevient
+récupérable après un crash.
+
+Le subagent ne termine jamais directement son étape : son résultat passe à
+`validating`. Le parent doit vérifier les fichiers, artefacts ou tests puis
+appeler le tool autonome `plan_validate` avec une liste de preuves. Sans preuve,
+l’état `completed` est refusé.
 
 Le kernel injecte à chaque run une carte légère et bornée du workspace : langages,
 gestionnaires de paquets, points d’entrée, documentation, tests et commandes connues.
@@ -179,6 +201,28 @@ le modèle et le serveur loopback. `llama-server` n’écoute que sur
 Le tool autonome `image_inspect(path, question, detail)` est également disponible
 pour analyser une image existante ou un screenshot, avec `detail` égal à
 `fast`, `balanced` ou `precise`.
+
+### RAG local hybride
+
+Le module `memory` sépare la mémoire explicite du corpus documentaire. Le tool
+`knowledge_index` découpe les fichiers en chunks chevauchants avec coordonnées
+de lignes, calcule leurs hashes et embeddings, alimente SQLite FTS5 et retire
+les entrées correspondant aux fichiers supprimés. Les fichiers inchangés ne
+sont pas recalculés.
+
+`knowledge_search` fusionne les classements lexical et vectoriel par reciprocal
+rank fusion, applique un reranking de couverture, puis renvoie des extraits
+bornés et des citations comme `src/kernel.py#L120-L164`. Aucun résultat RAG
+n’est injecté automatiquement : l’agent appelle explicitement le tool et doit
+vérifier les sources importantes avant de conclure.
+
+Sans configuration, le backend local `feature_hash` fournit un index
+déterministe sans téléchargement ni réseau. Pour une similarité sémantique
+dense, copier `content-agents/rag.example.json` vers
+`content-agents/rag.json` et renseigner un endpoint d’embeddings compatible
+OpenAI, par exemple un serveur llama.cpp local. Une référence de secret peut
+être fournie dans `credential_ref`; sa valeur n’entre ni dans les arguments du
+tool ni dans les traces.
 
 Le module `web` expose une interface unique pour cinq surfaces de recherche : `search`, `scrape`,
 `code`, `docs` et `crawl`. Il utilise le binaire stateless Ketch, force les sorties JSON, borne les
@@ -229,7 +273,8 @@ Trois connexions sont reconnues : `local`, `api_key` et `auth`. llama.cpp utilis
 
 Les implémentations passent toutes par le protocole interne `ProviderAdapter`.
 Les types OpenAI, Anthropic et Pydantic AI ne font pas partie de l’API publique
-du kernel.
+du kernel. `ProviderAdapterRegistry` permet d’enregistrer ou de remplacer un
+adaptateur sans modifier `Kernel` ni `ProviderFactory`.
 
 ```bash
 uv run amk auth login openai-codex

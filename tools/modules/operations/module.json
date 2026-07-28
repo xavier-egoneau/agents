@@ -12,6 +12,7 @@
     {"name": "plan_status", "description": "Lire un plan structuré.", "category": "planning", "risk_tags": ["read"], "timeout_seconds": 15},
     {"name": "plan_ready", "description": "Calculer les tâches prêtes selon le graphe de dépendances.", "category": "planning", "risk_tags": ["read"], "timeout_seconds": 15},
     {"name": "plan_claim", "description": "Réserver une tâche prête avec un lease et verrouiller son périmètre d’écriture.", "category": "planning", "risk_tags": ["write"], "timeout_seconds": 15, "persistent": true},
+    {"name": "plan_validate", "description": "Valider un résultat délégué avec des preuves explicites.", "category": "planning", "risk_tags": ["write"], "timeout_seconds": 15, "persistent": true},
     {"name": "evaluate_result", "description": "Évaluer un résultat avec des critères explicites.", "category": "evaluation", "risk_tags": ["read"], "timeout_seconds": 15},
     {"name": "session_status", "description": "Résumer l'état de la session courante.", "category": "session", "risk_tags": ["read"], "timeout_seconds": 15},
     {"name": "checkpoint_create", "description": "Créer un checkpoint explicite de session.", "category": "session", "risk_tags": ["write"], "timeout_seconds": 15, "persistent": true},
