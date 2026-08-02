@@ -267,6 +267,11 @@ class RunRequest(BaseModel):
     trigger: Literal["user", "resume", "cron", "cron_resume", "cron_test"] = "user"
     cron_job_id: str | None = None
     cron_occurrence_id: str | None = None
+    workflow: dict[str, Any] | None = None
+    # ``None`` preserves the historical unrestricted tool selection. An empty
+    # list deliberately exposes no module tool, while a non-empty list is an
+    # exact runtime allowlist.
+    tool_allowlist: list[str] | None = None
 
 
 class RunError(BaseModel):

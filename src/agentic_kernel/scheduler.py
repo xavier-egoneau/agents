@@ -6,13 +6,14 @@ import sqlite3
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from croniter import croniter
 from pydantic import BaseModel, ConfigDict, Field
 
 from .models import RunRequest, RunResult, RunStatus, SecurityMode
+from .workflows import WorkflowDefinition, workflow_tool_allowlist
 
 ROUTINE_INBOX_SESSION_ID = uuid5(NAMESPACE_URL, "agentic-kernel:routine-inbox")
 
@@ -49,6 +50,10 @@ class CronJob(CronJobInput):
     blocked: bool = False
     occurrence_id: str | None = None
     scheduled_for: datetime | None = None
+    workflow: dict[str, Any] | None = None
+    workflow_revision: int = 0
+    workflow_basis_hash: str | None = None
+    workflow_updated_at: datetime | None = None
 
 
 class CronRun(BaseModel):
@@ -115,7 +120,11 @@ class CronService:
                     last_error TEXT,
                     last_retryable INTEGER NOT NULL DEFAULT 0,
                     in_flight INTEGER NOT NULL DEFAULT 0,
-                    blocked INTEGER NOT NULL DEFAULT 0
+                    blocked INTEGER NOT NULL DEFAULT 0,
+                    workflow_json TEXT,
+                    workflow_revision INTEGER NOT NULL DEFAULT 0,
+                    workflow_basis_hash TEXT,
+                    workflow_updated_at TEXT
                 )
             """)
             columns = {row[1] for row in connection.execute("PRAGMA table_info(cron_jobs)")}
@@ -128,9 +137,17 @@ class CronService:
                     "ALTER TABLE cron_jobs ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0"
                 )
             if "notification_session_id" not in columns:
+                connection.execute("ALTER TABLE cron_jobs ADD COLUMN notification_session_id TEXT")
+            if "workflow_json" not in columns:
+                connection.execute("ALTER TABLE cron_jobs ADD COLUMN workflow_json TEXT")
+            if "workflow_revision" not in columns:
                 connection.execute(
-                    "ALTER TABLE cron_jobs ADD COLUMN notification_session_id TEXT"
+                    "ALTER TABLE cron_jobs ADD COLUMN workflow_revision INTEGER NOT NULL DEFAULT 0"
                 )
+            if "workflow_basis_hash" not in columns:
+                connection.execute("ALTER TABLE cron_jobs ADD COLUMN workflow_basis_hash TEXT")
+            if "workflow_updated_at" not in columns:
+                connection.execute("ALTER TABLE cron_jobs ADD COLUMN workflow_updated_at TEXT")
             # A previous process may have added the nullable column and stopped
             # before backfilling every row. Keep this repair idempotent instead
             # of tying it only to the ALTER TABLE branch.
@@ -158,13 +175,9 @@ class CronService:
                     UNIQUE(cron_job_id, scheduled_for)
                 )
             """)
-            run_columns = {
-                row[1] for row in connection.execute("PRAGMA table_info(cron_runs)")
-            }
+            run_columns = {row[1] for row in connection.execute("PRAGMA table_info(cron_runs)")}
             if "notification_session_id" not in run_columns:
-                connection.execute(
-                    "ALTER TABLE cron_runs ADD COLUMN notification_session_id TEXT"
-                )
+                connection.execute("ALTER TABLE cron_runs ADD COLUMN notification_session_id TEXT")
             connection.execute(
                 "UPDATE cron_runs SET notification_session_id=? "
                 "WHERE notification_session_id IS NULL OR notification_session_id=''",
@@ -244,7 +257,13 @@ class CronService:
         result = croniter(expression, reference).get_next(datetime)
         return result if result.tzinfo else result.replace(tzinfo=reference.tzinfo)
 
-    def create(self, payload: CronJobInput) -> CronJob:
+    def create(
+        self,
+        payload: CronJobInput,
+        *,
+        workflow: dict[str, Any] | None = None,
+        workflow_basis_hash: str | None = None,
+    ) -> CronJob:
         self.validate_schedule(payload.schedule)
         workspace = payload.workspace.expanduser().resolve()
         if not workspace.is_dir():
@@ -260,9 +279,11 @@ class CronService:
                     security_mode, provider_id, model, reasoning, enabled, auto_resume,
                     session_id, created_at, updated_at, next_run_at, last_run_at,
                     last_status, last_error, last_retryable, in_flight,
-                    notification_session_id
+                    notification_session_id, workflow_json, workflow_revision,
+                    workflow_basis_hash, workflow_updated_at
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0,
+                    ?, ?, ?, ?, ?
                 )""",
                 (
                     job_id,
@@ -286,6 +307,10 @@ class CronService:
                     None,
                     None,
                     str(payload.notification_session_id),
+                    json.dumps(workflow, ensure_ascii=False) if workflow is not None else None,
+                    1 if workflow is not None else 0,
+                    workflow_basis_hash if workflow is not None else None,
+                    now.isoformat() if workflow is not None else None,
                 ),
             )
         return self.get(job_id)
@@ -338,11 +363,109 @@ class CronService:
             )
         return self.get(job_id)
 
+    def update_with_workflow(
+        self,
+        job_id: str,
+        payload: CronJobInput,
+        workflow: dict[str, Any],
+        workflow_basis_hash: str,
+    ) -> CronJob:
+        """Atomically update a routine basis and its explicitly accepted workflow."""
+
+        job = self.get(job_id)
+        if job.in_flight:
+            raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
+        self.validate_schedule(payload.schedule)
+        workspace = payload.workspace.expanduser().resolve()
+        if not workspace.is_dir():
+            raise SchedulerError(f"Workspace introuvable : {workspace}")
+        now = datetime.now(UTC)
+        next_run = self.next_fire(payload.schedule)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE cron_jobs SET name=?, schedule=?, prompt=?, workspace=?,
+                   agent_id=?, skills_json=?, security_mode=?, provider_id=?, model=?,
+                   reasoning=?, enabled=?, auto_resume=?, updated_at=?, next_run_at=?,
+                   notification_session_id=?, workflow_json=?,
+                   workflow_revision=workflow_revision+1, workflow_basis_hash=?,
+                   workflow_updated_at=?
+                   WHERE id=? AND in_flight=0""",
+                (
+                    payload.name.strip(),
+                    payload.schedule.strip(),
+                    payload.prompt,
+                    str(workspace),
+                    payload.agent_id,
+                    json.dumps(payload.skills),
+                    payload.security_mode.value,
+                    payload.provider_id,
+                    payload.model,
+                    payload.reasoning,
+                    int(payload.enabled),
+                    int(payload.auto_resume),
+                    now.isoformat(),
+                    next_run.isoformat(),
+                    str(payload.notification_session_id),
+                    json.dumps(workflow, ensure_ascii=False),
+                    workflow_basis_hash,
+                    now.isoformat(),
+                    job_id,
+                ),
+            )
+        if not cursor.rowcount:
+            raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
+        return self.get(job_id)
+
     def delete(self, job_id: str) -> None:
         with self._connect() as connection:
             cursor = connection.execute("DELETE FROM cron_jobs WHERE id=?", (job_id,))
         if cursor.rowcount == 0:
             raise SchedulerError(f"Cronjob introuvable : {job_id}")
+
+    def set_workflow(
+        self,
+        job_id: str,
+        workflow: dict[str, Any],
+        workflow_basis_hash: str,
+    ) -> CronJob:
+        job = self.get(job_id)
+        if job.in_flight:
+            raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
+        now = datetime.now(UTC)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE cron_jobs SET workflow_json=?,
+                   workflow_revision=workflow_revision+1, workflow_basis_hash=?,
+                   workflow_updated_at=?, updated_at=?
+                   WHERE id=? AND in_flight=0""",
+                (
+                    json.dumps(workflow, ensure_ascii=False),
+                    workflow_basis_hash,
+                    now.isoformat(),
+                    now.isoformat(),
+                    job_id,
+                ),
+            )
+        if not cursor.rowcount:
+            raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
+        return self.get(job_id)
+
+    def clear_workflow(self, job_id: str) -> CronJob:
+        job = self.get(job_id)
+        if job.in_flight:
+            raise SchedulerError("Impossible de supprimer le workflow pendant une exécution")
+        now = datetime.now(UTC)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE cron_jobs SET workflow_json=NULL,
+                   workflow_revision=workflow_revision+1, workflow_basis_hash=NULL,
+                   workflow_updated_at=?, updated_at=?
+                   WHERE id=? AND in_flight=0""",
+                (now.isoformat(), now.isoformat(), job_id),
+            )
+        if not cursor.rowcount:
+            raise SchedulerError("Impossible de supprimer le workflow pendant une exécution")
+        return self.get(job_id)
 
     def due(self, now: datetime | None = None) -> list[CronJob]:
         current = now or datetime.now(UTC)
@@ -503,8 +626,8 @@ class CronService:
             payload = dict(row)
             # Defensive compatibility for a database opened before the
             # idempotent backfill above committed in another connection.
-            payload["notification_session_id"] = (
-                payload.get("notification_session_id") or str(ROUTINE_INBOX_SESSION_ID)
+            payload["notification_session_id"] = payload.get("notification_session_id") or str(
+                ROUTINE_INBOX_SESSION_ID
             )
             result.append(CronRun.model_validate(payload))
         return result
@@ -546,7 +669,7 @@ class CronService:
         with self._connect() as connection:
             rows = connection.execute(
                 f"""SELECT id, cron_job_id FROM cron_runs
-                    WHERE {' AND '.join(clauses)} ORDER BY claimed_at DESC""",
+                    WHERE {" AND ".join(clauses)} ORDER BY claimed_at DESC""",
                 values,
             ).fetchall()
         for row in rows:
@@ -657,6 +780,10 @@ class CronService:
             last_retryable=bool(row["last_retryable"]),
             in_flight=bool(row["in_flight"]),
             blocked=bool(row["blocked"]),
+            workflow=json.loads(row["workflow_json"]) if row["workflow_json"] else None,
+            workflow_revision=int(row["workflow_revision"] or 0),
+            workflow_basis_hash=row["workflow_basis_hash"],
+            workflow_updated_at=parsed("workflow_updated_at"),
         )
 
 
@@ -719,6 +846,8 @@ class CronScheduler:
             trigger=trigger,
             cron_job_id=job.id,
             cron_occurrence_id=job.occurrence_id,
+            workflow=job.workflow,
+            tool_allowlist=_workflow_tool_allowlist(job.workflow),
         )
 
     async def _execute(self, job: CronJob) -> None:
@@ -747,3 +876,18 @@ class CronScheduler:
                 str(exc),
                 occurrence_id=job.occurrence_id,
             )
+
+
+def _workflow_tool_allowlist(workflow: dict[str, Any] | None) -> list[str] | None:
+    """Return the exact tool set declared by an accepted workflow.
+
+    ``None`` is intentionally distinct from ``[]``: no workflow preserves the
+    historical free selection, while a synthesis-only workflow exposes no
+    module tools.
+    """
+    if workflow is None:
+        return None
+    definition = WorkflowDefinition.model_validate(workflow)
+    if definition.status != "ready":
+        return []
+    return workflow_tool_allowlist(definition)

@@ -67,6 +67,74 @@ async def test_overwrite_suspends_resumes_once_and_traces(project: Path, monkeyp
     assert event_types.index("approval.resolved") < event_types.index("tool.started")
 
 
+async def test_approval_resume_reloads_skills_from_the_request_workspace(
+    project: Path,
+    monkeypatch,
+) -> None:
+    source = Path(__file__).parents[1] / "tools" / "modules" / "filesystem"
+    shutil.copytree(source, project / "tools" / "modules" / "filesystem")
+    ModuleRegistry(project / "tools").build_index()
+    workspace = project / "workspace"
+    skill_dir = workspace / ".agents" / "skills" / "workspace-style"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: workspace-style
+description: Workspace-only instructions.
+---
+Keep the workspace-specific style after approval.
+""",
+        encoding="utf-8",
+    )
+    target = workspace / "note.txt"
+    target.write_text("old", encoding="utf-8")
+    observed_instructions: list[str] = []
+
+    def respond(messages, info):
+        observed_instructions.append(info.instructions or "")
+        called = any(
+            getattr(part, "tool_name", None) == "write"
+            for message in messages
+            for part in message.parts
+        )
+        if not called:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "write",
+                        {
+                            "path": "note.txt",
+                            "content": "new",
+                            "justification": "Update requested.",
+                        },
+                        tool_call_id="write-workspace",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("done")])
+
+    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(respond))
+    kernel = Kernel(project)
+    first = await kernel.run(
+        RunRequest(
+            prompt="Update the note",
+            workspace=workspace,
+            skills=["workspace-style"],
+        )
+    )
+    assert first.status is RunStatus.APPROVAL_PENDING
+
+    final = await kernel.resolve_approval(kernel.list_approvals()[0].approval_id, True)
+
+    assert final.status is RunStatus.SUCCESS
+    assert target.read_text(encoding="utf-8") == "new"
+    assert len(observed_instructions) >= 2
+    assert all(
+        "Keep the workspace-specific style after approval." in instructions
+        for instructions in observed_instructions
+    )
+
+
 async def test_parallel_approvals_resume_as_one_batch(project: Path, monkeypatch) -> None:
     source = Path(__file__).parents[1] / "tools" / "modules" / "filesystem"
     shutil.copytree(source, project / "tools" / "modules" / "filesystem")

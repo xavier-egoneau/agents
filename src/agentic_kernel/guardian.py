@@ -40,6 +40,21 @@ SENSITIVE_NAMES = {
 SECRET_KEYS = {"api_key", "token", "password", "secret", "authorization"}
 
 
+def guardian_parameters_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return the parameters schema actually exposed through ``GuardianToolset``."""
+
+    guarded = dict(schema)
+    properties = dict(guarded.get("properties", {}))
+    properties["justification"] = {
+        "type": "string",
+        "description": "Why this tool call is necessary for the user's request.",
+        "minLength": 1,
+    }
+    required = list(dict.fromkeys([*guarded.get("required", []), "justification"]))
+    guarded.update(properties=properties, required=required)
+    return guarded
+
+
 def canonical_path(raw: Any, workspace: Path) -> Path | None:
     if not isinstance(raw, str) or not raw.strip() or "\x00" in raw:
         return None
@@ -322,15 +337,7 @@ class GuardianToolset(WrapperToolset[Any]):
         tools = await super().get_tools(ctx)
         result: dict[str, ToolsetTool[Any]] = {}
         for name, item in tools.items():
-            schema = dict(item.tool_def.parameters_json_schema)
-            properties = dict(schema.get("properties", {}))
-            properties["justification"] = {
-                "type": "string",
-                "description": "Why this tool call is necessary for the user's request.",
-                "minLength": 1,
-            }
-            required = list(dict.fromkeys([*schema.get("required", []), "justification"]))
-            schema.update(properties=properties, required=required)
+            schema = guardian_parameters_schema(item.tool_def.parameters_json_schema)
             result[name] = replace(
                 item,
                 tool_def=replace(item.tool_def, parameters_json_schema=schema),

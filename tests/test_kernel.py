@@ -218,17 +218,189 @@ async def test_runtime_skill_is_injected(project: Path, monkeypatch) -> None:
         """---
 name: answer-style
 description: Controls answer style.
+allowed-tools: [read]
 ---
 Answer with concise prose.
 """,
         encoding="utf-8",
     )
     ModuleRegistry(project / "tools").build_index()
-    model = TestModel(call_tools=[], custom_output_text="done")
-    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: model)
+    observed_instructions: list[str] = []
+
+    def respond(_messages, info):
+        observed_instructions.append(info.instructions or "")
+        return ModelResponse(parts=[TextPart("done")])
+
+    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(respond))
     result = await Kernel(project).run(RunRequest(prompt="Answer", skills=["answer-style"]))
     assert result.status == RunStatus.SUCCESS
-    assert model.last_model_request_parameters is not None
+    rendered = "\n".join(observed_instructions)
+    assert "Answer with concise prose." in rendered
+    assert f"Skill root: {skill_dir}" in rendered
+    assert "Requested tools: read." in rendered
+
+
+async def test_workflow_is_injected_after_skills_and_enforces_exact_tool_allowlist(
+    project: Path, monkeypatch
+) -> None:
+    skill_dir = project / "content-agents" / "skills" / "answer-style"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: answer-style
+description: Controls answer style.
+---
+Answer with concise prose.
+""",
+        encoding="utf-8",
+    )
+    module = project / "tools" / "modules" / "choices"
+    module.mkdir()
+    (module / "module.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "id": "choices",
+                "name": "Choices",
+                "description": "Allowlist test tools",
+                "version": "1.0.0",
+                "entrypoint": "module.py:module",
+                "capabilities": ["tools"],
+                "enabled": True,
+                "tools": [
+                        {
+                            "name": "allow_a",
+                            "description": "First tool",
+                            "category": "test",
+                            "risk_tags": ["read"],
+                            "timeout_seconds": 5,
+                            "input_schema": {"type": "object", "properties": {}},
+                            "output_schema": {
+                                "type": "object",
+                                "properties": {
+                                    "ok": {"type": "boolean"},
+                                    "data": {},
+                                    "error": {},
+                                    "metadata": {"type": "object"},
+                                },
+                            },
+                        },
+                        {
+                            "name": "allow_b",
+                            "description": "Second tool",
+                            "category": "test",
+                            "risk_tags": ["read"],
+                            "timeout_seconds": 5,
+                            "input_schema": {"type": "object", "properties": {}},
+                            "output_schema": {
+                                "type": "object",
+                                "properties": {
+                                    "ok": {"type": "boolean"},
+                                    "data": {},
+                                    "error": {},
+                                    "metadata": {"type": "object"},
+                                },
+                            },
+                        },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (module / "module.py").write_text(
+        """from pydantic_ai import FunctionToolset
+
+def allow_a() -> str: return "a"
+def allow_b() -> str: return "b"
+
+class Module:
+    def toolsets(self): return [FunctionToolset(tools=[allow_a, allow_b])]
+    def instructions(self): return []
+    def capabilities(self): return []
+module = Module()
+""",
+        encoding="utf-8",
+    )
+    ModuleRegistry(project / "tools").build_index()
+    observations: list[tuple[set[str], str]] = []
+
+    def respond(_messages, info):
+        observations.append(
+            ({tool.name for tool in info.function_tools}, info.instructions or "")
+        )
+        return ModelResponse(parts=[TextPart("done")])
+
+    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(respond))
+    kernel = Kernel(project)
+    unrestricted = await kernel.run(RunRequest(prompt="Free"))
+    assert unrestricted.status == RunStatus.SUCCESS
+    assert {"allow_a", "allow_b"} <= observations[-1][0]
+
+    workflow = {
+        "schema": "amk.workflow/v1",
+        "id": "routine-test-v1",
+        "title": "Routine test",
+        "status": "ready",
+        "execution": {
+            "mode": "agent_guided",
+            "deviation": "stop_and_report",
+            "timezone": "Europe/Paris",
+        },
+        "permissions": {
+            "authority": "kernel_guardian",
+            "unlisted": "stop_and_report",
+            "declarations": [{"tool": "allow_a"}],
+        },
+        "missing_dependencies": [],
+        "steps": [
+            {"id": "one", "kind": "tool", "tool": "allow_a", "args": {}},
+            {
+                "id": "summary",
+                "kind": "synthesize",
+                "needs": ["one"],
+                "instructions": "Summarize the result.",
+            },
+        ],
+        "output": {"sections": ["Result"]},
+    }
+    guided = await kernel.run(
+        RunRequest(
+            prompt="Guided",
+            skills=["answer-style"],
+            workflow=workflow,
+            tool_allowlist=["allow_a"],
+        )
+    )
+    assert guided.status == RunStatus.SUCCESS
+    tools, instructions = observations[-1]
+    assert tools == {"allow_a"}
+    assert instructions.index("Answer with concise prose.") < instructions.index(
+        "Workflow de routine accepté"
+    )
+
+    synthesis_only = await kernel.run(
+        RunRequest(
+            prompt="No tools",
+            workflow={
+                **workflow,
+                "permissions": {
+                    "authority": "kernel_guardian",
+                    "unlisted": "stop_and_report",
+                    "declarations": [],
+                },
+                "steps": [
+                    {
+                        "id": "summary",
+                        "kind": "synthesize",
+                        "instructions": "Summarize without tools.",
+                    }
+                ],
+            },
+            tool_allowlist=[],
+        )
+    )
+    assert synthesis_only.status == RunStatus.SUCCESS
+    assert observations[-1][0] == set()
 
 
 async def test_supervisor_delegates_with_isolated_child_run(project: Path, monkeypatch) -> None:
@@ -258,9 +430,11 @@ Complete the delegated task.
         encoding="utf-8",
     )
     ModuleRegistry(project / "tools").build_index()
+    observed_toolsets: list[set[str]] = []
 
     def model_response(messages, info):
         tool_names = {tool.name for tool in info.function_tools}
+        observed_toolsets.append(tool_names)
         already_delegated = any(
             getattr(part, "tool_name", None) == "agent_delegate"
             for message in messages
@@ -278,7 +452,9 @@ Complete the delegated task.
         ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(model_response)
     )
     kernel = Kernel(project)
-    result = await kernel.run(RunRequest(prompt="Delegate this task"))
+    result = await kernel.run(
+        RunRequest(prompt="Delegate this task", tool_allowlist=["agent_delegate"])
+    )
     assert result.status == RunStatus.SUCCESS
     child_events = [
         event for event in kernel.events.read(result.session_id) if event.agent_id == "child"
@@ -289,3 +465,5 @@ Complete the delegated task.
         "agent.completed",
     ]
     assert child_events[0].parent_run_id is not None
+    assert observed_toolsets[0] == {"agent_delegate"}
+    assert set() in observed_toolsets[1:]

@@ -12,7 +12,8 @@ from .errors import ConfigurationError
 from .guardian import GuardianToolset
 from .models import SecurityMode
 from .orchestration import RuntimeDeps, make_neutral_subagent_toolset, make_subagents
-from .skills import skill_catalog_instruction, skill_toolset
+from .skills import render_skill, skill_catalog_instruction, skill_toolset
+from .workflows import WorkflowDefinition, render_workflow_instructions
 
 
 class AgentFactory:
@@ -44,6 +45,8 @@ class AgentFactory:
         depth: int,
         skills,
         runtime_skills: list[str] | None = None,
+        workflow: dict[str, Any] | None = None,
+        tool_allowlist: list[str] | None = None,
         workspace: Path | None = None,
         security_mode: SecurityMode | None = None,
         provider_override: str | None = None,
@@ -66,6 +69,7 @@ class AgentFactory:
         )
         loaded_modules = self.module_registry.load_enabled()
         requested_skills = list(dict.fromkeys([*config.skills, *(runtime_skills or [])]))
+        runtime_allowlist = None if tool_allowlist is None else set(tool_allowlist)
         missing_skills = set(requested_skills) - skills.keys()
         if missing_skills:
             raise ConfigurationError(
@@ -79,6 +83,8 @@ class AgentFactory:
                 budgets,
                 depth + 1,
                 skills,
+                workflow=workflow,
+                tool_allowlist=tool_allowlist,
                 workspace=workspace,
                 security_mode=security_mode,
             )
@@ -100,10 +106,10 @@ class AgentFactory:
             config.instructions,
         ]
         for skill_id in requested_skills:
-            skill = skills[skill_id]
-            instructions.append(
-                f"# Skill: {skill.name}\n\n{skill.description}\n\n{skill.instructions}"
-            )
+            instructions.append(render_skill(skills, skill_id))
+        workflow_instruction = _render_workflow(workflow)
+        if workflow_instruction:
+            instructions.append(workflow_instruction)
         toolsets: list[Any] = []
         neutral_toolsets: list[Any] = []
         capabilities: list[Any] = []
@@ -127,6 +133,7 @@ class AgentFactory:
                 module_toolsets,
                 disabled_tools,
                 selected_tools,
+                runtime_allowlist,
                 agent_id,
                 risks,
                 timeouts,
@@ -136,6 +143,7 @@ class AgentFactory:
                 module.toolsets(),
                 disabled_tools,
                 selected_tools,
+                runtime_allowlist,
                 "subagent",
                 risks,
                 timeouts,
@@ -143,13 +151,18 @@ class AgentFactory:
             capabilities.extend(module.capabilities())
         catalog = skill_catalog_instruction(skills)
         loader = skill_toolset(skills)
-        if catalog:
+        if catalog and _allows_internal_tool("load_skill", runtime_allowlist):
             instructions.append(catalog)
-        if loader:
+        if loader and _allows_internal_tool("load_skill", runtime_allowlist):
             toolsets.append(loader)
-        if child_agents:
+        if child_agents and _allows_internal_tool("agent_delegate", runtime_allowlist):
             capabilities.append(make_subagents(config.id, child_agents, budgets))
-        overhead = self.context.overhead_tokens(config, skills, "", workspace)
+        overhead = self.context.overhead_tokens(
+            config,
+            skills,
+            workflow_instruction or "",
+            workspace,
+        )
         capabilities.append(
             ContextWindowCompaction(
                 agent_id=config.id,
@@ -180,6 +193,7 @@ class AgentFactory:
                     "scope and expected output are supplied in the user prompt. "
                     "Do not expand them, delegate again, or modify the parent plan."
                 ),
+                *([workflow_instruction] if workflow_instruction else []),
             ],
             toolsets=neutral_toolsets,
             capabilities=[
@@ -193,7 +207,8 @@ class AgentFactory:
             output_type=str,
             max_concurrency=budgets.max_concurrency,
         )
-        toolsets.append(make_neutral_subagent_toolset(config.id, neutral_agent, budgets))
+        if _allows_internal_tool("subagent_spawn", runtime_allowlist):
+            toolsets.append(make_neutral_subagent_toolset(config.id, neutral_agent, budgets))
         return Agent(
             provider_factory.build(
                 provider_override or config.provider,
@@ -210,12 +225,18 @@ class AgentFactory:
         )
 
     @staticmethod
-    def _filtered_toolset(toolset, disabled: set[str], selected: set[str]):
+    def _filtered_toolset(
+        toolset,
+        disabled: set[str],
+        selected: set[str],
+        runtime_allowlist: set[str] | None,
+    ):
         return FilteredToolset(
             toolset,
             lambda _ctx, tool_def: (
                 tool_def.name not in disabled
                 and (not selected or tool_def.name in selected)
+                and (runtime_allowlist is None or tool_def.name in runtime_allowlist)
             ),
         )
 
@@ -225,6 +246,7 @@ class AgentFactory:
         source: list[Any],
         disabled: set[str],
         selected: set[str],
+        runtime_allowlist: set[str] | None,
         agent_id: str,
         risks,
         timeouts,
@@ -232,9 +254,24 @@ class AgentFactory:
         for toolset in source:
             target.append(
                 GuardianToolset(
-                    self._filtered_toolset(toolset, disabled, selected),
+                    self._filtered_toolset(
+                        toolset,
+                        disabled,
+                        selected,
+                        runtime_allowlist,
+                    ),
                     agent_id=agent_id,
                     risks=risks,
                     timeouts=timeouts,
                 )
             )
+
+
+def _allows_internal_tool(name: str, runtime_allowlist: set[str] | None) -> bool:
+    return runtime_allowlist is None or name in runtime_allowlist
+
+
+def _render_workflow(workflow: dict[str, Any] | None) -> str | None:
+    if workflow is None:
+        return None
+    return render_workflow_instructions(WorkflowDefinition.model_validate(workflow))

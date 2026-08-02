@@ -38,6 +38,11 @@ import {
   type PlanStep,
 } from "./components/current-plan-panel";
 import {
+  RoutineWorkflowPanel,
+  type RoutineWorkflow,
+  type RoutineWorkflowProposal,
+} from "./components/routine-workflow-panel";
+import {
   CalendarClock,
   MessageSquarePlus,
 } from "lucide-react";
@@ -156,6 +161,10 @@ type CronJob = {
   last_retryable: boolean;
   in_flight: boolean;
   blocked: boolean;
+  workflow?: RoutineWorkflow | null;
+  workflow_revision?: number | null;
+  workflow_basis_hash?: string | null;
+  workflow_updated_at?: string | null;
 };
 
 type CronRun = {
@@ -182,6 +191,7 @@ type CronApprovalStatus = {
 };
 
 type CronTestFeedback = "idle" | "progress" | "success" | "error";
+type CronWorkflowAction = "propose" | "accept" | "delete" | null;
 
 type CronTestResult = {
   session_id: string;
@@ -323,6 +333,105 @@ function describeCron(editor: CronEditor): string {
     return `Tous les ans, le ${editor.frequency_monthday} ${months[editor.frequency_month - 1]} à ${editor.frequency_time}`;
   }
   return `Tous les jours à ${editor.frequency_time}`;
+}
+
+function cronRequestBody(editor: CronEditor, acceptedWorkflow?: RoutineWorkflowProposal) {
+  return {
+    name: editor.name,
+    schedule: scheduleFromEditor(editor),
+    prompt: editor.prompt,
+    workspace: editor.workspace,
+    agent_id: editor.agent_id,
+    skills: editor.skills,
+    security_mode: editor.security_mode,
+    provider_id: editor.provider_id,
+    model: editor.model,
+    reasoning: editor.reasoning,
+    enabled: editor.enabled,
+    auto_resume: editor.auto_resume,
+    notification_session_id: editor.notification_session_id,
+    ...(acceptedWorkflow ? { accepted_workflow: acceptedWorkflow } : {}),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+class WorkflowProposalDisplayError extends Error {}
+
+function workflowProposalErrorForStatus(status: number): WorkflowProposalDisplayError {
+  if (status === 404) {
+    return new WorkflowProposalDisplayError(
+      "La proposition guidée n’est pas encore chargée dans l’application active. "
+      + "Redémarre l’application puis réessaie. La routine reste utilisable en mode libre.",
+    );
+  }
+  if (status === 401 || status === 403) {
+    return new WorkflowProposalDisplayError(
+      "La connexion au fournisseur du modèle n’est plus valide. "
+      + "Vérifie sa configuration, puis réessaie.",
+    );
+  }
+  if (status === 408 || status === 429 || status === 503 || status === 504) {
+    return new WorkflowProposalDisplayError(
+      "Le fournisseur du modèle est temporairement indisponible. "
+      + "Attends un instant, puis réessaie.",
+    );
+  }
+  if (status === 422) {
+    return new WorkflowProposalDisplayError(
+      "Le prompt, les skills ou les outils disponibles ne permettent pas encore de préparer un workflow. "
+      + "Ajuste la routine, puis réessaie.",
+    );
+  }
+  return new WorkflowProposalDisplayError(
+    "Le modèle n’a pas pu préparer le workflow. "
+    + "Vérifie le fournisseur et le modèle configurés, puis réessaie.",
+  );
+}
+
+function workflowProposalFromPayload(payload: unknown): RoutineWorkflowProposal {
+  if (!isRecord(payload) || !isRecord(payload.workflow) || typeof payload.basis_hash !== "string") {
+    throw new Error("La proposition de workflow est incomplète.");
+  }
+  const warnings = Array.isArray(payload.warnings)
+    ? payload.warnings.filter((item) => typeof item === "string" || isRecord(item))
+      .map((item) => typeof item === "string" ? item : { message: String(item.message || "Point à vérifier") })
+    : [];
+  return {
+    workflow: payload.workflow as RoutineWorkflow,
+    basis_hash: payload.basis_hash,
+    warnings,
+  };
+}
+
+function workflowStateFromPayload(payload: unknown): {
+  workflow: RoutineWorkflow | null;
+  revision?: number | null;
+  basisHash?: string | null;
+  updatedAt?: string | null;
+} {
+  if (payload === null) return { workflow: null };
+  if (!isRecord(payload)) return { workflow: null };
+  if ("workflow" in payload) {
+    return {
+      workflow: isRecord(payload.workflow) ? payload.workflow as RoutineWorkflow : null,
+      revision: typeof payload.workflow_revision === "number"
+        ? payload.workflow_revision
+        : typeof payload.revision === "number" ? payload.revision : null,
+      basisHash: typeof payload.workflow_basis_hash === "string"
+        ? payload.workflow_basis_hash
+        : typeof payload.basis_hash === "string" ? payload.basis_hash : null,
+      updatedAt: typeof payload.workflow_updated_at === "string"
+        ? payload.workflow_updated_at
+        : typeof payload.updated_at === "string" ? payload.updated_at : null,
+    };
+  }
+  const looksLikeWorkflow = Array.isArray(payload.steps)
+    || typeof payload.schema === "string"
+    || typeof payload.status === "string";
+  return { workflow: looksLikeWorkflow ? payload as RoutineWorkflow : null };
 }
 
 const codexAuthHelpUrl = "https://learn.chatgpt.com/docs/auth?surface=cli";
@@ -683,6 +792,10 @@ export default function Home() {
   const [cronTestDecision, setCronTestDecision] = useState<"approve" | "reject" | null>(null);
   const [cronApprovalStatus, setCronApprovalStatus] = useState<CronApprovalStatus | null>(null);
   const [testingCron, setTestingCron] = useState(false);
+  const [cronWorkflowProposal, setCronWorkflowProposal] = useState<RoutineWorkflowProposal | null>(null);
+  const [cronWorkflowAction, setCronWorkflowAction] = useState<CronWorkflowAction>(null);
+  const [cronWorkflowFeedback, setCronWorkflowFeedback] = useState<"idle" | "success" | "error">("idle");
+  const [cronWorkflowMessage, setCronWorkflowMessage] = useState("");
   const railContent = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -693,6 +806,8 @@ export default function Home() {
   const restoredComposerPreferences = useRef<ComposerPreferences | null>(null);
   const composerPreferencesApplied = useRef(false);
   const lastComposerAgent = useRef<string | null>(null);
+  const cronWorkflowProposalRequest = useRef(0);
+  const cronWorkflowMutationRequest = useRef(0);
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -1427,6 +1542,34 @@ export default function Home() {
     }
   }
 
+  function resetCronWorkflowState(message = "") {
+    cronWorkflowProposalRequest.current += 1;
+    cronWorkflowMutationRequest.current += 1;
+    setCronWorkflowProposal(null);
+    setCronWorkflowAction(null);
+    setCronWorkflowFeedback("idle");
+    setCronWorkflowMessage(message);
+  }
+
+  function invalidateCronWorkflowProposal() {
+    const hadProposal = Boolean(cronWorkflowProposal || cronWorkflowAction === "propose");
+    cronWorkflowProposalRequest.current += 1;
+    if (!hadProposal) return;
+    setCronWorkflowProposal(null);
+    setCronWorkflowAction((current) => current === "propose" ? null : current);
+    setCronWorkflowFeedback("idle");
+    setCronWorkflowMessage(
+      cronWorkflowAction === "propose"
+        ? "La génération a été annulée car la base de la routine a changé. Relance-la quand tes modifications sont prêtes."
+        : "La proposition a été retirée car la base de la routine a changé. Génère-la à nouveau.",
+    );
+  }
+
+  function closeCronEditor() {
+    resetCronWorkflowState();
+    setCronEditor(null);
+  }
+
   function createCron() {
     setManagementError("");
     setCronEditor(cronEditorFromJob({
@@ -1444,6 +1587,7 @@ export default function Home() {
     setCronTestFeedback("idle");
     setCronTestDecision(null);
     setCronApprovalStatus(null);
+    resetCronWorkflowState();
   }
 
   async function openCronEditor(job: CronJob) {
@@ -1454,6 +1598,7 @@ export default function Home() {
     setCronTestFeedback("progress");
     setCronTestDecision(null);
     setCronApprovalStatus(null);
+    resetCronWorkflowState();
     try {
       const response = await fetch(`/api/kernel/crons/${job.id}/approval-status`);
       const status = await readApiPayload<CronApprovalStatus>(response);
@@ -1493,19 +1638,162 @@ export default function Home() {
     return status;
   }
 
-  async function saveCron() {
+  async function proposeCronWorkflow() {
+    if (!cronEditor || cronWorkflowAction) return;
+    const requestId = cronWorkflowProposalRequest.current + 1;
+    cronWorkflowProposalRequest.current = requestId;
+    setCronWorkflowAction("propose");
+    setCronWorkflowFeedback("idle");
+    setCronWorkflowMessage("Analyse du prompt, des skills et des outils disponibles…");
+    try {
+      const response = await fetch("/api/kernel/crons/workflow-proposals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(cronRequestBody(cronEditor)),
+      });
+      if (!response.ok) throw workflowProposalErrorForStatus(response.status);
+      const proposal = workflowProposalFromPayload(await readApiPayload<unknown>(response));
+      if (cronWorkflowProposalRequest.current !== requestId) return;
+      setCronWorkflowProposal(proposal);
+      setCronWorkflowFeedback("success");
+      setCronWorkflowMessage(
+        proposal.warnings.length > 0
+          ? `Proposition prête · ${countLabel(proposal.warnings.length, "point")} à vérifier.`
+          : "Proposition prête. Elle ne sera enregistrée qu’après ta validation.",
+      );
+    } catch (error) {
+      if (cronWorkflowProposalRequest.current !== requestId) return;
+      setCronWorkflowProposal(null);
+      setCronWorkflowFeedback("error");
+      setCronWorkflowMessage(
+        error instanceof WorkflowProposalDisplayError
+          ? error.message
+          : "Impossible de préparer le workflow guidé. Vérifie la connexion de l’application, puis réessaie.",
+      );
+    } finally {
+      if (cronWorkflowProposalRequest.current === requestId) {
+        setCronWorkflowAction(null);
+      }
+    }
+  }
+
+  async function acceptCronWorkflow() {
+    if (!cronEditor || cronEditor.creating || !cronWorkflowProposal || cronWorkflowAction) return;
+    const jobId = cronEditor.id;
+    const proposal = cronWorkflowProposal;
+    const requestId = cronWorkflowMutationRequest.current + 1;
+    cronWorkflowMutationRequest.current = requestId;
+    setCronWorkflowAction("accept");
+    setCronWorkflowFeedback("idle");
+    setCronWorkflowMessage("Enregistrement du workflow…");
+    try {
+      const response = await fetch(`/api/kernel/crons/${jobId}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(cronRequestBody(cronEditor, proposal)),
+      });
+      const updated = await readApiPayload<CronJob>(response);
+      if (cronWorkflowMutationRequest.current !== requestId) return;
+      setCronEditor((current) => current?.id === jobId ? cronEditorFromJob(updated) : current);
+      setCronWorkflowProposal(null);
+      setCronWorkflowFeedback("success");
+      setCronWorkflowMessage(
+        "Workflow et configuration enregistrés ensemble. Le prompt et les skills sont conservés.",
+      );
+      setCronApprovalStatus(null);
+      setCronTestApprovals([]);
+      setCronTestFeedback("idle");
+      setCronTestMessage("Le workflow a changé. Relance un test pour prévalider ses actions.");
+      await refreshCrons();
+    } catch (error) {
+      if (cronWorkflowMutationRequest.current !== requestId) return;
+      setCronWorkflowFeedback("error");
+      setCronWorkflowMessage(error instanceof Error ? error.message : "Enregistrement du workflow impossible.");
+    } finally {
+      if (cronWorkflowMutationRequest.current === requestId) {
+        setCronWorkflowAction(null);
+      }
+    }
+  }
+
+  async function deleteCronWorkflow() {
+    if (!cronEditor || cronEditor.creating || !cronEditor.workflow || cronWorkflowAction) return;
+    if (!window.confirm(
+      "Supprimer ce workflow ? La routine conservera son prompt et ses skills, mais l’agent retrouvera davantage de liberté. Les prévalidations devront être vérifiées à nouveau.",
+    )) return;
+    const jobId = cronEditor.id;
+    const requestId = cronWorkflowMutationRequest.current + 1;
+    cronWorkflowMutationRequest.current = requestId;
+    setCronWorkflowAction("delete");
+    setCronWorkflowFeedback("idle");
+    setCronWorkflowMessage("Suppression du workflow…");
+    try {
+      const response = await fetch(`/api/kernel/crons/${jobId}/workflow`, { method: "DELETE" });
+      const payload = await readApiPayload<unknown>(response);
+      if (cronWorkflowMutationRequest.current !== requestId) return;
+      const state = workflowStateFromPayload(payload);
+      setCronEditor((current) => current?.id === jobId ? ({
+        ...current,
+        workflow: null,
+        workflow_revision: state.revision ?? current.workflow_revision,
+        workflow_basis_hash: null,
+        workflow_updated_at: null,
+      }) : current);
+      setCronWorkflowProposal(null);
+      setCronWorkflowFeedback("success");
+      setCronWorkflowMessage("Workflow supprimé · la routine continuera avec son prompt et ses skills.");
+      setCronApprovalStatus(null);
+      setCronTestApprovals([]);
+      setCronTestFeedback("idle");
+      setCronTestMessage("Workflow supprimé. Relance un test pour prévalider le mode libre.");
+      await refreshCrons();
+    } catch (error) {
+      if (cronWorkflowMutationRequest.current !== requestId) return;
+      setCronWorkflowFeedback("error");
+      setCronWorkflowMessage(error instanceof Error ? error.message : "Suppression du workflow impossible.");
+    } finally {
+      if (cronWorkflowMutationRequest.current === requestId) {
+        setCronWorkflowAction(null);
+      }
+    }
+  }
+
+  function discardCronWorkflowProposal() {
+    setCronWorkflowProposal(null);
+    setCronWorkflowFeedback("idle");
+    setCronWorkflowMessage(
+      cronEditor?.workflow
+        ? "Proposition ignorée. Le workflow enregistré reste inchangé."
+        : "Proposition ignorée. La routine reste sans workflow.",
+    );
+  }
+
+  async function continueWithoutCronWorkflow() {
+    if (!cronEditor || cronWorkflowAction || savingResource || testingCron) return;
+    if (cronEditor.workflow && persistedCron && cronWorkflowProposal) {
+      setCronEditor(cronEditorFromJob(persistedCron));
+      setCronWorkflowProposal(null);
+      setCronWorkflowFeedback("success");
+      setCronWorkflowMessage("Le workflow actuel est conservé sans modification.");
+      return;
+    }
+    await saveCron();
+  }
+
+  async function acceptCronWorkflowChoice() {
+    if (!cronEditor || !cronWorkflowProposal || cronWorkflowAction) return;
+    if (cronEditor.creating) {
+      await saveCron(cronWorkflowProposal);
+      return;
+    }
+    await acceptCronWorkflow();
+  }
+
+  async function saveCron(acceptedWorkflow?: RoutineWorkflowProposal) {
     if (!cronEditor) return;
     setSavingResource(true);
     setManagementError("");
-    const body = {
-      name: cronEditor.name, schedule: scheduleFromEditor(cronEditor), prompt: cronEditor.prompt,
-      workspace: cronEditor.workspace, agent_id: cronEditor.agent_id,
-      skills: cronEditor.skills, security_mode: cronEditor.security_mode,
-      provider_id: cronEditor.provider_id, model: cronEditor.model,
-      reasoning: cronEditor.reasoning, enabled: cronEditor.enabled,
-      auto_resume: cronEditor.auto_resume,
-      notification_session_id: cronEditor.notification_session_id,
-    };
+    const body = cronRequestBody(cronEditor, acceptedWorkflow);
     try {
       const response = await fetch(
         `/api/kernel/crons${cronEditor.creating ? "" : `/${cronEditor.id}`}`,
@@ -1519,9 +1807,17 @@ export default function Home() {
       await refreshCrons();
       if (cronEditor.creating) {
         setCronEditor(cronEditorFromJob(data as CronJob));
+        setCronWorkflowProposal(null);
+        if (acceptedWorkflow) {
+          setCronWorkflowFeedback("success");
+          setCronWorkflowMessage("Routine et workflow enregistrés. Le prompt et les skills sont conservés.");
+        } else {
+          setCronWorkflowFeedback("success");
+          setCronWorkflowMessage("Routine enregistrée sans workflow · exécution par prompt et skills.");
+        }
         setCronTestMessage("Routine enregistrée et inactive. Teste-la avant de l’activer.");
       } else {
-        setCronEditor(null);
+        closeCronEditor();
       }
     } catch (error) {
       setManagementError(error instanceof Error ? error.message : "Enregistrement impossible");
@@ -2077,6 +2373,67 @@ export default function Home() {
     || cronEditor.model !== persistedCron.model
     || cronEditor.reasoning !== persistedCron.reasoning
   ));
+  const cronWorkflowBasisDirty = Boolean(cronEditor && persistedCron && (
+    cronEditor.name.trim() !== persistedCron.name
+    || scheduleFromEditor(cronEditor) !== persistedCron.schedule
+    || cronEditor.prompt !== persistedCron.prompt
+    || cronEditor.workspace !== persistedCron.workspace
+    || cronEditor.agent_id !== persistedCron.agent_id
+    || JSON.stringify([...cronEditor.skills].sort())
+      !== JSON.stringify([...persistedCron.skills].sort())
+    || cronEditor.security_mode !== persistedCron.security_mode
+  ));
+  const workflowCreatorAvailable = Boolean(
+    catalog?.skills.some((skill) => skill.name === "workflow-creator"),
+  );
+  const cronWorkflowProposalReady = cronWorkflowProposal?.workflow.status === "ready";
+  const cronWorkflowMutationAvailable = Boolean(
+    cronEditor
+    && !cronEditor.creating
+    && !cronEditor.in_flight
+    && !cronEditor.blocked
+    && !testingCron
+    && !savingResource
+    && !cronApprovalStatus?.pending_count,
+  );
+  const cronWorkflowMutationBusy = cronWorkflowAction === "accept"
+    || cronWorkflowAction === "delete";
+  const cronWorkflowCanAccept = Boolean(
+    cronEditor
+    && cronWorkflowProposal
+    && !cronEditor.in_flight
+    && !cronEditor.blocked
+    && !testingCron
+    && !savingResource
+    && !cronWorkflowMutationBusy
+    && (!cronEditor.enabled || cronWorkflowProposalReady),
+  );
+  const cronWorkflowCanPropose = Boolean(
+    cronEditor
+    && workflowCreatorAvailable
+    && cronEditor.name.trim()
+    && cronEditor.prompt.trim()
+    && !savingResource,
+  );
+  const cronCanSave = Boolean(
+    cronEditor
+    && cronEditor.name.trim()
+    && cronEditor.prompt.trim()
+    && !savingResource
+    && !testingCron
+    && !cronWorkflowAction
+    && !cronWorkflowProposal
+    && !(cronEditor.workflow && cronWorkflowBasisDirty)
+    && !(cronEditor.workflow && cronEditor.enabled && cronEditor.workflow.status !== "ready"),
+  );
+  const cronWorkflowCanContinue = Boolean(
+    cronEditor
+    && cronEditor.name.trim()
+    && cronEditor.prompt.trim()
+    && !savingResource
+    && !testingCron
+    && !cronWorkflowAction,
+  );
 
   return (
     <main className="shell">
@@ -2165,8 +2522,12 @@ export default function Home() {
                   setManagementModal(null);
                   setResourceEditor(null);
                   setProviderEditor(null);
-                  setCronEditor(null);
-                }} aria-label="Fermer">×</button>
+                  closeCronEditor();
+                }}
+                  disabled={Boolean(
+                    cronEditor && (cronWorkflowMutationBusy || savingResource || testingCron)
+                  )}
+                  aria-label="Fermer">×</button>
               </div>
             </header>
 
@@ -2672,19 +3033,26 @@ export default function Home() {
 
             {managementModal === "crons" && cronEditor && (
               <div className="resource-editor cron-editor">
-                <div className="resource-fields">
+                <fieldset
+                  className="resource-fields"
+                  disabled={cronWorkflowMutationBusy || savingResource || testingCron}
+                >
                   <label className="field-wide">
                     Nom
-                    <input value={cronEditor.name} onChange={(event) =>
-                      setCronEditor((current) => current && ({ ...current, name: event.target.value }))}
+                    <input value={cronEditor.name} onChange={(event) => {
+                      invalidateCronWorkflowProposal();
+                      setCronEditor((current) => current && ({ ...current, name: event.target.value }));
+                    }}
                     />
                   </label>
                   <label>
                     Répétition
-                    <select value={cronEditor.frequency_kind} onChange={(event) =>
+                    <select value={cronEditor.frequency_kind} onChange={(event) => {
+                      invalidateCronWorkflowProposal();
                       setCronEditor((current) => current && ({
                         ...current, frequency_kind: event.target.value as CronFrequencyKind,
-                      }))}>
+                      }));
+                    }}>
                       <option value="minutes">Toutes les X minutes</option>
                       <option value="hours">Toutes les X heures</option>
                       <option value="daily">Tous les jours</option>
@@ -2698,19 +3066,24 @@ export default function Home() {
                       <input type="number" min="1"
                         max={cronEditor.frequency_kind === "minutes" ? 59 : 23}
                         value={cronEditor.frequency_interval}
-                        onChange={(event) => setCronEditor((current) => current && ({
-                          ...current, frequency_interval: Math.max(1, Number(event.target.value)),
-                        }))}
+                        onChange={(event) => {
+                          invalidateCronWorkflowProposal();
+                          setCronEditor((current) => current && ({
+                            ...current, frequency_interval: Math.max(1, Number(event.target.value)),
+                          }));
+                        }}
                       />
                     </label>
                   )}
                   {cronEditor.frequency_kind === "weekly" && (
                     <label>
                       Jour
-                      <select value={cronEditor.frequency_weekday} onChange={(event) =>
+                      <select value={cronEditor.frequency_weekday} onChange={(event) => {
+                        invalidateCronWorkflowProposal();
                         setCronEditor((current) => current && ({
                           ...current, frequency_weekday: Number(event.target.value),
-                        }))}>
+                        }));
+                      }}>
                         {["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"]
                           .map((day, index) => <option value={index} key={day}>{day}</option>)}
                       </select>
@@ -2720,10 +3093,12 @@ export default function Home() {
                     <>
                       <label>
                         Mois
-                        <select value={cronEditor.frequency_month} onChange={(event) =>
+                        <select value={cronEditor.frequency_month} onChange={(event) => {
+                          invalidateCronWorkflowProposal();
                           setCronEditor((current) => current && ({
                             ...current, frequency_month: Number(event.target.value),
-                          }))}>
+                          }));
+                        }}>
                           {["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
                             "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
                             .map((month, index) => <option value={index + 1} key={month}>{month}</option>)}
@@ -2732,9 +3107,12 @@ export default function Home() {
                       <label>
                         Jour du mois
                         <input type="number" min="1" max="31" value={cronEditor.frequency_monthday}
-                          onChange={(event) => setCronEditor((current) => current && ({
-                            ...current, frequency_monthday: Math.min(31, Math.max(1, Number(event.target.value))),
-                          }))}
+                          onChange={(event) => {
+                            invalidateCronWorkflowProposal();
+                            setCronEditor((current) => current && ({
+                              ...current, frequency_monthday: Math.min(31, Math.max(1, Number(event.target.value))),
+                            }));
+                          }}
                         />
                       </label>
                     </>
@@ -2742,10 +3120,12 @@ export default function Home() {
                   {["daily", "weekly", "yearly"].includes(cronEditor.frequency_kind) && (
                     <label>
                       Heure
-                      <input type="time" value={cronEditor.frequency_time} onChange={(event) =>
+                      <input type="time" value={cronEditor.frequency_time} onChange={(event) => {
+                        invalidateCronWorkflowProposal();
                         setCronEditor((current) => current && ({
                           ...current, frequency_time: event.target.value,
-                        }))}
+                        }));
+                      }}
                       />
                     </label>
                   )}
@@ -2755,10 +3135,12 @@ export default function Home() {
                   </div>
                   <label>
                     Agent
-                    <select value={cronEditor.agent_id} onChange={(event) =>
+                    <select value={cronEditor.agent_id} onChange={(event) => {
+                      invalidateCronWorkflowProposal();
                       setCronEditor((current) => current && ({
                         ...current, agent_id: event.target.value, security_mode: securityMode,
-                      }))}>
+                      }));
+                    }}>
                       {catalog?.agents.map((agent) => (
                         <option value={agent.id} key={agent.id}>{agent.id}</option>
                       ))}
@@ -2768,10 +3150,44 @@ export default function Home() {
                     <span>Permissions héritées de l’agent actif</span>
                     <strong>{cronEditor.security_mode}</strong>
                   </div>
+                  <fieldset className="field-wide checkbox-field cron-skills-field">
+                    <legend>Skills de la routine</legend>
+                    <p>
+                      Ces skills restent actives avec ou sans workflow. Aucune sélection signifie que
+                      l’agent suit seulement le prompt.
+                    </p>
+                    <div className="checkbox-grid">
+                      {catalog?.skills
+                        .filter((skill) => skill.name !== "workflow-creator")
+                        .map((skill) => (
+                          <label key={skill.name} title={skill.description}>
+                            <input
+                              type="checkbox"
+                              checked={cronEditor.skills.includes(skill.name)}
+                              onChange={() => {
+                                invalidateCronWorkflowProposal();
+                                setCronEditor((current) => current && ({
+                                  ...current,
+                                  skills: current.skills.includes(skill.name)
+                                    ? current.skills.filter((item) => item !== skill.name)
+                                    : [...current.skills, skill.name],
+                                }));
+                              }}
+                            />
+                            <span><strong>{skill.name}</strong><small>{skill.description}</small></span>
+                          </label>
+                        ))}
+                      {catalog?.skills.filter((skill) => skill.name !== "workflow-creator").length === 0 && (
+                        <p>Aucune skill d’exécution installée.</p>
+                      )}
+                    </div>
+                  </fieldset>
                   <label className="field-wide">
                     Workspace
-                    <input value={cronEditor.workspace} onChange={(event) =>
-                      setCronEditor((current) => current && ({ ...current, workspace: event.target.value }))}
+                    <input value={cronEditor.workspace} onChange={(event) => {
+                      invalidateCronWorkflowProposal();
+                      setCronEditor((current) => current && ({ ...current, workspace: event.target.value }));
+                    }}
                     />
                   </label>
                   <label className="field-wide">
@@ -2791,8 +3207,10 @@ export default function Home() {
                   </label>
                   <label className="field-wide">
                     Demande exécutée
-                    <textarea value={cronEditor.prompt} onChange={(event) =>
-                      setCronEditor((current) => current && ({ ...current, prompt: event.target.value }))}
+                    <textarea value={cronEditor.prompt} onChange={(event) => {
+                      invalidateCronWorkflowProposal();
+                      setCronEditor((current) => current && ({ ...current, prompt: event.target.value }));
+                    }}
                       placeholder="Décris le résultat attendu à chaque exécution…"
                     />
                   </label>
@@ -2812,17 +3230,61 @@ export default function Home() {
                         ...current, auto_resume: !current.auto_resume,
                       }))}><span /></button>
                   </div>
-                </div>
-                <p className="cron-note">
-                  Teste la routine avant de l’activer. Les demandes ASK validées pendant le test
-                  seront mémorisées pour cette routine, uniquement pour l’outil et la cible affichés.
-                </p>
-                {!cronEditor.creating && (
-                  <div className={`cron-test-panel ${cronTestFeedback}`} aria-busy={testingCron}>
+                </fieldset>
+                <RoutineWorkflowPanel
+                  workflow={cronEditor.workflow || null}
+                  proposal={cronWorkflowProposal}
+                  revision={cronEditor.workflow_revision}
+                  updatedAt={cronEditor.workflow_updated_at}
+                  action={cronWorkflowAction}
+                  feedback={
+                    cronEditor.workflow && cronWorkflowBasisDirty && !cronWorkflowProposal
+                      ? "warning"
+                      : cronWorkflowFeedback
+                  }
+                  message={
+                    cronWorkflowProposal && cronEditor.enabled && !cronWorkflowProposalReady
+                      ? "Ce workflow n’est pas prêt. Désactive la routine pour l’enregistrer comme brouillon, ou corrige ses dépendances."
+                      : cronWorkflowProposal && (cronEditor.blocked || cronEditor.in_flight)
+                        ? "La routine exécute une occurrence réelle ou attend son autorisation. Termine-la avant de changer son mode d’exécution."
+                        : cronWorkflowProposal && Boolean(cronApprovalStatus?.pending_count)
+                          ? "Accepter ce workflow remplacera le test du mode libre en attente. Ses autorisations seront annulées et le nouveau workflow devra être testé."
+                        : cronEditor.workflow && !cronWorkflowMutationAvailable
+                          ? "Le workflow reste consultable. Attends la fin de l’exécution ou de la validation pour le modifier ou le supprimer."
+                      : !cronEditor.creating
+                      && cronEditor.workflow
+                      && cronWorkflowBasisDirty
+                      && !cronWorkflowProposal
+                      ? "Ces modifications rendent le workflow actif obsolète. Propose une nouvelle version ou supprime le workflow avant d’enregistrer."
+                      : cronWorkflowMessage || (!workflowCreatorAvailable
+                        ? "Le générateur workflow-creator n’apparaît pas dans l’application active. Redémarre l’application après son installation ; le mode libre reste disponible."
+                        : "")
+                  }
+                  creating={cronEditor.creating}
+                  canPropose={cronWorkflowCanPropose}
+                  canContinueWithoutWorkflow={cronWorkflowCanContinue}
+                  canAcceptProposal={cronWorkflowCanAccept}
+                  canDelete={cronWorkflowMutationAvailable}
+                  onPropose={() => void proposeCronWorkflow()}
+                  onContinueWithoutWorkflow={() => void continueWithoutCronWorkflow()}
+                  onAcceptProposal={() => void acceptCronWorkflowChoice()}
+                  onDiscardProposal={discardCronWorkflowProposal}
+                  onDelete={() => void deleteCronWorkflow()}
+                />
+                {!cronWorkflowProposal && (
+                  <>
+                    <p className="cron-note">
+                      Teste la routine avant de l’activer. Les demandes ASK validées pendant le test
+                      seront mémorisées pour cette routine, uniquement pour l’outil et la cible affichés.
+                    </p>
+                    {!cronEditor.creating && (
+                      <div className={`cron-test-panel ${cronTestFeedback}`} aria-busy={testingCron}>
                     <div className="cron-test-heading">
                       <strong>Validation avant automatisation</strong>
                       {cronApprovalStatus && cronApprovalStatus.approved_scopes.length > 0
-                        && !cronPermissionConfigDirty && (
+                        && !cronPermissionConfigDirty
+                        && !testingCron
+                        && cronTestApprovals.length === 0 && (
                         <span className="cron-prevalidation-badge">
                           ✓ Prévalidation active
                         </span>
@@ -2876,14 +3338,24 @@ export default function Home() {
                         </button>
                       )}
                     </div>
-                  </div>
+                      </div>
+                    )}
+                  </>
                 )}
                 <div className="resource-editor-actions">
-                  <button onClick={() => setCronEditor(null)}>Annuler</button>
-                  <button className="primary" onClick={() => void saveCron()}
-                    disabled={savingResource || testingCron || !cronEditor.name.trim() || !cronEditor.prompt.trim()}>
-                    {savingResource ? "Enregistrement…" : "Enregistrer"}
-                  </button>
+                  <button
+                    onClick={closeCronEditor}
+                    disabled={cronWorkflowMutationBusy || savingResource || testingCron}
+                  >Annuler</button>
+                  {!cronEditor.creating && cronEditor.workflow && !cronWorkflowProposal && (
+                    <button className="primary" onClick={() => void saveCron()} disabled={!cronCanSave}>
+                      {savingResource
+                        ? "Enregistrement…"
+                        : cronEditor.workflow && cronWorkflowBasisDirty
+                          ? "Workflow à mettre à jour"
+                          : "Enregistrer"}
+                    </button>
+                  )}
                 </div>
               </div>
             )}

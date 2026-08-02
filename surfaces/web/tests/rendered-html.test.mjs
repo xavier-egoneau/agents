@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 async function render() {
@@ -24,4 +25,22 @@ test("server-renders the AMK surface", async () => {
   assert.match(html, /Projet actif/);
   assert.match(html, /Conversation active/);
   assert.doesNotMatch(html, /Your site is taking shape|Starter Project/);
+});
+
+test("routine workflow cards keep their natural height and wrap readable step details", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const ruleFor = (selector) => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = styles.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
+    assert.ok(match, `Missing CSS rule for ${selector}`);
+    return match[1];
+  };
+
+  assert.match(ruleFor(".cron-editor > *"), /flex:\s*0\s+0\s+auto/);
+  assert.match(ruleFor(".routine-workflow-step-content > p"), /white-space:\s*normal/);
+
+  const argumentRule = ruleFor(".routine-workflow-step-args code");
+  assert.match(argumentRule, /white-space:\s*pre-wrap/);
+  assert.match(argumentRule, /overflow-wrap:\s*anywhere/);
+  assert.doesNotMatch(argumentRule, /text-overflow:\s*ellipsis|white-space:\s*nowrap/);
 });

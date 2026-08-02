@@ -1,18 +1,50 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
+from ..errors import KernelError
+from ..guardian import guardian_parameters_schema
 from ..kernel import Kernel
 from ..models import Event, RunResult
-from ..scheduler import CronJobInput, CronScheduler, CronService, SchedulerError
+from ..scheduler import CronJob, CronJobInput, CronScheduler, CronService, SchedulerError
+from ..skills import render_skill
+from ..workflows import (
+    AcceptedWorkflow,
+    StaleWorkflowError,
+    WorkflowBasis,
+    WorkflowDefinition,
+    WorkflowGenerationError,
+    WorkflowProposalService,
+    WorkflowTool,
+    WorkflowValidationError,
+    validate_accepted,
+)
 from .runs import LaunchRun
 
 
 class CronJobBody(CronJobInput):
-    pass
+    accepted_workflow: AcceptedWorkflow | None = None
+
+
+class CronCreateBody(CronJobInput):
+    accepted_workflow: AcceptedWorkflow | None = None
+
+
+class CronWorkflowProposalBody(CronJobInput):
+    timezone: str = "Europe/Paris"
+
+
+class CronWorkflowAcceptanceBody(BaseModel):
+    accepted_workflow: AcceptedWorkflow
+
+
+WorkflowProposalFactory = Callable[[CronJobInput], WorkflowProposalService]
 
 
 def create_cron_router(
@@ -20,8 +52,22 @@ def create_cron_router(
     scheduler: CronScheduler,
     launch: LaunchRun,
     kernel: Kernel,
+    workflow_proposal_factory: WorkflowProposalFactory,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/crons", tags=["automations"])
+
+    @router.post("/workflow-proposals")
+    async def propose_cron_workflow(
+        payload: CronWorkflowProposalBody,
+    ) -> dict[str, object]:
+        try:
+            basis = _workflow_basis(payload, kernel, timezone=payload.timezone)
+            proposal = await workflow_proposal_factory(payload).propose(basis)
+            return proposal.model_dump(mode="json", by_alias=True)
+        except WorkflowGenerationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except (WorkflowValidationError, KernelError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.get("")
     async def list_crons() -> list[dict[str, object]]:
@@ -33,9 +79,7 @@ def create_cron_router(
             job = service.get(job_id)
         except SchedulerError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        pending = [
-            item for item in kernel.list_approvals() if item.session_id == job.session_id
-        ]
+        pending = [item for item in kernel.list_approvals() if item.session_id == job.session_id]
         latest_run_id = (
             str(max(pending, key=lambda item: item.created_at).run_id) if pending else None
         )
@@ -88,17 +132,81 @@ def create_cron_router(
         return {"session_id": session_id, "read": count}
 
     @router.post("")
-    async def create_cron(payload: CronJobBody) -> dict[str, object]:
+    async def create_cron(payload: CronCreateBody) -> dict[str, object]:
         try:
-            return service.create(payload).model_dump(mode="json")
-        except SchedulerError as exc:
+            cron_payload = CronJobInput.model_validate(
+                payload.model_dump(exclude={"accepted_workflow"})
+            )
+            accepted = payload.accepted_workflow
+            if accepted is None:
+                created = service.create(cron_payload)
+            else:
+                basis = _workflow_basis(
+                    cron_payload,
+                    kernel,
+                    timezone=accepted.workflow.execution.timezone,
+                )
+                validated = validate_accepted(accepted, basis)
+                _validate_enabled_workflow(cron_payload, validated.workflow)
+                created = service.create(
+                    cron_payload,
+                    workflow=validated.workflow.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    ),
+                    workflow_basis_hash=validated.basis_hash,
+                )
+            return created.model_dump(mode="json")
+        except StaleWorkflowError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (SchedulerError, WorkflowValidationError, KernelError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.put("/{job_id}")
     async def update_cron(job_id: str, payload: CronJobBody) -> dict[str, object]:
         try:
             previous = service.get(job_id)
-            updated = service.update(job_id, payload)
+            cron_payload = CronJobInput.model_validate(
+                payload.model_dump(exclude={"accepted_workflow"})
+            )
+            accepted = payload.accepted_workflow
+            if accepted is not None:
+                _ensure_workflow_mutable(previous, kernel)
+                basis = _workflow_basis(
+                    cron_payload,
+                    kernel,
+                    timezone=accepted.workflow.execution.timezone,
+                )
+                validated = validate_accepted(accepted, basis)
+                _validate_enabled_workflow(cron_payload, validated.workflow)
+                updated = service.update_with_workflow(
+                    job_id,
+                    cron_payload,
+                    validated.workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
+                    validated.basis_hash,
+                )
+            else:
+                must_revalidate = _workflow_basis_fields_changed(previous, cron_payload) or (
+                    not previous.enabled and cron_payload.enabled
+                )
+                if previous.workflow is not None and must_revalidate:
+                    if not previous.workflow_basis_hash:
+                        raise WorkflowValidationError(["workflow_basis_hash absent"])
+                    stored = AcceptedWorkflow.model_validate(
+                        {
+                            "workflow": previous.workflow,
+                            "basis_hash": previous.workflow_basis_hash,
+                        }
+                    )
+                    validate_accepted(
+                        stored,
+                        _workflow_basis(
+                            cron_payload,
+                            kernel,
+                            timezone=stored.workflow.execution.timezone,
+                        ),
+                    )
+                    _validate_enabled_workflow(cron_payload, stored.workflow)
+                updated = service.update(job_id, cron_payload)
             permission_changed = any(
                 (
                     previous.prompt != updated.prompt,
@@ -111,7 +219,13 @@ def create_cron_router(
                     previous.reasoning != updated.reasoning,
                 )
             )
-            if permission_changed:
+            if accepted is not None:
+                _revoke_workflow_grants(
+                    updated,
+                    kernel,
+                    "workflow_replaced" if previous.workflow is not None else "workflow_added",
+                )
+            elif permission_changed:
                 kernel.events.append(
                     Event(
                         session_id=updated.session_id,
@@ -122,11 +236,19 @@ def create_cron_router(
                     )
                 )
             return updated.model_dump(mode="json")
+        except StaleWorkflowError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except SchedulerError as exc:
+            conflict = any(
+                marker in str(exc)
+                for marker in ("pendant une exécution", "autorisation en attente")
+            )
             raise HTTPException(
-                status_code=404 if "introuvable" in str(exc) else 422,
+                status_code=404 if "introuvable" in str(exc) else 409 if conflict else 422,
                 detail=str(exc),
             ) from exc
+        except (WorkflowValidationError, KernelError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.delete("/{job_id}")
     async def delete_cron(job_id: str) -> dict[str, str]:
@@ -136,10 +258,75 @@ def create_cron_router(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"id": job_id, "status": "deleted"}
 
+    @router.get("/{job_id}/workflow")
+    async def get_cron_workflow(job_id: str) -> dict[str, object]:
+        try:
+            return _workflow_response(service.get(job_id))
+        except SchedulerError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.put("/{job_id}/workflow")
+    async def replace_cron_workflow(
+        job_id: str,
+        payload: CronWorkflowAcceptanceBody,
+    ) -> dict[str, object]:
+        try:
+            job = service.get(job_id)
+            _ensure_workflow_mutable(job, kernel)
+            accepted = payload.accepted_workflow
+            basis = _workflow_basis(
+                job,
+                kernel,
+                timezone=accepted.workflow.execution.timezone,
+            )
+            validated = validate_accepted(accepted, basis)
+            _validate_enabled_workflow(job, validated.workflow)
+            updated = service.set_workflow(
+                job_id,
+                validated.workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
+                validated.basis_hash,
+            )
+            _revoke_workflow_grants(updated, kernel, "workflow_replaced")
+            return _workflow_response(updated)
+        except StaleWorkflowError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except SchedulerError as exc:
+            status = 404 if "introuvable" in str(exc) else 409
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        except (WorkflowValidationError, KernelError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.delete("/{job_id}/workflow")
+    async def delete_cron_workflow(job_id: str) -> dict[str, object]:
+        try:
+            job = service.get(job_id)
+            if job.workflow is None:
+                return {
+                    "id": job_id,
+                    "status": "absent",
+                    **_workflow_response(job),
+                }
+            _ensure_workflow_mutable(job, kernel)
+            updated = service.clear_workflow(job_id)
+            _revoke_workflow_grants(updated, kernel, "workflow_deleted")
+            return {
+                "id": job_id,
+                "status": "deleted",
+                **_workflow_response(updated),
+            }
+        except SchedulerError as exc:
+            status = 404 if "introuvable" in str(exc) else 409
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+
     @router.post("/{job_id}/run")
     async def run_cron_now(job_id: str) -> dict[str, str]:
         try:
             job = service.get(job_id)
+            _validate_stored_workflow(job, kernel)
+        except StaleWorkflowError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (WorkflowValidationError, KernelError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except SchedulerError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if job.in_flight or job.blocked:
@@ -168,13 +355,145 @@ def create_cron_router(
         """Test without advancing schedule, preserving exact guardian grants."""
         try:
             job = service.get(job_id)
+            _validate_stored_workflow(job, kernel)
             result = await launch(CronScheduler.request_for(job, trigger="cron_test"))
             # A test does not claim or advance the schedule, but it is still the
             # latest diagnostic result and must clear an obsolete last_error.
             service.record_test_result(job_id, result)
             return result
+        except StaleWorkflowError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (WorkflowValidationError, KernelError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except SchedulerError as exc:
             status = 404 if "introuvable" in str(exc) else 409
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     return router
+
+
+def _workflow_basis(
+    payload: CronJobInput | CronJob,
+    kernel: Kernel,
+    *,
+    timezone: str,
+) -> WorkflowBasis:
+    workspace = Path(payload.workspace).expanduser().resolve()
+    agents = kernel.config.agents()
+    agent = agents.get(payload.agent_id)
+    if agent is None:
+        raise WorkflowValidationError([f"agent inconnu : {payload.agent_id}"])
+    skills = kernel.config.skills(workspace)
+    missing = sorted(set(payload.skills) - skills.keys())
+    if missing:
+        raise WorkflowValidationError(
+            [f"skills inconnues pour ce workspace : {', '.join(missing)}"]
+        )
+    disabled = kernel.config.disabled_tools(payload.agent_id)
+    declared = set(agent.declared_tools)
+    effective_catalog = [
+        {
+            **item,
+            "input_schema": guardian_parameters_schema(item.get("input_schema", {})),
+        }
+        for item in kernel._tool_catalog()
+        if item["name"] not in disabled
+        and item.get("module") != "kernel"
+        and (not declared or item["name"] in declared)
+    ]
+    return WorkflowBasis(
+        name=payload.name.strip(),
+        prompt=payload.prompt,
+        schedule=payload.schedule.strip(),
+        timezone=timezone,
+        workspace=str(workspace),
+        agent_id=payload.agent_id,
+        skills=payload.skills,
+        skill_instructions={name: render_skill(skills, name) for name in payload.skills},
+        security_mode=payload.security_mode.value,
+        tool_catalog=[WorkflowTool.model_validate(item) for item in effective_catalog],
+    )
+
+
+def _workflow_basis_fields_changed(previous: CronJob, payload: CronJobInput) -> bool:
+    """Compare only user-owned fields represented in ``WorkflowBasis``."""
+
+    return any(
+        (
+            previous.name != payload.name.strip(),
+            previous.schedule != payload.schedule.strip(),
+            previous.prompt != payload.prompt,
+            previous.workspace != payload.workspace.expanduser().resolve(),
+            previous.agent_id != payload.agent_id,
+            sorted(previous.skills) != sorted(payload.skills),
+            previous.security_mode != payload.security_mode,
+        )
+    )
+
+
+def _validate_enabled_workflow(
+    payload: CronJobInput | CronJob,
+    workflow: WorkflowDefinition,
+) -> None:
+    if payload.enabled and workflow.status != "ready":
+        raise WorkflowValidationError(
+            [
+                f"un workflow {workflow.status} ne peut pas être exécuté; "
+                "désactiver la routine ou accepter un workflow ready"
+            ]
+        )
+
+
+def _workflow_response(job: CronJob) -> dict[str, object]:
+    return {
+        "workflow": job.workflow,
+        "basis_hash": job.workflow_basis_hash,
+        "revision": job.workflow_revision,
+        "updated_at": job.workflow_updated_at.isoformat() if job.workflow_updated_at else None,
+    }
+
+
+def _validate_stored_workflow(job: CronJob, kernel: Kernel) -> None:
+    if job.workflow is None:
+        return
+    if not job.workflow_basis_hash:
+        raise WorkflowValidationError(["workflow_basis_hash absent"])
+    stored = AcceptedWorkflow.model_validate(
+        {
+            "workflow": job.workflow,
+            "basis_hash": job.workflow_basis_hash,
+        }
+    )
+    validated = validate_accepted(
+        stored,
+        _workflow_basis(
+            job,
+            kernel,
+            timezone=stored.workflow.execution.timezone,
+        ),
+    )
+    if validated.workflow.status != "ready":
+        raise WorkflowValidationError(
+            [f"le workflow enregistré est {validated.workflow.status} et non exécutable"]
+        )
+
+
+def _ensure_workflow_mutable(job: CronJob, kernel: Kernel) -> None:
+    if job.in_flight:
+        raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
+    if any(item.session_id == job.session_id for item in kernel.list_approvals()):
+        raise SchedulerError(
+            "Impossible de modifier le workflow pendant une autorisation en attente"
+        )
+
+
+def _revoke_workflow_grants(job: CronJob, kernel: Kernel, reason: str) -> None:
+    kernel.events.append(
+        Event(
+            session_id=job.session_id,
+            run_id=uuid4(),
+            agent_id=job.agent_id,
+            type="approval.grants.revoked",
+            payload={"cron_job_id": job.id, "reason": reason},
+        )
+    )

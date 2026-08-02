@@ -6,9 +6,51 @@ from fastapi.testclient import TestClient
 
 from agentic_kernel.api import create_app
 from agentic_kernel.approvals import ApprovalStore
+from agentic_kernel.kernel import Kernel
 from agentic_kernel.models import ApprovalRequest, Event, RunRequest
 from agentic_kernel.modules import ModuleRegistry
 from agentic_kernel.plans import PlanService, PlanStepInput
+from agentic_kernel.routers.crons import _workflow_basis
+from agentic_kernel.scheduler import CronJobInput
+from agentic_kernel.workflows import (
+    AcceptedWorkflow,
+    WorkflowDefinition,
+    WorkflowProposalService,
+    workflow_basis_hash,
+)
+
+
+def accepted_synthesis_workflow(project: Path, body: dict) -> AcceptedWorkflow:
+    payload = CronJobInput.model_validate(body)
+    basis = _workflow_basis(payload, Kernel(project), timezone="Europe/Paris")
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "schema": "amk.workflow/v1",
+            "id": "routine-morning-v1",
+            "title": "Morning",
+            "status": "ready",
+            "execution": {
+                "mode": "agent_guided",
+                "deviation": "stop_and_report",
+                "timezone": "Europe/Paris",
+            },
+            "permissions": {
+                "authority": "kernel_guardian",
+                "unlisted": "stop_and_report",
+                "declarations": [],
+            },
+            "missing_dependencies": [],
+            "steps": [
+                {
+                    "id": "summary",
+                    "kind": "synthesize",
+                    "instructions": "Produire le résumé demandé sans outil.",
+                }
+            ],
+            "output": {"sections": ["Résumé"]},
+        }
+    )
+    return AcceptedWorkflow(workflow=workflow, basis_hash=workflow_basis_hash(basis))
 
 
 def test_health_and_catalog(project: Path) -> None:
@@ -152,6 +194,370 @@ def test_cron_api_crud(project: Path) -> None:
     assert client.delete(f"/api/crons/{job_id}").status_code == 200
 
 
+def test_cron_workflow_can_be_accepted_read_replaced_and_deleted_independently(
+    project: Path,
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    client = TestClient(create_app(project))
+    body = {
+        "name": "Morning",
+        "schedule": "0 9 * * *",
+        "prompt": "Summarize",
+        "workspace": str(project),
+        "agent_id": "main",
+        "skills": [],
+        "security_mode": "limited",
+        "enabled": False,
+        "auto_resume": True,
+    }
+    accepted = accepted_synthesis_workflow(project, body)
+    created = client.post(
+        "/api/crons",
+        json={
+            **body,
+            "accepted_workflow": accepted.model_dump(mode="json", by_alias=True),
+        },
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()
+    assert job["workflow"]["schema"] == "amk.workflow/v1"
+    assert job["workflow_revision"] == 1
+    assert job["workflow_basis_hash"] == accepted.basis_hash
+
+    fetched = client.get(f"/api/crons/{job['id']}/workflow")
+    assert fetched.status_code == 200
+    assert fetched.json()["workflow"] == job["workflow"]
+    assert fetched.json()["revision"] == 1
+
+    toggled = client.put(f"/api/crons/{job['id']}", json={**body, "enabled": True})
+    assert toggled.status_code == 200, toggled.text
+    assert toggled.json()["workflow"] == job["workflow"]
+    stale_edit = client.put(
+        f"/api/crons/{job['id']}",
+        json={**body, "enabled": True, "prompt": "A changed request"},
+    )
+    assert stale_edit.status_code == 409
+    assert "régénérer" in stale_edit.json()["detail"]
+
+    changed_body = {**body, "enabled": True, "prompt": "A changed request"}
+    changed_accepted = accepted_synthesis_workflow(project, changed_body)
+    updated_with_workflow = client.put(
+        f"/api/crons/{job['id']}",
+        json={
+            **changed_body,
+            "accepted_workflow": changed_accepted.model_dump(mode="json", by_alias=True),
+        },
+    )
+    assert updated_with_workflow.status_code == 200, updated_with_workflow.text
+    assert updated_with_workflow.json()["prompt"] == "A changed request"
+    assert updated_with_workflow.json()["workflow_revision"] == 2
+
+    replaced = client.put(
+        f"/api/crons/{job['id']}/workflow",
+        json={"accepted_workflow": changed_accepted.model_dump(mode="json", by_alias=True)},
+    )
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["revision"] == 3
+
+    deleted = client.delete(f"/api/crons/{job['id']}/workflow")
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["status"] == "deleted"
+    assert deleted.json()["workflow"] is None
+    assert deleted.json()["revision"] == 4
+    remaining = next(item for item in client.get("/api/crons").json() if item["id"] == job["id"])
+    assert remaining["prompt"] == "A changed request"
+    assert remaining["skills"] == []
+    assert remaining["workflow"] is None
+
+    session_events = Kernel(project).events.read(job["session_id"])
+    assert [event.type for event in session_events].count("approval.grants.revoked") == 3
+
+
+def test_cron_creation_rejects_a_stale_or_unknown_tool_workflow(project: Path) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    client = TestClient(create_app(project))
+    body = {
+        "name": "Morning",
+        "schedule": "0 9 * * *",
+        "prompt": "Summarize",
+        "workspace": str(project),
+        "agent_id": "main",
+        "skills": [],
+        "security_mode": "limited",
+        "enabled": False,
+        "auto_resume": True,
+    }
+    accepted = accepted_synthesis_workflow(project, body)
+    stale = accepted.model_copy(update={"basis_hash": "0" * 64})
+    response = client.post(
+        "/api/crons",
+        json={**body, "accepted_workflow": stale.model_dump(mode="json", by_alias=True)},
+    )
+    assert response.status_code == 409
+    assert client.get("/api/crons").json() == []
+
+    invalid_document = accepted.workflow.model_dump(mode="json", by_alias=True)
+    invalid_document["steps"] = [
+        {
+            "id": "invented",
+            "kind": "tool",
+            "tool": "invented_tool",
+            "args": {"justification": "Tester un outil absent."},
+        }
+    ]
+    invalid_document["permissions"]["declarations"] = [{"tool": "invented_tool"}]
+    invalid = AcceptedWorkflow(
+        workflow=WorkflowDefinition.model_validate(invalid_document),
+        basis_hash=accepted.basis_hash,
+    )
+    response = client.post(
+        "/api/crons",
+        json={**body, "accepted_workflow": invalid.model_dump(mode="json", by_alias=True)},
+    )
+    assert response.status_code == 422
+    assert "invented_tool" in response.json()["detail"]
+    assert client.get("/api/crons").json() == []
+
+
+def test_non_ready_workflow_can_be_saved_inactive_but_never_executed(
+    project: Path,
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    client = TestClient(create_app(project))
+    body = {
+        "name": "Calendar review",
+        "schedule": "0 9 * * *",
+        "prompt": "Summarize my calendar",
+        "workspace": str(project),
+        "agent_id": "main",
+        "skills": [],
+        "security_mode": "limited",
+        "enabled": True,
+        "auto_resume": True,
+    }
+    ready = accepted_synthesis_workflow(project, body)
+    document = ready.workflow.model_dump(mode="json", by_alias=True)
+    document["status"] = "blocked"
+    document["missing_dependencies"] = [
+        {
+            "capability": "calendar.events.list",
+            "reason": "Aucun connecteur calendrier n’est configuré.",
+        }
+    ]
+    blocked = AcceptedWorkflow(
+        workflow=WorkflowDefinition.model_validate(document),
+        basis_hash=ready.basis_hash,
+    )
+    accepted_payload = blocked.model_dump(mode="json", by_alias=True)
+
+    enabled = client.post(
+        "/api/crons",
+        json={**body, "accepted_workflow": accepted_payload},
+    )
+    assert enabled.status_code == 422
+    assert "ne peut pas être exécuté" in enabled.json()["detail"]
+
+    created = client.post(
+        "/api/crons",
+        json={**body, "enabled": False, "accepted_workflow": accepted_payload},
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()
+    assert job["workflow"]["status"] == "blocked"
+
+    assert client.post(f"/api/crons/{job['id']}/run").status_code == 422
+    reenabled = client.put(
+        f"/api/crons/{job['id']}",
+        json={**body, "enabled": True},
+    )
+    assert reenabled.status_code == 422
+
+
+def test_workflow_proposal_is_returned_without_creating_a_routine_or_skill(
+    project: Path,
+    monkeypatch,
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    creator = project / "content-agents" / "skills" / "workflow-creator"
+    creator.mkdir(parents=True)
+    (creator / "SKILL.md").write_text(
+        """---
+name: workflow-creator
+description: Proposer un workflow de routine.
+---
+Conçois seulement le contrat demandé.
+""",
+        encoding="utf-8",
+    )
+    body = {
+        "name": "Morning",
+        "schedule": "0 9 * * *",
+        "prompt": "Summarize",
+        "workspace": str(project),
+        "agent_id": "main",
+        "skills": [],
+        "security_mode": "limited",
+        "enabled": False,
+        "auto_resume": True,
+    }
+
+    async def propose(_self, basis):
+        accepted = accepted_synthesis_workflow(project, body)
+        assert accepted.basis_hash == workflow_basis_hash(basis)
+        return accepted
+
+    monkeypatch.setattr(WorkflowProposalService, "propose", propose)
+    client = TestClient(create_app(project))
+    response = client.post("/api/crons/workflow-proposals", json=body)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["workflow"]["schema"] == "amk.workflow/v1"
+    assert client.get("/api/crons").json() == []
+    assert sorted(path.name for path in (project / "content-agents" / "skills").iterdir()) == [
+        "workflow-creator"
+    ]
+
+
+def test_workflow_replacement_and_deletion_refuse_pending_approvals(project: Path) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    client = TestClient(create_app(project))
+    body = {
+        "name": "Morning",
+        "schedule": "0 9 * * *",
+        "prompt": "Summarize",
+        "workspace": str(project),
+        "agent_id": "main",
+        "skills": [],
+        "security_mode": "limited",
+        "enabled": False,
+        "auto_resume": True,
+    }
+    accepted = accepted_synthesis_workflow(project, body)
+    job = client.post(
+        "/api/crons",
+        json={
+            **body,
+            "accepted_workflow": accepted.model_dump(mode="json", by_alias=True),
+        },
+    ).json()
+    approval = ApprovalRequest(
+        session_id=job["session_id"],
+        run_id=uuid4(),
+        agent_id="main",
+        tool_call_id="call-1",
+        tool_name="web_search",
+        action_family="network",
+        justification="Pending workflow test",
+        reason="Approval required",
+    )
+    ApprovalStore(project / "content-agents" / "sessions").save_state(
+        approval,
+        {
+            "request": RunRequest(
+                prompt=body["prompt"],
+                session_id=job["session_id"],
+                workspace=project,
+            ).model_dump(mode="json"),
+            "messages": "[]",
+        },
+    )
+
+    replacement = client.put(
+        f"/api/crons/{job['id']}/workflow",
+        json={"accepted_workflow": accepted.model_dump(mode="json", by_alias=True)},
+    )
+    deletion = client.delete(f"/api/crons/{job['id']}/workflow")
+    atomic_replacement = client.put(
+        f"/api/crons/{job['id']}",
+        json={
+            **body,
+            "accepted_workflow": accepted.model_dump(mode="json", by_alias=True),
+        },
+    )
+    assert replacement.status_code == 409
+    assert deletion.status_code == 409
+    assert atomic_replacement.status_code == 409
+    assert client.get(f"/api/crons/{job['id']}/workflow").json()["workflow"] is not None
+
+
+def test_cron_workflow_is_revalidated_before_an_approval_is_consumed(
+    project: Path,
+) -> None:
+    skill_dir = project / "content-agents" / "skills" / "routine-local"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        """---
+name: routine-local
+description: Routine-local guidance.
+---
+Use the original guidance.
+""",
+        encoding="utf-8",
+    )
+    ModuleRegistry(project / "tools").build_index()
+    client = TestClient(create_app(project))
+    body = {
+        "name": "Morning",
+        "schedule": "0 9 * * *",
+        "prompt": "Summarize",
+        "workspace": str(project),
+        "agent_id": "main",
+        "skills": ["routine-local"],
+        "security_mode": "limited",
+        "enabled": False,
+        "auto_resume": True,
+    }
+    accepted = accepted_synthesis_workflow(project, body)
+    job = client.post(
+        "/api/crons",
+        json={
+            **body,
+            "accepted_workflow": accepted.model_dump(mode="json", by_alias=True),
+        },
+    ).json()
+    approval = ApprovalRequest(
+        session_id=job["session_id"],
+        run_id=uuid4(),
+        agent_id="main",
+        tool_call_id="call-drift",
+        tool_name="web_search",
+        action_family="network",
+        justification="Tester la dérive avant reprise.",
+        reason="Approval required",
+    )
+    store = ApprovalStore(project / "content-agents" / "sessions")
+    store.save_state(
+        approval,
+        {
+            "request": RunRequest(
+                prompt=body["prompt"],
+                session_id=job["session_id"],
+                workspace=project,
+                skills=["routine-local"],
+                trigger="cron_test",
+                cron_job_id=job["id"],
+                workflow=job["workflow"],
+                tool_allowlist=[],
+            ).model_dump(mode="json"),
+            "messages": "[]",
+        },
+    )
+    skill_file.write_text(
+        skill_file.read_text(encoding="utf-8").replace("original", "changed"),
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        f"/api/approvals/{approval.approval_id}/resolve",
+        json={"approved": True},
+    )
+
+    assert response.status_code == 409
+    assert "régénérer" in response.json()["detail"]
+    assert store.load_state(approval.approval_id) is not None
+
+
 def test_cron_permission_changes_revoke_durable_approval_grants(project: Path) -> None:
     ModuleRegistry(project / "tools").build_index()
     client = TestClient(create_app(project))
@@ -212,15 +618,9 @@ def test_cron_permission_changes_revoke_durable_approval_grants(project: Path) -
         body.update(change)
         updated = client.put(f"/api/crons/{job_id}", json=body)
         assert updated.status_code == 200
-        assert (
-            client.get(f"/api/crons/{job_id}/approval-status")
-            .json()["approved_scopes"]
-            == []
-        )
+        assert client.get(f"/api/crons/{job_id}/approval-status").json()["approved_scopes"] == []
 
-    assert [event.type for event in events.read(session_id)].count(
-        "approval.grants.revoked"
-    ) == 3
+    assert [event.type for event in events.read(session_id)].count("approval.grants.revoked") == 3
 
 
 def test_mixed_run_approval_batch_returns_structured_conflict(project: Path) -> None:
@@ -314,12 +714,9 @@ def test_session_history_has_global_routine_inbox_and_hides_execution_sessions(
             },
         )
     )
-    sessions = TestClient(app).get(
-        "/api/sessions", params={"workspace": str(project)}
-    ).json()
+    sessions = TestClient(app).get("/api/sessions", params={"workspace": str(project)}).json()
     assert any(
-        item["trigger"] == "routine_inbox" and item["workspace"] is None
-        for item in sessions
+        item["trigger"] == "routine_inbox" and item["workspace"] is None for item in sessions
     )
     assert all(item["session_id"] != str(automation_session) for item in sessions)
 

@@ -19,17 +19,19 @@ from .models import Event, RunError, RunRequest, RunResult, RunStatus
 from .providers import ProviderFactory
 from .routers.approvals import create_approval_router
 from .routers.artifacts import create_artifact_router
-from .routers.crons import create_cron_router
+from .routers.crons import _validate_stored_workflow, create_cron_router
 from .routers.plans import create_plan_router
 from .routers.resources import create_resource_router
 from .routers.runs import create_run_router
 from .routers.sessions import create_session_router
 from .scheduler import (
     ROUTINE_INBOX_SESSION_ID,
+    CronJobInput,
     CronScheduler,
     CronService,
     SchedulerError,
 )
+from .workflows import WorkflowProposalService
 
 
 class WorkspaceRequest(BaseModel):
@@ -152,9 +154,14 @@ def create_app(root: Path | str = ".") -> FastAPI:
             )
         )
 
+    def validate_cron_request(request: RunRequest) -> None:
+        if request.cron_job_id:
+            _validate_stored_workflow(cron_service.get(request.cron_job_id), kernel)
+
     async def launch(request: RunRequest) -> RunResult:
         if request.session_id in running_tasks:
             raise SchedulerError(f"Un run est déjà actif pour la session {request.session_id}")
+        validate_cron_request(request)
         task = asyncio.create_task(kernel.run(request))
         running_tasks[request.session_id] = task
         try:
@@ -189,6 +196,27 @@ def create_app(root: Path | str = ".") -> FastAPI:
 
     scheduler = CronScheduler(cron_service, launch)
 
+    def workflow_proposal_service(payload: CronJobInput) -> WorkflowProposalService:
+        agents = project.agents()
+        agent = agents.get(payload.agent_id)
+        if agent is None:
+            raise ConfigurationError(f"unknown agent: {payload.agent_id}")
+        skills = project.skills(payload.workspace)
+        creator = skills.get("workflow-creator")
+        if creator is None:
+            raise ConfigurationError(
+                "Le skill workflow-creator doit être installé pour proposer un workflow"
+            )
+        provider_id = payload.provider_id or agent.provider
+        model = ProviderFactory(project.providers()).build(
+            provider_id,
+            payload.model or agent.model,
+        )
+        return WorkflowProposalService(
+            model,
+            workflow_creator=creator.instructions,
+        )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         scheduler_task = asyncio.create_task(
@@ -216,7 +244,15 @@ def create_app(root: Path | str = ".") -> FastAPI:
         allow_headers=["content-type"],
     )
     app.include_router(create_run_router(kernel, project.root, running_tasks, launch))
-    app.include_router(create_cron_router(cron_service, scheduler, launch, kernel))
+    app.include_router(
+        create_cron_router(
+            cron_service,
+            scheduler,
+            launch,
+            kernel,
+            workflow_proposal_service,
+        )
+    )
     app.include_router(create_artifact_router(kernel))
     app.include_router(create_resource_router(project))
 
@@ -419,6 +455,7 @@ def create_app(root: Path | str = ".") -> FastAPI:
             running_tasks,
             cron_service,
             deliver_cron_result,
+            validate_cron_request,
         )
     )
 

@@ -29,6 +29,39 @@ def payload(workspace: Path, **updates) -> CronJobInput:
     return CronJobInput(**values)
 
 
+def workflow_definition(tool: str | None = "utc_now") -> dict:
+    steps: list[dict] = []
+    if tool:
+        steps.append({"id": "source", "kind": "tool", "tool": tool, "args": {}})
+    steps.append(
+        {
+            "id": "summary",
+            "kind": "synthesize",
+            "needs": ["source"] if tool else [],
+            "instructions": "Résumer les résultats disponibles.",
+        }
+    )
+    return {
+        "schema": "amk.workflow/v1",
+        "id": "routine-test-v1",
+        "title": "Routine test",
+        "status": "ready",
+        "execution": {
+            "mode": "agent_guided",
+            "deviation": "stop_and_report",
+            "timezone": "Europe/Paris",
+        },
+        "permissions": {
+            "authority": "kernel_guardian",
+            "unlisted": "stop_and_report",
+            "declarations": [{"tool": tool}] if tool else [],
+        },
+        "missing_dependencies": [],
+        "steps": steps,
+        "output": {"sections": ["Résultat"]},
+    }
+
+
 def test_cron_crud_and_schedule_validation(tmp_path: Path) -> None:
     service = CronService(tmp_path / "state.db")
     workspace = tmp_path / "project"
@@ -45,6 +78,107 @@ def test_cron_crud_and_schedule_validation(tmp_path: Path) -> None:
     assert service.list() == []
     with pytest.raises(SchedulerError):
         service.create(payload(workspace, schedule="not a cron"))
+
+
+def test_cron_workflow_is_optional_persistent_and_independently_removable(
+    tmp_path: Path,
+) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    workflow = workflow_definition()
+
+    free_job = service.create(payload(workspace, name="Free", skills=["review"]))
+    assert free_job.workflow is None
+    assert free_job.workflow_revision == 0
+    free_request = CronScheduler.request_for(free_job)
+    assert free_request.workflow is None
+    assert free_request.tool_allowlist is None
+
+    guided = service.create(
+        payload(workspace, name="Guided", skills=["review"]),
+        workflow=workflow,
+        workflow_basis_hash="sha256:basis",
+    )
+    assert guided.workflow == workflow
+    assert guided.workflow_revision == 1
+    assert guided.workflow_basis_hash == "sha256:basis"
+    assert guided.workflow_updated_at is not None
+    request = CronScheduler.request_for(guided)
+    assert request.skills == ["review"]
+    assert request.workflow == workflow
+    assert request.tool_allowlist == ["utc_now"]
+
+    updated = service.update(
+        guided.id,
+        payload(
+            workspace,
+            name="Renamed",
+            prompt="Keep the accepted workflow",
+            skills=["review"],
+        ),
+    )
+    assert updated.workflow == workflow
+    assert updated.workflow_revision == 1
+
+    cleared = service.clear_workflow(guided.id)
+    assert cleared.id == guided.id
+    assert cleared.prompt == "Keep the accepted workflow"
+    assert cleared.skills == ["review"]
+    assert cleared.workflow is None
+    assert cleared.workflow_revision == 2
+    assert CronScheduler.request_for(cleared).tool_allowlist is None
+
+
+def test_synthesis_only_workflow_explicitly_allows_no_tools(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(
+        payload(workspace),
+        workflow=workflow_definition(None),
+        workflow_basis_hash="sha256:basis",
+    )
+
+    assert CronScheduler.request_for(job).tool_allowlist == []
+
+
+def test_non_ready_workflow_exposes_no_tools_as_a_runtime_backstop(
+    tmp_path: Path,
+) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    workflow = workflow_definition()
+    workflow["status"] = "blocked"
+    workflow["missing_dependencies"] = [
+        {"capability": "calendar.events.list", "reason": "Connecteur absent"}
+    ]
+    job = service.create(
+        payload(workspace, enabled=False),
+        workflow=workflow,
+        workflow_basis_hash="sha256:basis",
+    )
+
+    assert CronScheduler.request_for(job).tool_allowlist == []
+
+
+def test_workflow_cannot_change_while_job_is_in_flight(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+    claimed = service.claim(job.id)
+    assert claimed is not None
+
+    with pytest.raises(SchedulerError, match="pendant une exécution"):
+        service.set_workflow(
+            job.id,
+            workflow_definition(),
+            "sha256:basis",
+        )
+    with pytest.raises(SchedulerError, match="pendant une exécution"):
+        service.clear_workflow(job.id)
 
 
 def test_cron_can_deliver_to_a_selected_session(tmp_path: Path) -> None:

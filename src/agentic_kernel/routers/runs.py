@@ -103,6 +103,8 @@ def create_run_router(
                     provider_id=started.payload.get("provider_id"),
                     model=started.payload.get("model"),
                     reasoning=started.payload.get("reasoning"),
+                    workflow=started.payload.get("workflow"),
+                    tool_allowlist=started.payload.get("tool_allowlist"),
                     trigger="resume",
                 )
             )
