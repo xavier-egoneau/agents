@@ -5,7 +5,7 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +15,7 @@ from .auth import OAuthManager
 from .config import ProjectConfig
 from .errors import AuthenticationError, ConfigurationError
 from .kernel import Kernel
-from .models import RunRequest, RunResult
+from .models import Event, RunError, RunRequest, RunResult, RunStatus
 from .providers import ProviderFactory
 from .routers.approvals import create_approval_router
 from .routers.artifacts import create_artifact_router
@@ -24,7 +24,12 @@ from .routers.plans import create_plan_router
 from .routers.resources import create_resource_router
 from .routers.runs import create_run_router
 from .routers.sessions import create_session_router
-from .scheduler import CronScheduler, CronService, SchedulerError
+from .scheduler import (
+    ROUTINE_INBOX_SESSION_ID,
+    CronScheduler,
+    CronService,
+    SchedulerError,
+)
 
 
 class WorkspaceRequest(BaseModel):
@@ -104,6 +109,48 @@ def create_app(root: Path | str = ".") -> FastAPI:
     running_tasks: dict[UUID, asyncio.Task[RunResult]] = {}
     cron_service = CronService(project.content_root / "state.db")
     cron_service.import_legacy_once(project.content_root / "agents" / "crons.json", project.root)
+    cron_service.repair_orphaned_blocks(
+        {item.session_id for item in kernel.list_approvals()}
+    )
+    if kernel.events.projection.session(ROUTINE_INBOX_SESSION_ID) is None:
+        kernel.events.append(
+            Event(
+                session_id=ROUTINE_INBOX_SESSION_ID,
+                run_id=uuid4(),
+                agent_id="main",
+                type="routine.inbox.created",
+                payload={"prompt": "Routines"},
+            )
+        )
+
+    def deliver_cron_result(request: RunRequest, result: RunResult) -> None:
+        if (
+            request.trigger not in {"cron", "cron_resume"}
+            or not request.cron_job_id
+            or result.status == RunStatus.APPROVAL_PENDING
+        ):
+            return
+        job = cron_service.get(request.cron_job_id)
+        target = job.notification_session_id
+        if kernel.events.projection.session(target) is None:
+            target = ROUTINE_INBOX_SESSION_ID
+        error_text = "\n".join(item.message for item in result.errors)
+        content = result.output or error_text or f"Routine « {job.name} » terminée."
+        kernel.events.append(
+            Event(
+                session_id=target,
+                run_id=result.run_id,
+                agent_id=job.agent_id,
+                type="routine.notification",
+                payload={
+                    "cron_job_id": job.id,
+                    "name": job.name,
+                    "status": result.status.value,
+                    "content": f"{job.name}\n\n{content}",
+                    "execution_session_id": str(result.session_id),
+                },
+            )
+        )
 
     async def launch(request: RunRequest) -> RunResult:
         if request.session_id in running_tasks:
@@ -111,7 +158,32 @@ def create_app(root: Path | str = ".") -> FastAPI:
         task = asyncio.create_task(kernel.run(request))
         running_tasks[request.session_id] = task
         try:
-            return await task
+            result = await task
+            if request.trigger.startswith("cron") and result.status == RunStatus.SUCCESS:
+                tool_failures = [
+                    event
+                    for event in kernel.events.read(request.session_id)
+                    if event.run_id == result.run_id and event.type == "tool.failed"
+                ]
+                if tool_failures:
+                    result = result.model_copy(
+                        update={
+                            "status": RunStatus.PARTIAL,
+                            "errors": [
+                                *result.errors,
+                                RunError(
+                                    type="tool",
+                                    message=(
+                                        f"{len(tool_failures)} outil(s) ont échoué pendant "
+                                        "l’automatisation"
+                                    ),
+                                    retryable=False,
+                                ),
+                            ],
+                        }
+                    )
+            deliver_cron_result(request, result)
+            return result
         finally:
             running_tasks.pop(request.session_id, None)
 
@@ -144,13 +216,13 @@ def create_app(root: Path | str = ".") -> FastAPI:
         allow_headers=["content-type"],
     )
     app.include_router(create_run_router(kernel, project.root, running_tasks, launch))
-    app.include_router(create_cron_router(cron_service, scheduler, launch))
+    app.include_router(create_cron_router(cron_service, scheduler, launch, kernel))
     app.include_router(create_artifact_router(kernel))
     app.include_router(create_resource_router(project))
 
     @app.get("/api/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> dict[str, object]:
+        return {"status": "ok", "scheduler": cron_service.scheduler_status()}
 
     @app.get("/api/context-status")
     async def context_status(
@@ -341,7 +413,14 @@ def create_app(root: Path | str = ".") -> FastAPI:
         return {"provider_id": provider_id, "connected": False}
 
     app.include_router(create_session_router(kernel, running_tasks))
-    app.include_router(create_approval_router(kernel, running_tasks))
+    app.include_router(
+        create_approval_router(
+            kernel,
+            running_tasks,
+            cron_service,
+            deliver_cron_result,
+        )
+    )
 
     return app
 

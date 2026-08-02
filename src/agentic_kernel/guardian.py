@@ -292,6 +292,7 @@ def _review_execution(arguments: dict[str, Any], mode: SecurityMode) -> tuple[Gu
 
 def approval_scope(decision: GuardianDecision) -> str:
     payload = {
+        "tool": decision.tool_name,
         "family": action_family(decision.risks),
         "path": decision.path,
         "session": None,

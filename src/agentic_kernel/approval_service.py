@@ -25,7 +25,7 @@ class ApprovalResume:
     state: dict[str, Any]
     batch: list[dict[str, Any]]
     tool_results: dict[str, ToolApproved | ToolDenied]
-    approved_scopes: set[tuple[str, str | None]]
+    approved_scopes: set[tuple[str, str, str | None]]
 
 
 class ApprovalService:
@@ -38,12 +38,29 @@ class ApprovalService:
     def list_pending(self) -> list[ApprovalRequest]:
         return self.store.list_pending()
 
-    def approved_scopes(self, session_id) -> set[tuple[str, str | None]]:
-        scopes: set[tuple[str, str | None]] = set()
-        for event in self.events.read(session_id):
+    def approved_scopes(self, session_id) -> set[tuple[str, str, str | None]]:
+        scopes: set[tuple[str, str, str | None]] = set()
+        events = self.events.read(session_id)
+        requested_tools = {
+            str(event.payload.get("approval_id")): event.payload.get("tool_name")
+            for event in events
+            if event.type == "approval.requested" and event.payload.get("approval_id")
+        }
+        for event in events:
+            if event.type == "approval.grants.revoked":
+                scopes.clear()
+                continue
             if event.type == "approval.resolved" and event.payload.get("approved"):
+                tool_name = event.payload.get("tool_name") or requested_tools.get(
+                    str(event.payload.get("approval_id"))
+                )
+                # Very old journals without the matching request cannot be
+                # interpreted as an exact grant and are deliberately ignored.
+                if not isinstance(tool_name, str) or not tool_name:
+                    continue
                 scopes.add(
                     (
+                        tool_name,
                         event.payload.get("action_family", "other"),
                         event.payload.get("path"),
                     )
@@ -84,6 +101,7 @@ class ApprovalService:
         if state is None:
             raise ConfigurationError(f"unknown pending approval: {approval_uuid}")
         approval = ApprovalRequest.model_validate(state["approval"])
+        self._ensure_latest_run(approval)
         if "decision" in state and not pre_resolved:
             raise ConfigurationError(f"approval already resolved: {approval_uuid}")
         request = RunRequest.model_validate(state["request"])
@@ -109,11 +127,17 @@ class ApprovalService:
             )
         self._supersede_older(approval)
         tool_results: dict[str, ToolApproved | ToolDenied] = {}
-        scopes: set[tuple[str, str | None]] = set()
+        scopes: set[tuple[str, str, str | None]] = set()
         for item in batch:
             batch_approval = ApprovalRequest.model_validate(item["approval"])
             if bool(item["decision"]):
-                scopes.add((batch_approval.action_family, batch_approval.path))
+                scopes.add(
+                    (
+                        batch_approval.tool_name,
+                        batch_approval.action_family,
+                        batch_approval.path,
+                    )
+                )
                 tool_results[batch_approval.tool_call_id] = ToolApproved()
             else:
                 tool_results[batch_approval.tool_call_id] = ToolDenied(
@@ -147,6 +171,7 @@ class ApprovalService:
         ]
         if len({(item.session_id, item.run_id) for item in pending}) != 1:
             raise ConfigurationError("all approvals in a batch must belong to the same run")
+        self._ensure_latest_run(pending[-1])
         try:
             states = self.store.resolve_many(ids, approved)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -156,7 +181,22 @@ class ApprovalService:
             self._record_resolution(approval, approved)
         return self.resolve(approvals[-1].approval_id, approved, pre_resolved=True)
 
-    def _record_resolution(self, approval: ApprovalRequest, approved: bool) -> None:
+    def _ensure_latest_run(self, current: ApprovalRequest) -> None:
+        if any(
+            candidate.session_id == current.session_id
+            and candidate.run_id != current.run_id
+            and candidate.created_at > current.created_at
+            for candidate in self.store.list_pending()
+        ):
+            raise ConfigurationError(
+                "a newer approval batch exists for this session; reload before deciding"
+            )
+
+    def _record_resolution(
+        self,
+        approval: ApprovalRequest,
+        approved: bool,
+    ) -> None:
         resolution = ApprovalResolution(
             approval_id=approval.approval_id,
             approved=approved,
@@ -170,6 +210,7 @@ class ApprovalService:
                 payload={
                     **resolution.model_dump(mode="json"),
                     "action_family": approval.action_family,
+                    "tool_name": approval.tool_name,
                     "path": approval.path,
                 },
             )
@@ -178,6 +219,8 @@ class ApprovalService:
     def _supersede_older(self, current: ApprovalRequest) -> None:
         for stale in self.store.list_pending():
             if stale.session_id != current.session_id or stale.run_id == current.run_id:
+                continue
+            if stale.created_at >= current.created_at:
                 continue
             self.events.append(
                 Event(

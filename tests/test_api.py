@@ -5,7 +5,8 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 from agentic_kernel.api import create_app
-from agentic_kernel.models import Event
+from agentic_kernel.approvals import ApprovalStore
+from agentic_kernel.models import ApprovalRequest, Event, RunRequest
 from agentic_kernel.modules import ModuleRegistry
 from agentic_kernel.plans import PlanService, PlanStepInput
 
@@ -13,7 +14,14 @@ from agentic_kernel.plans import PlanService, PlanStepInput
 def test_health_and_catalog(project: Path) -> None:
     ModuleRegistry(project / "tools").build_index()
     client = TestClient(create_app(project))
-    assert client.get("/api/health").json() == {"status": "ok"}
+    health = client.get("/api/health").json()
+    assert health["status"] == "ok"
+    assert set(health["scheduler"]) == {
+        "running",
+        "last_tick_at",
+        "last_tick_age_seconds",
+        "due_count",
+    }
     response = client.get("/api/catalog")
     assert response.status_code == 200
     assert response.json()["agents"][0]["id"] == "main"
@@ -144,6 +152,109 @@ def test_cron_api_crud(project: Path) -> None:
     assert client.delete(f"/api/crons/{job_id}").status_code == 200
 
 
+def test_cron_permission_changes_revoke_durable_approval_grants(project: Path) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    client = TestClient(create_app(project))
+    body = {
+        "name": "Morning",
+        "schedule": "0 9 * * *",
+        "prompt": "Review",
+        "workspace": str(project),
+        "agent_id": "main",
+        "skills": [],
+        "security_mode": "limited",
+        "enabled": True,
+        "auto_resume": True,
+    }
+    created = client.post("/api/crons", json=body)
+    assert created.status_code == 200
+    job_id = created.json()["id"]
+    session_id = created.json()["session_id"]
+
+    from agentic_kernel.events import JsonlEventStore
+
+    events = JsonlEventStore(project / "content-agents" / "sessions")
+
+    def grant_network_scope() -> None:
+        events.append(
+            Event(
+                session_id=session_id,
+                run_id=uuid4(),
+                agent_id="main",
+                type="approval.resolved",
+                payload={
+                    "approval_id": str(uuid4()),
+                    "approved": True,
+                    "tool_name": "web_search",
+                    "action_family": "network",
+                    "path": None,
+                },
+            )
+        )
+        status = client.get(f"/api/crons/{job_id}/approval-status")
+        assert status.status_code == 200
+        assert status.json()["approved_scopes"] == [
+            {
+                "tool_name": "web_search",
+                "action_family": "network",
+                "path": None,
+            }
+        ]
+
+    other_workspace = project / "other-workspace"
+    other_workspace.mkdir()
+    for change in (
+        {"prompt": "Review with a new instruction"},
+        {"workspace": str(other_workspace)},
+        {"model": "another-model"},
+    ):
+        grant_network_scope()
+        body.update(change)
+        updated = client.put(f"/api/crons/{job_id}", json=body)
+        assert updated.status_code == 200
+        assert (
+            client.get(f"/api/crons/{job_id}/approval-status")
+            .json()["approved_scopes"]
+            == []
+        )
+
+    assert [event.type for event in events.read(session_id)].count(
+        "approval.grants.revoked"
+    ) == 3
+
+
+def test_mixed_run_approval_batch_returns_structured_conflict(project: Path) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    store = ApprovalStore(project / "content-agents" / "sessions")
+    request = RunRequest(prompt="Test routine", workspace=project)
+    approvals = [
+        ApprovalRequest(
+            session_id=request.session_id,
+            run_id=uuid4(),
+            agent_id="main",
+            tool_call_id=f"call-{index}",
+            tool_name="web_search",
+            action_family="network",
+            justification="Tester la prévalidation",
+            reason="Network approval required",
+        )
+        for index in range(2)
+    ]
+    state = {"request": request.model_dump(mode="json"), "messages": "[]"}
+    for approval in approvals:
+        store.save_state(approval, state)
+
+    response = TestClient(create_app(project)).post(
+        "/api/approvals/resolve-batch",
+        json={
+            "approval_ids": [str(item.approval_id) for item in approvals],
+            "approved": True,
+        },
+    )
+    assert response.status_code == 409
+    assert "same run" in response.json()["detail"]
+
+
 def test_session_history_api(project: Path) -> None:
     ModuleRegistry(project / "tools").build_index()
     app = create_app(project)
@@ -179,6 +290,38 @@ def test_session_history_api(project: Path) -> None:
     assert len(detail["events"]) == 2
     assert client.delete(f"/api/sessions/{session_id}").status_code == 200
     assert client.get(f"/api/sessions/{session_id}").status_code == 404
+
+
+def test_session_history_has_global_routine_inbox_and_hides_execution_sessions(
+    project: Path,
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    app = create_app(project)
+    from agentic_kernel.events import JsonlEventStore
+
+    store = JsonlEventStore(project / "content-agents" / "sessions")
+    automation_session = uuid4()
+    store.append(
+        Event(
+            session_id=automation_session,
+            run_id=uuid4(),
+            agent_id="main",
+            type="session.started",
+            payload={
+                "prompt": "hidden routine execution",
+                "workspace": str(project),
+                "trigger": "cron",
+            },
+        )
+    )
+    sessions = TestClient(app).get(
+        "/api/sessions", params={"workspace": str(project)}
+    ).json()
+    assert any(
+        item["trigger"] == "routine_inbox" and item["workspace"] is None
+        for item in sessions
+    )
+    assert all(item["session_id"] != str(automation_session) for item in sessions)
 
 
 def test_markdown_agent_and_skill_crud(project: Path) -> None:

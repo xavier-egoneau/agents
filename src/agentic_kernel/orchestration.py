@@ -29,7 +29,7 @@ class RuntimeDeps:
     workspace: Path = field(default_factory=Path.cwd)
     security_mode: SecurityMode = SecurityMode.LIMITED
     pending_approvals: dict[str, ApprovalRequest] = field(default_factory=dict)
-    approved_scopes: set[tuple[str, str | None]] = field(default_factory=set)
+    approved_scopes: set[tuple[str, str, str | None]] = field(default_factory=set)
     agent_runs: int = 1
     attempts: dict[str, int] = field(default_factory=dict)
     tool_catalog: list[dict[str, Any]] = field(default_factory=list)
@@ -43,7 +43,11 @@ class RuntimeDeps:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def is_scope_approved(self, decision: GuardianDecision) -> bool:
-        return (action_family(decision.risks), decision.path) in self.approved_scopes
+        return (
+            decision.tool_name,
+            action_family(decision.risks),
+            decision.path,
+        ) in self.approved_scopes
 
     async def reserve_run(self, agent_id: str = "unknown") -> int:
         async with self.lock:

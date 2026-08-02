@@ -266,6 +266,7 @@ class RunRequest(BaseModel):
     images: list[ImageAttachment] = Field(default_factory=list)
     trigger: Literal["user", "resume", "cron", "cron_resume", "cron_test"] = "user"
     cron_job_id: str | None = None
+    cron_occurrence_id: str | None = None
 
 
 class RunError(BaseModel):

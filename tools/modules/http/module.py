@@ -50,7 +50,7 @@ async def http_request(
         return bool(
             scope
             and (
-                ("network", scope) in approved_scopes
+                ("http_request", "network", scope) in approved_scopes
                 or (bool(getattr(ctx, "tool_call_approved", False)) and scope == initial_scope)
             )
         )

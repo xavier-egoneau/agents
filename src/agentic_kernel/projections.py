@@ -173,6 +173,19 @@ class SessionProjection:
         session_id = str(event.session_id)
         run_id = str(event.run_id)
         timestamp = event.timestamp.isoformat()
+        if event.type == "routine.inbox.created":
+            payload = event.payload
+            db.execute(
+                """INSERT OR IGNORE INTO projected_sessions
+                   (session_id, agent_id, prompt, workspace, trigger, cron_job_id,
+                    created_at, updated_at, status, output, errors_json,
+                    event_count, last_sequence)
+                   VALUES (?, ?, ?, NULL, 'routine_inbox', NULL, ?, ?, 'success',
+                           '', '[]', 1, ?)""",
+                (session_id, event.agent_id, str(payload.get("prompt", "Routines")),
+                 timestamp, timestamp, sequence),
+            )
+            return
         if event.type == "session.started":
             payload = event.payload
             db.execute(
@@ -223,6 +236,21 @@ class SessionProjection:
                    SET updated_at=?, event_count=event_count + 1, last_sequence=?
                    WHERE session_id=?""",
                 (timestamp, sequence, session_id),
+            )
+
+        if event.type == "routine.notification":
+            content = str(event.payload.get("content") or "")
+            status = str(event.payload.get("status") or "success")
+            db.execute(
+                """UPDATE projected_sessions SET status=?, output=?
+                   WHERE session_id=?""",
+                (status, content, session_id),
+            )
+            db.execute(
+                """INSERT OR REPLACE INTO projected_messages
+                   (sequence, session_id, run_id, role, content, status, timestamp)
+                   VALUES (?, ?, ?, 'assistant', ?, ?, ?)""",
+                (sequence, session_id, run_id, content, status, timestamp),
             )
 
         state = None
@@ -410,12 +438,18 @@ class SessionProjection:
         *,
         limit: int = 100,
         offset: int = 0,
+        include_automations: bool = False,
     ) -> list[dict[str, Any]]:
         query = "SELECT * FROM projected_sessions"
         params: list[Any] = []
+        clauses: list[str] = []
         if workspace is not None:
-            query += " WHERE workspace = ?"
+            clauses.append("(workspace = ? OR trigger = 'routine_inbox')")
             params.append(workspace)
+        if not include_automations:
+            clauses.append("trigger NOT IN ('cron', 'cron_resume', 'cron_test')")
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         with self._db() as db:

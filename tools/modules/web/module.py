@@ -43,7 +43,7 @@ async def web(
             "error": {
                 "type": "precondition",
                 "message": "Ketch is not installed or is not on PATH.",
-                "remedy": "brew install 1broseidon/tap/ketch",
+                "details": {"remedy": "brew install 1broseidon/tap/ketch"},
             },
         }
     try:
@@ -80,8 +80,8 @@ async def web(
             "ok": False,
             "error": {
                 "type": EXIT_TYPES.get(process.returncode, "execution"),
-                "exit_code": process.returncode,
                 "message": stderr.decode("utf-8", errors="replace")[:4000].strip(),
+                "details": {"exit_code": process.returncode},
             },
         }
     return _decode_output(stdout)
@@ -243,8 +243,6 @@ def _decode_output(raw: bytes) -> dict[str, Any]:
             "truncated": truncated,
             "bytes_returned": len(text.encode("utf-8")),
         },
-        "truncated": truncated,
-        "bytes_returned": len(text.encode("utf-8")),
     }
 
 

@@ -118,6 +118,12 @@ def _terminate(pid: int) -> None:
 
 def run_web(root: Path, host: str, api_port: int, web_port: int) -> int:
     root = root.resolve()
+    # The index is derived data. Rebuild it before starting the long-lived
+    # scheduler so a newly installed or edited module cannot poison cron runs
+    # with a stale catalog from a previous process.
+    from .modules import ModuleRegistry
+
+    ModuleRegistry(root / "tools").build_index()
     web_root = root / "surfaces" / "web"
     if not (web_root / "package.json").is_file():
         raise ConfigurationError(f"missing web surface: {web_root}")

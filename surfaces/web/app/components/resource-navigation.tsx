@@ -21,6 +21,7 @@ type ResourceNavigationProps = {
   providerCount: number;
   defaultProvider?: string;
   activeCronCount: number;
+  unreadCronCount: number;
   onOpen: (section: ResourceSection) => void;
 };
 
@@ -34,6 +35,7 @@ export function ResourceNavigation({
   providerCount,
   defaultProvider,
   activeCronCount,
+  unreadCronCount,
   onOpen,
 }: ResourceNavigationProps) {
   const cards = [
@@ -72,7 +74,9 @@ export function ResourceNavigation({
       section: "crons" as const,
       label: "Automatisations",
       title: `${activeCronCount} active${activeCronCount > 1 ? "s" : ""}`,
-      detail: "Cronjobs et reprises",
+      detail: unreadCronCount
+        ? `${unreadCronCount} nouveau${unreadCronCount > 1 ? "x" : ""} résultat${unreadCronCount > 1 ? "s" : ""}`
+        : "Cronjobs et reprises",
       icon: <CalendarClock />,
     },
   ];

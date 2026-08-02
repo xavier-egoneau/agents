@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -43,7 +44,10 @@ def test_partial_batch_stays_suspended_then_resumes_once(tmp_path: Path) -> None
     ready = service.resolve(second.approval_id, False)
     assert isinstance(ready, ApprovalResume)
     assert set(ready.tool_results) == {"first", "second"}
-    assert ready.approved_scopes == {("write", "/workspace/first.txt")}
+    assert ready.approved_scopes == {("write", "write", "/workspace/first.txt")}
+    assert service.approved_scopes(request.session_id) == {
+        ("write", "write", "/workspace/first.txt")
+    }
     assert store.states_for_run(request.session_id, run_id) == []
     assert [event.type for event in events.read(request.session_id)].count(
         "approval.resolved"
@@ -68,3 +72,32 @@ def test_batch_rejects_approvals_from_different_runs(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigurationError, match="same run"):
         service.resolve_many([item.approval_id for item in approvals], True)
+
+
+def test_store_rejects_stale_batch_atomically_when_a_newer_run_exists(
+    tmp_path: Path,
+) -> None:
+    store = ApprovalStore(tmp_path / "sessions")
+    request = RunRequest(prompt="Update")
+    older_run = uuid4()
+    created_at = datetime.now(UTC)
+    older = [
+        _approval(request.session_id, older_run, call_id).model_copy(
+            update={"created_at": created_at}
+        )
+        for call_id in ("first", "second")
+    ]
+    newer = _approval(request.session_id, uuid4(), "newer").model_copy(
+        update={"created_at": created_at + timedelta(seconds=1)}
+    )
+    state = {"request": request.model_dump(mode="json"), "messages": "[]"}
+    for approval in [*older, newer]:
+        store.save_state(approval, state)
+
+    with pytest.raises(ValueError, match="newer approval batch"):
+        store.resolve_many([item.approval_id for item in older], True)
+
+    # The stale decision is all-or-nothing: no target is written before the
+    # newer-run guard rejects the transaction.
+    assert all("decision" not in store.load_state(item.approval_id) for item in older)
+    assert "decision" not in store.load_state(newer.approval_id)

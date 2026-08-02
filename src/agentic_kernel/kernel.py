@@ -419,7 +419,20 @@ class Kernel:
         )
         if isinstance(prepared, RunResult):
             return prepared
-        return await self._resume_approval(prepared)
+        try:
+            return await self._resume_approval(prepared)
+        except Exception as exc:
+            # The approval decision is already durable at this point. Return a
+            # structured terminal result if restoring the suspended model run
+            # fails, so clients can distinguish "decision saved" from
+            # "continuation failed" without retrying an already-consumed grant.
+            return self._failed(
+                prepared.request,
+                prepared.approval.run_id,
+                RunStatus.FAILED,
+                exc,
+                retryable=False,
+            )
 
     async def _resume_approval(self, prepared: ApprovalResume) -> RunResult:
         request = prepared.request
@@ -532,11 +545,24 @@ class Kernel:
         self.active_runs.pop(request.session_id, None)
         return response
 
-    async def resolve_approval_batch(self, approval_ids: list, approved: bool) -> RunResult:
+    async def resolve_approval_batch(
+        self,
+        approval_ids: list,
+        approved: bool,
+    ) -> RunResult:
         prepared = self.approval_service.resolve_many(approval_ids, approved)
         if isinstance(prepared, RunResult):
             return prepared
-        return await self._resume_approval(prepared)
+        try:
+            return await self._resume_approval(prepared)
+        except Exception as exc:
+            return self._failed(
+                prepared.request,
+                prepared.approval.run_id,
+                RunStatus.FAILED,
+                exc,
+                retryable=False,
+            )
 
     def _run_native_secret_command(
         self,

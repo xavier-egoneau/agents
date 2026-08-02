@@ -34,7 +34,7 @@ class RunExecutor:
         budgets: BudgetConfig,
         workspace: Path,
         security_mode: SecurityMode,
-        approved_scopes: set[tuple[str, str | None]],
+        approved_scopes: set[tuple[str, str, str | None]],
         tool_catalog: list[dict],
         provider_id: str,
         model_name: str | None,

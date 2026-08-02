@@ -92,6 +92,29 @@ class ApprovalStore:
                     raise ValueError(f"approval already resolved: {approval_id}")
                 states.append(state)
                 targets.append(target)
+            approvals = [
+                ApprovalRequest.model_validate(state["approval"])
+                for state in states
+            ]
+            current = max(approvals, key=lambda item: item.created_at)
+            for candidate_path in self.root.glob("*.json"):
+                if candidate_path in targets:
+                    continue
+                try:
+                    candidate_state = json.loads(candidate_path.read_text(encoding="utf-8"))
+                    if "decision" in candidate_state:
+                        continue
+                    candidate = ApprovalRequest.model_validate(candidate_state["approval"])
+                except (OSError, ValueError, KeyError):
+                    continue
+                if (
+                    candidate.session_id == current.session_id
+                    and candidate.run_id != current.run_id
+                    and candidate.created_at > current.created_at
+                ):
+                    raise ValueError(
+                        "a newer approval batch exists for this session; reload before deciding"
+                    )
             temporary: list[Path] = []
             try:
                 for target, state in zip(targets, states, strict=True):

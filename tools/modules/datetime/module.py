@@ -11,7 +11,6 @@ def utc_now(justification: str = "") -> dict:
         "data": {"utc": value},
         "error": None,
         "metadata": {},
-        "utc": value,
     }
 
 

@@ -105,7 +105,7 @@ def _private_approved(ctx: RunContext[Any], url: str, initial_scope: str) -> boo
     if bool(getattr(ctx, "tool_call_approved", False)) and scope == initial_scope:
         return True
     scopes = getattr(ctx.deps, "approved_scopes", set())
-    return ("network", scope) in scopes
+    return ("browser_open", "network", scope) in scopes
 
 
 async def _guard_requests(context, ctx: RunContext[Any], *, initial_scope: str) -> None:

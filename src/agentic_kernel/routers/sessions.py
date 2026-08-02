@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ..kernel import Kernel
+from ..scheduler import ROUTINE_INBOX_SESSION_ID
 
 
 def create_session_router(
@@ -49,12 +50,14 @@ def create_session_router(
         workspace: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        include_automations: bool = False,
     ) -> list[dict[str, object]]:
         resolved_workspace = str(Path(workspace).expanduser().resolve()) if workspace else None
         rows = kernel.events.projection.list_sessions(
             resolved_workspace,
             limit=max(1, min(limit, 500)),
             offset=max(0, offset),
+            include_automations=include_automations,
         )
         return [
             {
@@ -129,6 +132,8 @@ def create_session_router(
 
     @router.delete("/{session_id}")
     async def delete_session(session_id: UUID) -> dict[str, str]:
+        if session_id == ROUTINE_INBOX_SESSION_ID:
+            raise HTTPException(status_code=409, detail="La session Routines est permanente")
         if session_id in running_tasks:
             raise HTTPException(status_code=409, detail="Impossible de supprimer un run actif")
         if not kernel.events.delete(session_id):

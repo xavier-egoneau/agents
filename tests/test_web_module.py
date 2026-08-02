@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def load_web_module():
@@ -72,12 +73,88 @@ def test_decodes_json_and_json_lines_with_output_metadata() -> None:
     )
     decoded = module._decode_output(b'{"url":"https://a.test"}\n{"url":"https://b.test"}\n')
     assert len(decoded["data"]) == 2
-    assert decoded["truncated"] is False
+    assert decoded["metadata"]["truncated"] is False
+
+
+def test_web_results_follow_the_kernel_tool_contract() -> None:
+    from agentic_kernel.models import ToolResult
+
+    module = load_web_module()
+    decoded = module._decode_output(b'{"url":"https://example.com"}')
+    assert ToolResult.model_validate(decoded).ok
 
 
 async def test_missing_ketch_is_a_structured_precondition(monkeypatch) -> None:
+    from agentic_kernel.models import ToolResult
+
     module = load_web_module()
     monkeypatch.setenv("AMK_KETCH_BIN", "/definitely/missing/ketch")
     result = await module.web(None, action="search", query="test")
     assert result["ok"] is False
     assert result["error"]["type"] == "precondition"
+    assert ToolResult.model_validate(result).error.details["remedy"].startswith("brew install")
+
+
+async def test_ketch_nonzero_exit_follows_the_tool_contract(monkeypatch) -> None:
+    from agentic_kernel.models import ToolResult
+
+    module = load_web_module()
+
+    class FailedProcess:
+        returncode = 4
+
+        async def communicate(self):
+            return b"", b"upstream unavailable"
+
+    async def create_process(*args, **kwargs):
+        return FailedProcess()
+
+    monkeypatch.setattr(module, "_resolve_binary", lambda: "ketch")
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create_process)
+    ctx = SimpleNamespace(deps=SimpleNamespace(workspace=Path.cwd()))
+
+    result = await module.web(ctx, action="search", query="latest news")
+    validated = ToolResult.model_validate(result)
+
+    assert validated.ok is False
+    assert validated.error is not None
+    assert validated.error.type == "upstream"
+    assert validated.error.details == {"exit_code": 4}
+
+
+async def test_ketch_timeout_follows_the_tool_contract(monkeypatch) -> None:
+    from agentic_kernel.models import ToolResult
+
+    module = load_web_module()
+
+    class TimedOutProcess:
+        returncode = None
+        terminated = False
+        waited = False
+
+        async def communicate(self):
+            raise TimeoutError
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        async def wait(self) -> None:
+            self.waited = True
+
+    process = TimedOutProcess()
+
+    async def create_process(*args, **kwargs):
+        return process
+
+    monkeypatch.setattr(module, "_resolve_binary", lambda: "ketch")
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create_process)
+    ctx = SimpleNamespace(deps=SimpleNamespace(workspace=Path.cwd()))
+
+    result = await module.web(ctx, action="search", query="latest news")
+    validated = ToolResult.model_validate(result)
+
+    assert validated.ok is False
+    assert validated.error is not None
+    assert validated.error.type == "cancelled"
+    assert process.terminated is True
+    assert process.waited is True

@@ -148,12 +148,47 @@ type CronJob = {
   enabled: boolean;
   auto_resume: boolean;
   session_id: string;
+  notification_session_id: string;
   next_run_at: string | null;
   last_run_at: string | null;
   last_status: string | null;
   last_error: string | null;
   last_retryable: boolean;
   in_flight: boolean;
+  blocked: boolean;
+};
+
+type CronRun = {
+  id: string;
+  cron_job_id: string;
+  scheduled_for: string;
+  claimed_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  session_id: string;
+  notification_session_id: string;
+  run_id: string | null;
+  execution_status: string;
+  task_status: string | null;
+  delivery_status: "unread" | "read";
+  output_preview: string | null;
+  error: string | null;
+};
+
+type CronApprovalStatus = {
+  approved_scopes: { tool_name: string; action_family: string; path: string | null }[];
+  pending_count: number;
+  pending_run_id: string | null;
+};
+
+type CronTestFeedback = "idle" | "progress" | "success" | "error";
+
+type CronTestResult = {
+  session_id: string;
+  run_id?: string | null;
+  status: string;
+  output?: string | null;
+  errors?: { message: string }[];
 };
 
 type CronFrequencyKind = "minutes" | "hours" | "daily" | "weekly" | "yearly";
@@ -207,6 +242,61 @@ function cronEditorFromJob(job: CronJob, creating = false): CronEditor {
   return { ...job, creating, ...parseCronFrequency(job.schedule) };
 }
 
+function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+async function readApiPayload<T = Record<string, unknown>>(response: Response): Promise<T> {
+  const text = await response.text();
+  let payload: unknown = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text) as unknown;
+    } catch {
+      if (!response.ok) {
+        throw new Error(`Le serveur n’a pas pu traiter la demande (${response.status}).`);
+      }
+      throw new Error("Réponse serveur illisible.");
+    }
+  }
+  if (!response.ok) {
+    const detail = typeof payload === "object" && payload !== null && "detail" in payload
+      ? (payload as { detail?: unknown }).detail
+      : null;
+    throw new Error(String(detail || `La demande a échoué (${response.status}).`));
+  }
+  return payload as T;
+}
+
+function groupRoutineApprovals(approvals: Approval[]) {
+  const grouped = new Map<string, {
+    key: string;
+    tool_name: string;
+    path: string | null;
+    count: number;
+    justifications: string[];
+  }>();
+  for (const approval of approvals) {
+    const key = [approval.tool_name, approval.action_family, approval.path || ""].join("::");
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.count += 1;
+      if (!existing.justifications.includes(approval.justification)) {
+        existing.justifications.push(approval.justification);
+      }
+    } else {
+      grouped.set(key, {
+        key,
+        tool_name: approval.tool_name,
+        path: approval.path,
+        count: 1,
+        justifications: [approval.justification],
+      });
+    }
+  }
+  return [...grouped.values()];
+}
+
 function scheduleFromEditor(editor: CronEditor): string {
   const [hour = "9", minute = "0"] = editor.frequency_time.split(":");
   if (editor.frequency_kind === "minutes") return `*/${Math.max(1, editor.frequency_interval)} * * * *`;
@@ -222,8 +312,12 @@ function describeCron(editor: CronEditor): string {
   const days = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
   const months = ["janvier", "février", "mars", "avril", "mai", "juin",
     "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
-  if (editor.frequency_kind === "minutes") return `Toutes les ${editor.frequency_interval} minute(s)`;
-  if (editor.frequency_kind === "hours") return `Toutes les ${editor.frequency_interval} heure(s)`;
+  if (editor.frequency_kind === "minutes") {
+    return `Toutes les ${countLabel(editor.frequency_interval, "minute")}`;
+  }
+  if (editor.frequency_kind === "hours") {
+    return `Toutes les ${countLabel(editor.frequency_interval, "heure")}`;
+  }
   if (editor.frequency_kind === "weekly") return `Chaque ${days[editor.frequency_weekday]} à ${editor.frequency_time}`;
   if (editor.frequency_kind === "yearly") {
     return `Tous les ans, le ${editor.frequency_monthday} ${months[editor.frequency_month - 1]} à ${editor.frequency_time}`;
@@ -300,7 +394,7 @@ type SessionSummary = {
   output: string | null;
   errors: { message: string }[];
   event_count: number;
-  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test";
+  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test" | "routine_inbox";
   cron_job_id?: string | null;
   messages?: {
     role: "user" | "assistant";
@@ -581,9 +675,14 @@ export default function Home() {
   const [currentPlan, setCurrentPlan] = useState<CurrentPlan | null>(null);
   const [planExpanded, setPlanExpanded] = useState(true);
   const [cronJobs, setCronJobs] = useState<CronJob[]>([]);
+  const [cronRuns, setCronRuns] = useState<CronRun[]>([]);
   const [cronEditor, setCronEditor] = useState<CronEditor | null>(null);
   const [cronTestApprovals, setCronTestApprovals] = useState<Approval[]>([]);
   const [cronTestMessage, setCronTestMessage] = useState("");
+  const [cronTestFeedback, setCronTestFeedback] = useState<CronTestFeedback>("idle");
+  const [cronTestDecision, setCronTestDecision] = useState<"approve" | "reject" | null>(null);
+  const [cronApprovalStatus, setCronApprovalStatus] = useState<CronApprovalStatus | null>(null);
+  const [testingCron, setTestingCron] = useState(false);
   const railContent = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -960,9 +1059,32 @@ export default function Home() {
   }, [managementModal]);
 
   const refreshCrons = useCallback(async () => {
-    const response = await fetch("/api/kernel/crons");
-    if (!response.ok) throw new Error("Impossible de charger les cronjobs");
-    setCronJobs(await response.json());
+    const [jobsResponse, runsResponse] = await Promise.all([
+      fetch("/api/kernel/crons"),
+      fetch("/api/kernel/crons/runs?limit=100"),
+    ]);
+    if (!jobsResponse.ok) throw new Error("Impossible de charger les cronjobs");
+    setCronJobs(await jobsResponse.json());
+    if (runsResponse.ok) {
+      const payload: unknown = await runsResponse.json();
+      const runs: CronRun[] = Array.isArray(payload) ? payload : [];
+      setCronRuns(runs);
+      const unreadSessions = runs
+        .filter((item) =>
+          item.delivery_status === "unread"
+          && ["success", "failed", "partial", "timeout", "blocked"].includes(item.execution_status)
+        )
+        .map((item) => item.notification_session_id);
+      if (unreadSessions.length) {
+        setUnreadSessionIds((current) => {
+          const updated = new Set(current);
+          unreadSessions.forEach((id) => {
+            if (id !== activeSessionIdRef.current) updated.add(id);
+          });
+          return updated;
+        });
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -1306,17 +1428,69 @@ export default function Home() {
   }
 
   function createCron() {
+    setManagementError("");
     setCronEditor(cronEditorFromJob({
       id: "", name: "Nouvelle routine", schedule: "0 9 * * *", prompt: "",
       workspace: activeWorkspace, agent_id: agentId, skills: selectedSkills,
       security_mode: securityMode, provider_id: providerId || null,
       model: selectedModel || null, reasoning, enabled: false, auto_resume: true,
-      session_id: "", next_run_at: null, last_run_at: null, last_status: null,
-      last_error: null, in_flight: false,
+      session_id: "", notification_session_id: sessions.find((item) => item.trigger === "routine_inbox")?.session_id || "",
+      next_run_at: null, last_run_at: null, last_status: null,
+      last_error: null, in_flight: false, blocked: false,
       last_retryable: false,
     }, true));
     setCronTestApprovals([]);
     setCronTestMessage("");
+    setCronTestFeedback("idle");
+    setCronTestDecision(null);
+    setCronApprovalStatus(null);
+  }
+
+  async function openCronEditor(job: CronJob) {
+    setManagementError("");
+    setCronEditor(cronEditorFromJob(job));
+    setCronTestApprovals([]);
+    setCronTestMessage("Vérification des préautorisations…");
+    setCronTestFeedback("progress");
+    setCronTestDecision(null);
+    setCronApprovalStatus(null);
+    try {
+      const response = await fetch(`/api/kernel/crons/${job.id}/approval-status`);
+      const status = await readApiPayload<CronApprovalStatus>(response);
+      setCronApprovalStatus(status);
+      const pending = await refreshCronTestApprovals(job.session_id, status.pending_run_id);
+      if (pending.length > 0) {
+        const scopeCount = groupRoutineApprovals(pending).length;
+        setCronTestMessage(
+          `${countLabel(scopeCount, "autorisation")} pour ${countLabel(pending.length, "action")} ${
+            scopeCount === 1 ? "attend" : "attendent"
+          } ta décision.`,
+        );
+        setCronTestFeedback("idle");
+      } else if (status.approved_scopes.length > 0) {
+        setCronTestMessage(
+          `Prévalidation active · ${countLabel(status.approved_scopes.length, "périmètre")} ${
+            status.approved_scopes.length === 1 ? "autorisé" : "autorisés"
+          }.`,
+        );
+        setCronTestFeedback("success");
+      } else {
+        setCronTestMessage("Lance un test pour détecter les autorisations nécessaires.");
+        setCronTestFeedback("idle");
+      }
+    } catch (error) {
+      setCronTestMessage(
+        error instanceof Error ? error.message : "Prévalidations impossibles à charger.",
+      );
+      setCronTestFeedback("error");
+    }
+  }
+
+  async function loadCronApprovalStatus(jobId: string) {
+    const response = await fetch(`/api/kernel/crons/${jobId}/approval-status`);
+    const status = await readApiPayload<CronApprovalStatus>(response);
+    setCronApprovalStatus(status);
+    return status;
   }
 
   async function saveCron() {
@@ -1330,6 +1504,7 @@ export default function Home() {
       provider_id: cronEditor.provider_id, model: cronEditor.model,
       reasoning: cronEditor.reasoning, enabled: cronEditor.enabled,
       auto_resume: cronEditor.auto_resume,
+      notification_session_id: cronEditor.notification_session_id,
     };
     try {
       const response = await fetch(
@@ -1340,8 +1515,7 @@ export default function Home() {
           body: JSON.stringify(body),
         },
       );
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Enregistrement impossible");
+      const data = await readApiPayload<CronJob>(response);
       await refreshCrons();
       if (cronEditor.creating) {
         setCronEditor(cronEditorFromJob(data as CronJob));
@@ -1358,23 +1532,27 @@ export default function Home() {
 
   async function deleteCron(id: string) {
     if (!window.confirm("Supprimer ce cronjob ? Son historique de session sera conservé.")) return;
-    const response = await fetch(`/api/kernel/crons/${id}`, { method: "DELETE" });
-    if (!response.ok) {
-      const data = await response.json();
-      setManagementError(data.detail || "Suppression impossible");
-      return;
+    try {
+      const response = await fetch(`/api/kernel/crons/${id}`, { method: "DELETE" });
+      await readApiPayload(response);
+      await refreshCrons();
+    } catch (error) {
+      setManagementError(error instanceof Error ? error.message : "Suppression impossible");
     }
-    await refreshCrons();
   }
 
   async function runCronNow(id: string) {
-    const response = await fetch(`/api/kernel/crons/${id}/run`, { method: "POST" });
-    const data = await response.json();
-    if (!response.ok) {
-      setManagementError(data.detail || "Lancement impossible");
-      return;
+    try {
+      const response = await fetch(`/api/kernel/crons/${id}/run`, { method: "POST" });
+      const data = await readApiPayload<{ notification_session_id?: string }>(response);
+      await refreshCrons();
+      const notificationSessionId = data.notification_session_id;
+      if (notificationSessionId) {
+        setUnreadSessionIds((current) => new Set(current).add(notificationSessionId));
+      }
+    } catch (error) {
+      setManagementError(error instanceof Error ? error.message : "Lancement impossible");
     }
-    await refreshCrons();
   }
 
   async function toggleCron(job: CronJob, enabled: boolean) {
@@ -1384,62 +1562,84 @@ export default function Home() {
       security_mode: job.security_mode, provider_id: job.provider_id,
       model: job.model, reasoning: job.reasoning, enabled,
       auto_resume: job.auto_resume,
+      notification_session_id: job.notification_session_id,
     };
-    const response = await fetch(`/api/kernel/crons/${job.id}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      setManagementError(data.detail || "Modification impossible");
-      return;
+    try {
+      const response = await fetch(`/api/kernel/crons/${job.id}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      await readApiPayload<CronJob>(response);
+      await refreshCrons();
+    } catch (error) {
+      setManagementError(error instanceof Error ? error.message : "Modification impossible");
     }
-    await refreshCrons();
   }
 
-  async function refreshCronTestApprovals(sessionId: string) {
+  async function refreshCronTestApprovals(sessionId: string, runId?: string | null) {
     const response = await fetch("/api/kernel/approvals");
-    if (!response.ok) return [];
-    const pending: Approval[] = await response.json();
-    const routineApprovals = pending.filter((item) => item.session_id === sessionId);
+    const payload = await readApiPayload<Approval[]>(response);
+    const pending: Approval[] = Array.isArray(payload) ? payload : [];
+    const sessionApprovals = pending.filter((item) => item.session_id === sessionId);
+    const selectedRunId = runId || sessionApprovals
+      .slice()
+      .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))[0]
+      ?.run_id;
+    const routineApprovals = selectedRunId
+      ? sessionApprovals.filter((item) => item.run_id === selectedRunId)
+      : [];
     setCronTestApprovals(routineApprovals);
     return routineApprovals;
   }
 
   async function testCron(id: string) {
-    setSavingResource(true);
+    setTestingCron(true);
     setCronTestMessage("Test en cours…");
+    setCronTestFeedback("progress");
+    setCronTestDecision(null);
     setCronTestApprovals([]);
     try {
       const response = await fetch(`/api/kernel/crons/${id}/test`, { method: "POST" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Test impossible");
+      const data = await readApiPayload<CronTestResult>(response);
       if (data.status === "approval_pending") {
-        const pending = await refreshCronTestApprovals(data.session_id);
+        const pending = await refreshCronTestApprovals(data.session_id, data.run_id);
+        const scopeCount = groupRoutineApprovals(pending).length;
         setCronTestMessage(
-          `${pending.length} autorisation(s) à valider pour les prochaines exécutions.`,
+          `${countLabel(scopeCount, "autorisation")} ${scopeCount === 1 ? "couvre" : "couvrent"} ${
+            countLabel(pending.length, "action")
+          } ${pending.length === 1 ? "prévue" : "prévues"}.`,
         );
-      } else if (data.status === "completed") {
+        setCronTestFeedback("idle");
+      } else if (data.status === "success") {
         setCronTestMessage("Test réussi. La routine est prête.");
+        setCronTestFeedback("success");
       } else {
         setCronTestMessage(data.errors?.map((error: {message: string}) => error.message).join("\n")
           || `Test terminé avec le statut ${data.status}.`);
+        setCronTestFeedback("error");
       }
       await refreshCrons();
     } catch (error) {
       setCronTestMessage(error instanceof Error ? error.message : "Test impossible");
+      setCronTestFeedback("error");
     } finally {
-      setSavingResource(false);
+      setTestingCron(false);
     }
   }
 
   async function resolveCronTestApprovals(approved: boolean) {
     if (!cronEditor || cronTestApprovals.length === 0) return;
     const current = cronTestApprovals;
-    setSavingResource(true);
-    setCronTestApprovals([]);
-    setCronTestMessage(approved ? "Autorisations enregistrées · test en reprise…" : "Refus enregistrés · test en reprise…");
+    const scopeCount = groupRoutineApprovals(current).length;
+    setTestingCron(true);
+    setCronTestDecision(approved ? "approve" : "reject");
+    setCronTestFeedback("progress");
+    setCronTestMessage(approved
+      ? `Validation de ${countLabel(scopeCount, "autorisation")} couvrant ${
+        countLabel(current.length, "action")
+      } · reprise du test…`
+      : `Enregistrement de ${countLabel(current.length, "refus", "refus")} · reprise du test…`);
     try {
       const response = await fetch("/api/kernel/approvals/resolve-batch", {
         method: "POST",
@@ -1449,27 +1649,58 @@ export default function Home() {
           approved,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Résolution impossible");
+      const data = await readApiPayload<CronTestResult>(response);
       if (data.status === "approval_pending") {
-        const pending = await refreshCronTestApprovals(cronEditor.session_id);
-        setCronTestMessage(`${pending.length} nouvelle(s) autorisation(s) à examiner.`);
-      } else if (data.status === "completed") {
+        const pending = await refreshCronTestApprovals(cronEditor.session_id, data.run_id);
+        const scopeCount = groupRoutineApprovals(pending).length;
+        setCronTestMessage(
+          `${scopeCount} ${scopeCount === 1 ? "nouvelle autorisation" : "nouvelles autorisations"} pour ${
+            countLabel(pending.length, "action")
+          } à examiner.`,
+        );
+        setCronTestFeedback("idle");
+      } else if (data.status === "success") {
+        setCronTestApprovals([]);
         setCronTestMessage(
           approved
-            ? "Test réussi. Ces autorisations exactes seront réutilisées par la routine."
-            : "Test terminé après refus.",
+            ? `Confirmé · ${countLabel(scopeCount, "autorisation")} ${
+              scopeCount === 1 ? "enregistrée" : "enregistrées"
+            } pour ${countLabel(current.length, "action")}. Test réussi.`
+            : `Confirmé · ${countLabel(current.length, "refus", "refus")} ${
+              current.length === 1 ? "enregistré" : "enregistrés"
+            }. Test terminé.`,
         );
+        setCronTestFeedback("success");
       } else {
-        setCronTestMessage(data.errors?.map((error: {message: string}) => error.message).join("\n")
-          || `Test terminé avec le statut ${data.status}.`);
+        setCronTestApprovals([]);
+        setCronTestMessage(
+          `${approved ? "Autorisations enregistrées" : "Refus enregistrés"}, mais la reprise du test a échoué : ${
+            data.errors?.map((error: {message: string}) => error.message).join("\n")
+              || data.output || data.status
+          }`,
+        );
+        setCronTestFeedback("error");
       }
+      await loadCronApprovalStatus(cronEditor.id);
       await refreshCrons();
     } catch (error) {
-      setCronTestApprovals(current);
-      setCronTestMessage(error instanceof Error ? error.message : "Résolution impossible");
+      try {
+        const pending = await refreshCronTestApprovals(cronEditor.session_id);
+        if (pending.length === 0) {
+          setCronTestMessage(
+            "La décision a été reçue, mais la reprise du test n’a pas pu être confirmée.",
+          );
+        } else {
+          setCronTestMessage(error instanceof Error ? error.message : "Résolution impossible");
+        }
+      } catch {
+        setCronTestApprovals(current);
+        setCronTestMessage("Impossible de vérifier si la décision a été enregistrée. Réessaie dans un instant.");
+      }
+      setCronTestFeedback("error");
     } finally {
-      setSavingResource(false);
+      setTestingCron(false);
+      setCronTestDecision(null);
     }
   }
 
@@ -1494,6 +1725,7 @@ export default function Home() {
     const response = await fetch(`/api/kernel/sessions/${sessionId}`);
     if (!response.ok) return;
     const session: SessionSummary = await response.json();
+    await fetch(`/api/kernel/crons/runs/read-session/${sessionId}`, { method: "POST" });
     if (session.status === "approval_pending") {
       await loadApprovalsForSession(sessionId);
     } else {
@@ -1831,6 +2063,21 @@ export default function Home() {
     }
   }
 
+  const cronApprovalGroups = groupRoutineApprovals(cronTestApprovals);
+  const persistedCron = cronEditor && !cronEditor.creating
+    ? cronJobs.find((job) => job.id === cronEditor.id)
+    : null;
+  const cronPermissionConfigDirty = Boolean(cronEditor && persistedCron && (
+    cronEditor.prompt !== persistedCron.prompt
+    || cronEditor.workspace !== persistedCron.workspace
+    || cronEditor.agent_id !== persistedCron.agent_id
+    || JSON.stringify(cronEditor.skills) !== JSON.stringify(persistedCron.skills)
+    || cronEditor.security_mode !== persistedCron.security_mode
+    || cronEditor.provider_id !== persistedCron.provider_id
+    || cronEditor.model !== persistedCron.model
+    || cronEditor.reasoning !== persistedCron.reasoning
+  ));
+
   return (
     <main className="shell">
       <aside className="rail">
@@ -1855,6 +2102,7 @@ export default function Home() {
             providerCount={catalog?.providers.length || 0}
             defaultProvider={catalog?.default_provider}
             activeCronCount={cronJobs.filter((job) => job.enabled).length}
+            unreadCronCount={cronRuns.filter((item) => item.delivery_status === "unread").length}
             onOpen={setManagementModal}
           />
 
@@ -1922,7 +2170,9 @@ export default function Home() {
               </div>
             </header>
 
-            {managementError && <div className="management-error">{managementError}</div>}
+            {managementError && (
+              <div className="management-error" role="alert">{managementError}</div>
+            )}
 
             {resourceEditor ? (
               <div className="resource-editor">
@@ -2525,6 +2775,21 @@ export default function Home() {
                     />
                   </label>
                   <label className="field-wide">
+                    Résultats envoyés dans
+                    <select value={cronEditor.notification_session_id} onChange={(event) =>
+                      setCronEditor((current) => current && ({
+                        ...current, notification_session_id: event.target.value,
+                      }))}>
+                      {sessions.map((session) => (
+                        <option value={session.session_id} key={session.session_id}>
+                          {session.trigger === "routine_inbox"
+                            ? "Routines (par défaut)"
+                            : session.prompt || "Session sans titre"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field-wide">
                     Demande exécutée
                     <textarea value={cronEditor.prompt} onChange={(event) =>
                       setCronEditor((current) => current && ({ ...current, prompt: event.target.value }))}
@@ -2550,21 +2815,38 @@ export default function Home() {
                 </div>
                 <p className="cron-note">
                   Teste la routine avant de l’activer. Les demandes ASK validées pendant le test
-                  seront mémorisées pour cette routine, uniquement pour l’action et la cible exactes.
+                  seront mémorisées pour cette routine, uniquement pour l’outil et la cible affichés.
                 </p>
                 {!cronEditor.creating && (
-                  <div className="cron-test-panel">
-                    <div>
+                  <div className={`cron-test-panel ${cronTestFeedback}`} aria-busy={testingCron}>
+                    <div className="cron-test-heading">
                       <strong>Validation avant automatisation</strong>
-                      <small>{cronTestMessage || "Lance un test pour détecter les autorisations nécessaires."}</small>
+                      {cronApprovalStatus && cronApprovalStatus.approved_scopes.length > 0
+                        && !cronPermissionConfigDirty && (
+                        <span className="cron-prevalidation-badge">
+                          ✓ Prévalidation active
+                        </span>
+                      )}
+                      <small
+                        role={cronTestFeedback === "error" ? "alert" : "status"}
+                        aria-live="polite"
+                      >
+                        {testingCron && <span className="cron-test-spinner" aria-hidden="true" />}
+                        {cronPermissionConfigDirty
+                          ? "Enregistre les modifications avant de relancer la prévalidation."
+                          : cronTestMessage || "Lance un test pour détecter les autorisations nécessaires."}
+                      </small>
                     </div>
                     {cronTestApprovals.length > 0 && (
                       <ul>
-                        {cronTestApprovals.map((approval) => (
-                          <li key={approval.approval_id}>
-                            <strong>{approval.tool_name}</strong>
-                            <span>{approval.justification}</span>
-                            {approval.path && <code>{approval.path}</code>}
+                        {cronApprovalGroups.map((group) => (
+                          <li key={group.key}>
+                            <strong>{group.tool_name}</strong>
+                            <span>
+                              {group.count > 1 ? `${group.count} actions prévues · ` : ""}
+                              {group.justifications[0]}
+                            </span>
+                            {group.path && <code>{group.path}</code>}
                           </li>
                         ))}
                       </ul>
@@ -2572,15 +2854,25 @@ export default function Home() {
                     <div className="cron-test-actions">
                       {cronTestApprovals.length > 0 ? (
                         <>
-                          <button disabled={savingResource}
-                            onClick={() => void resolveCronTestApprovals(false)}>Tout refuser</button>
-                          <button className="primary" disabled={savingResource}
-                            onClick={() => void resolveCronTestApprovals(true)}>Tout autoriser durablement</button>
+                          <button disabled={testingCron || cronPermissionConfigDirty}
+                            onClick={() => void resolveCronTestApprovals(false)}>
+                            {cronTestDecision === "reject" ? "Refus en cours…" : "Tout refuser"}
+                          </button>
+                          <button className="primary" disabled={testingCron || cronPermissionConfigDirty}
+                            onClick={() => void resolveCronTestApprovals(true)}>
+                            {cronTestDecision === "approve"
+                              ? "Autorisation en cours…"
+                              : "Autoriser cette routine"}
+                          </button>
                         </>
                       ) : (
-                        <button disabled={savingResource || cronEditor.in_flight}
+                        <button disabled={testingCron || cronEditor.in_flight || cronPermissionConfigDirty}
                           onClick={() => void testCron(cronEditor.id)}>
-                          {savingResource ? "Test en cours…" : "Tester la routine"}
+                          {testingCron
+                            ? "Test en cours…"
+                            : cronPermissionConfigDirty
+                              ? "Enregistrer avant de tester"
+                              : "Tester la routine"}
                         </button>
                       )}
                     </div>
@@ -2589,7 +2881,7 @@ export default function Home() {
                 <div className="resource-editor-actions">
                   <button onClick={() => setCronEditor(null)}>Annuler</button>
                   <button className="primary" onClick={() => void saveCron()}
-                    disabled={savingResource || !cronEditor.name.trim() || !cronEditor.prompt.trim()}>
+                    disabled={savingResource || testingCron || !cronEditor.name.trim() || !cronEditor.prompt.trim()}>
                     {savingResource ? "Enregistrement…" : "Enregistrer"}
                   </button>
                 </div>
@@ -2601,17 +2893,15 @@ export default function Home() {
                 {cronJobs.map((job) => (
                   <div className={`cron-row ${job.enabled ? "" : "disabled"}`} key={job.id}>
                     <button className="cron-main"
-                      onClick={() => {
-                        setCronEditor(cronEditorFromJob(job));
-                        setCronTestApprovals([]);
-                        setCronTestMessage("");
-                      }}>
+                      onClick={() => void openCronEditor(job)}>
                       <span className={`row-status ${job.in_flight ? "running" : job.last_status || ""}`} />
                       <span>
                         <strong>{job.name}</strong>
                         <small>{describeCron(cronEditorFromJob(job))} · {job.agent_id} · {job.workspace}</small>
                         <em>
-                          {job.in_flight
+                          {job.blocked
+                            ? "En attente d’autorisation"
+                            : job.in_flight
                             ? "En cours"
                             : job.next_run_at
                               ? `Prochaine exécution ${new Date(job.next_run_at).toLocaleString("fr-FR")}`
@@ -2627,7 +2917,7 @@ export default function Home() {
                         title={job.enabled ? "Désactiver" : "Activer"}><span /></button>
                       <button onClick={() => void runCronNow(job.id)} disabled={job.in_flight || !job.enabled}
                         title="Lancer maintenant">▶</button>
-                      <button onClick={() => setCronEditor(cronEditorFromJob(job))}
+                      <button onClick={() => void openCronEditor(job)}
                         title="Éditer">✎</button>
                       <button onClick={() => void deleteCron(job.id)} title="Supprimer">⌫</button>
                     </div>

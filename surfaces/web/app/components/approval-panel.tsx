@@ -4,6 +4,7 @@ export type Approval = {
   approval_id: string;
   session_id: string;
   tool_name: string;
+  action_family: string;
   path: string | null;
   reason: string;
   justification: string;

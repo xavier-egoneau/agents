@@ -5,7 +5,7 @@ export type SessionHistoryItem = {
   prompt: string;
   updated_at: string;
   status: string;
-  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test";
+  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test" | "routine_inbox";
 };
 
 type SessionHistoryProps = {
@@ -53,7 +53,7 @@ export function SessionHistory({
                 <span className={`session-state ${session.status}`} />
                 <span>
                   <strong>
-                    {session.prompt || "Session sans titre"}
+                    {session.trigger === "routine_inbox" ? "Routines" : session.prompt || "Session sans titre"}
                     {session.trigger?.startsWith("cron") && (
                       <em className="automation-chip">Routine</em>
                     )}
@@ -81,16 +81,18 @@ export function SessionHistory({
                 aria-label="Reprendre la session"
                 title="Reprendre à partir des traces persistées"
               >↻</button>
-              <button
-                className="session-delete"
-                onClick={() => onDelete(session.session_id)}
-                aria-label="Supprimer la session"
-                title="Supprimer la session"
-              >
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" />
-                </svg>
-              </button>
+              {session.trigger !== "routine_inbox" && (
+                <button
+                  className="session-delete"
+                  onClick={() => onDelete(session.session_id)}
+                  aria-label="Supprimer la session"
+                  title="Supprimer la session"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" />
+                  </svg>
+                </button>
+              )}
             </div>
           );
         })}
