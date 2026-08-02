@@ -36,6 +36,7 @@ test("routine workflow cards keep their natural height and wrap readable step de
     return match[1];
   };
 
+  assert.match(ruleFor(".resource-editor.cron-editor"), /display:\s*flex/);
   assert.match(ruleFor(".cron-editor > *"), /flex:\s*0\s+0\s+auto/);
   assert.match(ruleFor(".routine-workflow-step-content > p"), /white-space:\s*normal/);
 

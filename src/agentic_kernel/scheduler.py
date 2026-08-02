@@ -24,7 +24,7 @@ class CronJobInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     schedule: str = Field(min_length=1, max_length=120)
     prompt: str = Field(min_length=1)
-    workspace: Path
+    workspace: Path | None = None
     agent_id: str = "main"
     skills: list[str] = Field(default_factory=list)
     security_mode: SecurityMode = SecurityMode.LIMITED
@@ -265,8 +265,8 @@ class CronService:
         workflow_basis_hash: str | None = None,
     ) -> CronJob:
         self.validate_schedule(payload.schedule)
-        workspace = payload.workspace.expanduser().resolve()
-        if not workspace.is_dir():
+        workspace = payload.workspace.expanduser().resolve() if payload.workspace else None
+        if workspace is not None and not workspace.is_dir():
             raise SchedulerError(f"Workspace introuvable : {workspace}")
         now = datetime.now(UTC)
         job_id = f"cron_{uuid4().hex}"
@@ -290,7 +290,7 @@ class CronService:
                     payload.name.strip(),
                     payload.schedule.strip(),
                     payload.prompt,
-                    str(workspace),
+                    str(workspace) if workspace is not None else "",
                     payload.agent_id,
                     json.dumps(payload.skills),
                     payload.security_mode.value,
@@ -330,8 +330,8 @@ class CronService:
     def update(self, job_id: str, payload: CronJobInput) -> CronJob:
         self.get(job_id)
         self.validate_schedule(payload.schedule)
-        workspace = payload.workspace.expanduser().resolve()
-        if not workspace.is_dir():
+        workspace = payload.workspace.expanduser().resolve() if payload.workspace else None
+        if workspace is not None and not workspace.is_dir():
             raise SchedulerError(f"Workspace introuvable : {workspace}")
         now = datetime.now(UTC)
         next_run = self.next_fire(payload.schedule)
@@ -346,7 +346,7 @@ class CronService:
                     payload.name.strip(),
                     payload.schedule.strip(),
                     payload.prompt,
-                    str(workspace),
+                    str(workspace) if workspace is not None else "",
                     payload.agent_id,
                     json.dumps(payload.skills),
                     payload.security_mode.value,
@@ -376,8 +376,8 @@ class CronService:
         if job.in_flight:
             raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
         self.validate_schedule(payload.schedule)
-        workspace = payload.workspace.expanduser().resolve()
-        if not workspace.is_dir():
+        workspace = payload.workspace.expanduser().resolve() if payload.workspace else None
+        if workspace is not None and not workspace.is_dir():
             raise SchedulerError(f"Workspace introuvable : {workspace}")
         now = datetime.now(UTC)
         next_run = self.next_fire(payload.schedule)
@@ -394,7 +394,7 @@ class CronService:
                     payload.name.strip(),
                     payload.schedule.strip(),
                     payload.prompt,
-                    str(workspace),
+                    str(workspace) if workspace is not None else "",
                     payload.agent_id,
                     json.dumps(payload.skills),
                     payload.security_mode.value,
@@ -758,7 +758,7 @@ class CronService:
             name=row["name"],
             schedule=row["schedule"],
             prompt=row["prompt"],
-            workspace=Path(row["workspace"]),
+            workspace=Path(row["workspace"]) if row["workspace"] else None,
             agent_id=row["agent_id"],
             skills=json.loads(row["skills_json"]),
             security_mode=row["security_mode"],

@@ -158,10 +158,52 @@ def create_app(root: Path | str = ".") -> FastAPI:
         if request.cron_job_id:
             _validate_stored_workflow(cron_service.get(request.cron_job_id), kernel)
 
+    def with_routine_conversation(request: RunRequest) -> RunRequest:
+        """Bring replies made in the delivery session back into the next run.
+
+        Routine executions keep their own durable session for approvals and tool
+        traces, while results may be displayed in another conversation. Without
+        this bridge, a reply visible below a routine result was silently absent
+        from the routine's next model context.
+        """
+        if request.trigger not in {"cron", "cron_test"} or not request.cron_job_id:
+            return request
+        job = cron_service.get(request.cron_job_id)
+        if job.notification_session_id == job.session_id:
+            return request
+        events = kernel.events.read(job.notification_session_id)
+        last_delivery = -1
+        for index, event in enumerate(events):
+            if (
+                event.type == "routine.notification"
+                and event.payload.get("cron_job_id") == job.id
+            ):
+                last_delivery = index
+        replies = [
+            _message_text(event.payload.get("prompt"))
+            for event in events[last_delivery + 1 :]
+            if event.type == "session.started"
+            and event.payload.get("trigger", "user") == "user"
+        ]
+        replies = [item for item in replies if item]
+        if not replies:
+            return request
+        context = "\n\n".join(f"Utilisateur : {item}" for item in replies[-8:])
+        return request.model_copy(
+            update={
+                "prompt": (
+                    f"{request.prompt}\n\n"
+                    "Contexte récent de la conversation de destination :\n"
+                    f"{context}"
+                )
+            }
+        )
+
     async def launch(request: RunRequest) -> RunResult:
         if request.session_id in running_tasks:
             raise SchedulerError(f"Un run est déjà actif pour la session {request.session_id}")
         validate_cron_request(request)
+        request = with_routine_conversation(request)
         task = asyncio.create_task(kernel.run(request))
         running_tasks[request.session_id] = task
         try:

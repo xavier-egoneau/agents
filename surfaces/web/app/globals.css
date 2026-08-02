@@ -172,7 +172,7 @@ label.resource-select { cursor: pointer; }
 .resource-actions button { width: 31px; height: 31px; border: 0; border-radius: 8px; background: transparent; color: #7e8583; cursor: pointer; }
 .resource-actions button:hover { background: #ebe9e2; color: var(--ink); }
 .resource-actions button:disabled { opacity: .25; cursor: not-allowed; }
-.cron-editor { display: flex; flex-direction: column; align-items: stretch; }
+.resource-editor.cron-editor { display: flex; flex-direction: column; align-items: stretch; }
 .cron-editor > * { flex: 0 0 auto; }
 .cron-editor textarea { min-height: 130px; resize: vertical; }
 .cron-summary, .permission-inherited { display: flex; justify-content: space-between; align-items: center; gap: 16px; min-height: 52px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 11px; background: #f6f5f0; }
@@ -219,7 +219,7 @@ label.resource-select { cursor: pointer; }
 .routine-workflow-kicker { color: #697674; font: 600 8px var(--font-geist-mono); letter-spacing: .1em; text-transform: uppercase; }
 .routine-workflow-status { max-width: 100%; border-radius: 999px; background: #e7e4dc; color: #666d6b; padding: 5px 9px; font: 8px var(--font-geist-mono); text-transform: uppercase; }
 .routine-workflow-status.ready { background: #dcefe3; color: #24613f; }
-.routine-workflow-status.blocked { background: #fae5df; color: #9a3e35; }
+.routine-workflow-status.blocked { background: #fff0c9; color: #765515; }
 .routine-workflow-status.draft { background: #f6e9bd; color: #7d6528; }
 .routine-workflow-paths { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .routine-workflow-path { min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 7px; padding: 13px; border: 1px solid #d9d5cb; border-radius: 12px; background: #fff; }

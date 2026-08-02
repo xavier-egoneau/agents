@@ -28,6 +28,22 @@ class ApprovalResume:
     approved_scopes: set[tuple[str, str, str | None]]
 
 
+@dataclass(frozen=True)
+class CronTestApprovalBatch:
+    """One suspended preflight run that may be superseded by workflow acceptance."""
+
+    request: RunRequest
+    approvals: tuple[ApprovalRequest, ...]
+
+    @property
+    def session_id(self) -> UUID:
+        return self.request.session_id
+
+    @property
+    def run_id(self) -> UUID:
+        return self.approvals[0].run_id
+
+
 class ApprovalService:
     """Durable approval decisions and preparation of one idempotent resume."""
 
@@ -66,6 +82,97 @@ class ApprovalService:
                     )
                 )
         return scopes
+
+    def inspect_pending_cron_test(
+        self,
+        session_id: UUID,
+        cron_job_id: str,
+    ) -> CronTestApprovalBatch | None:
+        """Return the only safely supersedable approval batch for a routine.
+
+        A scheduled occurrence, a mixed/stale batch, or an approval whose
+        durable request cannot be proven to be this routine's ``cron_test`` is
+        deliberately not eligible.
+        """
+
+        pending = [
+            approval for approval in self.store.list_pending() if approval.session_id == session_id
+        ]
+        if not pending:
+            return None
+        run_ids = {approval.run_id for approval in pending}
+        if len(run_ids) != 1:
+            raise ConfigurationError("pending approvals are not one cron_test prevalidation batch")
+        run_id = next(iter(run_ids))
+        states = self.store.states_for_run(session_id, run_id)
+        if not states:
+            raise ConfigurationError("pending cron_test approval state is missing")
+        try:
+            approvals = tuple(ApprovalRequest.model_validate(state["approval"]) for state in states)
+            requests = tuple(RunRequest.model_validate(state["request"]) for state in states)
+        except (KeyError, ValueError) as exc:
+            raise ConfigurationError("pending cron_test approval state is invalid") from exc
+        unresolved_ids = {
+            approval.approval_id
+            for approval, state in zip(approvals, states, strict=True)
+            if "decision" not in state
+        }
+        if unresolved_ids != {approval.approval_id for approval in pending}:
+            raise ConfigurationError("pending cron_test approval batch is inconsistent")
+        first_request = requests[0]
+        if any(
+            approval.session_id != session_id
+            or approval.run_id != run_id
+            or request != first_request
+            or request.session_id != session_id
+            or request.trigger != "cron_test"
+            or request.cron_job_id != cron_job_id
+            or request.cron_occurrence_id is not None
+            for approval, request in zip(approvals, requests, strict=True)
+        ):
+            raise ConfigurationError("pending approvals are not one cron_test prevalidation batch")
+        return CronTestApprovalBatch(request=first_request, approvals=approvals)
+
+    def supersede_pending_cron_test(
+        self,
+        batch: CronTestApprovalBatch,
+        *,
+        workflow_revision: int,
+    ) -> RunResult:
+        """Consume a previously inspected preflight batch as an auditable cancel."""
+
+        cron_job_id = batch.request.cron_job_id
+        if cron_job_id is None:
+            raise ConfigurationError("cron_test prevalidation has no routine id")
+        current = self.inspect_pending_cron_test(batch.session_id, cron_job_id)
+        if current is None or {item.approval_id for item in current.approvals} != {
+            item.approval_id for item in batch.approvals
+        }:
+            raise ConfigurationError("pending cron_test approval batch changed")
+        for approval in current.approvals:
+            self.events.append(
+                Event(
+                    session_id=current.session_id,
+                    run_id=current.run_id,
+                    agent_id=approval.agent_id,
+                    type="approval.superseded",
+                    payload={
+                        "approval_id": str(approval.approval_id),
+                        "cron_job_id": cron_job_id,
+                        "reason": "workflow_accepted",
+                        "workflow_revision": workflow_revision,
+                    },
+                )
+            )
+        for approval in current.approvals:
+            self.store.remove(approval.approval_id)
+        return RunResult(
+            session_id=current.session_id,
+            run_id=current.run_id,
+            agent_id=current.request.agent_id,
+            status=RunStatus.CANCELLED,
+            output="Prévalidation annulée après acceptation du workflow.",
+        )
 
     def persist_pending(self, request, run_id, deps, result) -> RunResult:
         for call in result.output.approvals:

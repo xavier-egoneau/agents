@@ -1,7 +1,9 @@
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
+import pytest
 from pydantic_ai.messages import (
     BinaryContent,
     ModelRequest,
@@ -13,12 +15,19 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
+from agentic_kernel.errors import ConfigurationError
 from agentic_kernel.kernel import (
     Kernel,
     _runtime_context_instruction,
     _without_images,
 )
-from agentic_kernel.models import ImageAttachment, RunRequest, RunStatus, SecurityMode
+from agentic_kernel.models import (
+    ApprovalRequest,
+    ImageAttachment,
+    RunRequest,
+    RunStatus,
+    SecurityMode,
+)
 from agentic_kernel.modules import ModuleRegistry
 from agentic_kernel.providers import ProviderFactory
 
@@ -42,6 +51,79 @@ async def test_kernel_run_writes_complete_session(project: Path, monkeypatch) ->
     assert events[0].type == "session.started"
     assert events[-1].type == "session.completed"
     assert any(event.type == "messages.snapshot" for event in events)
+
+
+def test_kernel_supersedes_only_a_pending_cron_test_batch(project: Path) -> None:
+    kernel = Kernel(project)
+    cron_job_id = "cron-workflow"
+    request = RunRequest(
+        prompt="Prévalider la routine",
+        session_id=uuid4(),
+        workspace=project,
+        trigger="cron_test",
+        cron_job_id=cron_job_id,
+    )
+    run_id = uuid4()
+    approvals = [
+        ApprovalRequest(
+            session_id=request.session_id,
+            run_id=run_id,
+            agent_id="main",
+            tool_call_id=f"call-{index}",
+            tool_name="web_search",
+            action_family="network",
+            justification="Prévalider le workflow.",
+            reason="Network approval required",
+        )
+        for index in range(2)
+    ]
+    state = {"request": request.model_dump(mode="json"), "messages": "[]"}
+    for approval in approvals:
+        kernel.approvals.save_state(approval, state)
+
+    waiting = kernel.approval_service.resolve(approvals[0].approval_id, True)
+    assert waiting.status is RunStatus.APPROVAL_PENDING
+    batch = kernel.inspect_pending_cron_test(request.session_id, cron_job_id)
+    assert batch is not None
+    assert len(batch.approvals) == 2
+
+    result = kernel.supersede_pending_cron_test(batch, workflow_revision=1)
+
+    assert result.status is RunStatus.CANCELLED
+    assert kernel.list_approvals() == []
+    events = kernel.events.read(request.session_id)
+    assert [event.type for event in events].count("approval.superseded") == 2
+    assert events[-2].type == "run.transitioned"
+    assert events[-2].payload["state"] == "cancelled"
+    assert events[-1].type == "session.completed"
+    assert events[-1].payload["status"] == "cancelled"
+
+    scheduled_request = RunRequest(
+        prompt="Occurrence réelle",
+        session_id=uuid4(),
+        workspace=project,
+        trigger="cron",
+        cron_job_id=cron_job_id,
+        cron_occurrence_id="occurrence-1",
+    )
+    scheduled = ApprovalRequest(
+        session_id=scheduled_request.session_id,
+        run_id=uuid4(),
+        agent_id="main",
+        tool_call_id="call-scheduled",
+        tool_name="web_search",
+        action_family="network",
+        justification="Exécuter l'occurrence.",
+        reason="Network approval required",
+    )
+    kernel.approvals.save_state(
+        scheduled,
+        {"request": scheduled_request.model_dump(mode="json"), "messages": "[]"},
+    )
+
+    with pytest.raises(ConfigurationError, match="cron_test prevalidation"):
+        kernel.inspect_pending_cron_test(scheduled_request.session_id, cron_job_id)
+    assert kernel.approvals.load_state(scheduled.approval_id) is not None
 
 
 async def test_context_commands_are_deterministic_kernel_operations(

@@ -480,6 +480,152 @@ def test_workflow_replacement_and_deletion_refuse_pending_approvals(project: Pat
     assert client.get(f"/api/crons/{job['id']}/workflow").json()["workflow"] is not None
 
 
+def test_accepting_workflow_atomically_supersedes_only_pending_cron_test(
+    project: Path,
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    client = TestClient(create_app(project))
+    body = {
+        "name": "Morning",
+        "schedule": "0 9 * * *",
+        "prompt": "Summarize",
+        "workspace": str(project),
+        "agent_id": "main",
+        "skills": [],
+        "security_mode": "limited",
+        "enabled": False,
+        "auto_resume": True,
+    }
+    job = client.post("/api/crons", json=body).json()
+    accepted = accepted_synthesis_workflow(project, body)
+    request = RunRequest(
+        prompt=body["prompt"],
+        session_id=job["session_id"],
+        workspace=project,
+        trigger="cron_test",
+        cron_job_id=job["id"],
+    )
+    run_id = uuid4()
+    approvals = [
+        ApprovalRequest(
+            session_id=job["session_id"],
+            run_id=run_id,
+            agent_id="main",
+            tool_call_id=f"call-{index}",
+            tool_name="web_search",
+            action_family="network",
+            justification="Prévalider le workflow.",
+            reason="Approval required",
+        )
+        for index in range(2)
+    ]
+    kernel = Kernel(project)
+    state = {"request": request.model_dump(mode="json"), "messages": "[]"}
+    for approval in approvals:
+        kernel.approvals.save_state(approval, state)
+    waiting = kernel.approval_service.resolve(approvals[0].approval_id, True)
+    assert waiting.status.value == "approval_pending"
+    assert client.get(f"/api/crons/{job['id']}/approval-status").json()["approved_scopes"] == [
+        {
+            "tool_name": "web_search",
+            "action_family": "network",
+            "path": None,
+        }
+    ]
+
+    response = client.put(
+        f"/api/crons/{job['id']}",
+        json={
+            **body,
+            "accepted_workflow": accepted.model_dump(mode="json", by_alias=True),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    updated = response.json()
+    assert updated["workflow_revision"] == 1
+    assert updated["last_status"] == "cancelled"
+    assert updated["workflow_supersession"] == {
+        "run_id": str(run_id),
+        "status": "cancelled",
+        "approval_count": 2,
+        "pending_count": 0,
+    }
+    assert client.get(f"/api/crons/{job['id']}/approval-status").json() == {
+        "approved_scopes": [],
+        "pending_count": 0,
+        "pending_run_id": None,
+    }
+    assert client.get("/api/approvals").json() == []
+    events = Kernel(project).events.read(job["session_id"])
+    assert [event.type for event in events].count("approval.superseded") == 2
+    assert any(
+        event.type == "session.completed" and event.payload["status"] == "cancelled"
+        for event in events
+    )
+    assert events[-1].type == "approval.grants.revoked"
+
+
+def test_accepting_workflow_never_supersedes_a_scheduled_occurrence(
+    project: Path,
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    client = TestClient(create_app(project))
+    body = {
+        "name": "Morning",
+        "schedule": "0 9 * * *",
+        "prompt": "Summarize",
+        "workspace": str(project),
+        "agent_id": "main",
+        "skills": [],
+        "security_mode": "limited",
+        "enabled": False,
+        "auto_resume": True,
+    }
+    job = client.post("/api/crons", json=body).json()
+    accepted = accepted_synthesis_workflow(project, body)
+    request = RunRequest(
+        prompt=body["prompt"],
+        session_id=job["session_id"],
+        workspace=project,
+        trigger="cron",
+        cron_job_id=job["id"],
+        cron_occurrence_id="real-occurrence",
+    )
+    approval = ApprovalRequest(
+        session_id=job["session_id"],
+        run_id=uuid4(),
+        agent_id="main",
+        tool_call_id="call-real",
+        tool_name="web_search",
+        action_family="network",
+        justification="Exécuter l'occurrence réelle.",
+        reason="Approval required",
+    )
+    store = ApprovalStore(project / "content-agents" / "sessions")
+    store.save_state(
+        approval,
+        {"request": request.model_dump(mode="json"), "messages": "[]"},
+    )
+    accepted_payload = accepted.model_dump(mode="json", by_alias=True)
+
+    atomic = client.put(
+        f"/api/crons/{job['id']}",
+        json={**body, "accepted_workflow": accepted_payload},
+    )
+    dedicated = client.put(
+        f"/api/crons/{job['id']}/workflow",
+        json={"accepted_workflow": accepted_payload},
+    )
+
+    assert atomic.status_code == 409
+    assert dedicated.status_code == 409
+    assert store.load_state(approval.approval_id) is not None
+    persisted = client.get(f"/api/crons/{job['id']}/workflow").json()
+    assert persisted["workflow"] is None
+    assert persisted["revision"] == 0
+
+
 def test_cron_workflow_is_revalidated_before_an_approval_is_consumed(
     project: Path,
 ) -> None:

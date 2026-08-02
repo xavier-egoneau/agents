@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from ..approval_service import CronTestApprovalBatch
 from ..errors import KernelError
 from ..guardian import guardian_parameters_schema
 from ..kernel import Kernel
@@ -169,8 +170,9 @@ def create_cron_router(
                 payload.model_dump(exclude={"accepted_workflow"})
             )
             accepted = payload.accepted_workflow
+            workflow_supersession: dict[str, object] | None = None
             if accepted is not None:
-                _ensure_workflow_mutable(previous, kernel)
+                pending_test = _prepare_workflow_supersession(previous, kernel)
                 basis = _workflow_basis(
                     cron_payload,
                     kernel,
@@ -184,6 +186,14 @@ def create_cron_router(
                     validated.workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
                     validated.basis_hash,
                 )
+                workflow_supersession = _complete_workflow_supersession(
+                    updated,
+                    pending_test,
+                    service,
+                    kernel,
+                )
+                if workflow_supersession is not None:
+                    updated = service.get(job_id)
             else:
                 must_revalidate = _workflow_basis_fields_changed(previous, cron_payload) or (
                     not previous.enabled and cron_payload.enabled
@@ -235,7 +245,10 @@ def create_cron_router(
                         payload={"cron_job_id": job_id, "reason": "configuration_changed"},
                     )
                 )
-            return updated.model_dump(mode="json")
+            response = updated.model_dump(mode="json")
+            if accepted is not None:
+                response["workflow_supersession"] = workflow_supersession
+            return response
         except StaleWorkflowError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except SchedulerError as exc:
@@ -272,7 +285,7 @@ def create_cron_router(
     ) -> dict[str, object]:
         try:
             job = service.get(job_id)
-            _ensure_workflow_mutable(job, kernel)
+            pending_test = _prepare_workflow_supersession(job, kernel)
             accepted = payload.accepted_workflow
             basis = _workflow_basis(
                 job,
@@ -286,8 +299,17 @@ def create_cron_router(
                 validated.workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
                 validated.basis_hash,
             )
+            workflow_supersession = _complete_workflow_supersession(
+                updated,
+                pending_test,
+                service,
+                kernel,
+            )
             _revoke_workflow_grants(updated, kernel, "workflow_replaced")
-            return _workflow_response(updated)
+            return {
+                **_workflow_response(updated),
+                "workflow_supersession": workflow_supersession,
+            }
         except StaleWorkflowError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except SchedulerError as exc:
@@ -378,7 +400,7 @@ def _workflow_basis(
     *,
     timezone: str,
 ) -> WorkflowBasis:
-    workspace = Path(payload.workspace).expanduser().resolve()
+    workspace = payload.workspace.expanduser().resolve() if payload.workspace else None
     agents = kernel.config.agents()
     agent = agents.get(payload.agent_id)
     if agent is None:
@@ -406,7 +428,7 @@ def _workflow_basis(
         prompt=payload.prompt,
         schedule=payload.schedule.strip(),
         timezone=timezone,
-        workspace=str(workspace),
+        workspace=str(workspace) if workspace is not None else "",
         agent_id=payload.agent_id,
         skills=payload.skills,
         skill_instructions={name: render_skill(skills, name) for name in payload.skills},
@@ -423,7 +445,8 @@ def _workflow_basis_fields_changed(previous: CronJob, payload: CronJobInput) -> 
             previous.name != payload.name.strip(),
             previous.schedule != payload.schedule.strip(),
             previous.prompt != payload.prompt,
-            previous.workspace != payload.workspace.expanduser().resolve(),
+            previous.workspace
+            != (payload.workspace.expanduser().resolve() if payload.workspace else None),
             previous.agent_id != payload.agent_id,
             sorted(previous.skills) != sorted(payload.skills),
             previous.security_mode != payload.security_mode,
@@ -485,6 +508,53 @@ def _ensure_workflow_mutable(job: CronJob, kernel: Kernel) -> None:
         raise SchedulerError(
             "Impossible de modifier le workflow pendant une autorisation en attente"
         )
+
+
+def _prepare_workflow_supersession(
+    job: CronJob,
+    kernel: Kernel,
+) -> CronTestApprovalBatch | None:
+    """Allow explicit acceptance to replace only this routine's preflight test."""
+
+    if job.in_flight:
+        raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
+    if not any(item.session_id == job.session_id for item in kernel.list_approvals()):
+        return None
+    try:
+        batch = kernel.inspect_pending_cron_test(job.session_id, job.id)
+    except KernelError as exc:
+        raise SchedulerError(
+            "Impossible de modifier le workflow pendant une autorisation en attente"
+        ) from exc
+    if batch is None:
+        raise SchedulerError(
+            "Impossible de modifier le workflow pendant une autorisation en attente"
+        )
+    return batch
+
+
+def _complete_workflow_supersession(
+    job: CronJob,
+    batch: CronTestApprovalBatch | None,
+    service: CronService,
+    kernel: Kernel,
+) -> dict[str, object] | None:
+    if batch is None:
+        return None
+    try:
+        result = kernel.supersede_pending_cron_test(
+            batch,
+            workflow_revision=job.workflow_revision,
+        )
+    except KernelError as exc:
+        raise SchedulerError("La prévalidation a changé pendant l'acceptation du workflow") from exc
+    service.record_test_result(job.id, result)
+    return {
+        "run_id": str(result.run_id),
+        "status": result.status.value,
+        "approval_count": len(batch.approvals),
+        "pending_count": 0,
+    }
 
 
 def _revoke_workflow_grants(job: CronJob, kernel: Kernel, reason: str) -> None:

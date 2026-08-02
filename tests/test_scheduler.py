@@ -80,6 +80,15 @@ def test_cron_crud_and_schedule_validation(tmp_path: Path) -> None:
         service.create(payload(workspace, schedule="not a cron"))
 
 
+def test_cron_can_run_without_an_associated_workspace(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+
+    job = service.create(payload(tmp_path).model_copy(update={"workspace": None}))
+
+    assert job.workspace is None
+    assert CronScheduler.request_for(job).workspace is None
+
+
 def test_cron_workflow_is_optional_persistent_and_independently_removable(
     tmp_path: Path,
 ) -> None:

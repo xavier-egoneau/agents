@@ -22,7 +22,7 @@ from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.usage import UsageLimits
 
 from .agent_factory import AgentFactory
-from .approval_service import ApprovalResume, ApprovalService
+from .approval_service import ApprovalResume, ApprovalService, CronTestApprovalBatch
 from .approvals import ApprovalStore
 from .config import ProjectConfig
 from .context_service import ContextService, ModelContextRegistry, without_images
@@ -408,6 +408,28 @@ class Kernel:
 
     def list_approvals(self) -> list[ApprovalRequest]:
         return self.approval_service.list_pending()
+
+    def inspect_pending_cron_test(
+        self,
+        session_id: UUID,
+        cron_job_id: str,
+    ) -> CronTestApprovalBatch | None:
+        return self.approval_service.inspect_pending_cron_test(session_id, cron_job_id)
+
+    def supersede_pending_cron_test(
+        self,
+        batch: CronTestApprovalBatch,
+        *,
+        workflow_revision: int,
+    ) -> RunResult:
+        if batch.session_id in self.active_runs:
+            raise ConfigurationError("cron_test prevalidation is still running")
+        result = self.approval_service.supersede_pending_cron_test(
+            batch,
+            workflow_revision=workflow_revision,
+        )
+        self.executor.terminal(result)
+        return result
 
     async def resolve_approval(
         self,

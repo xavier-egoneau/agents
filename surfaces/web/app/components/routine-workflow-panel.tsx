@@ -38,7 +38,7 @@ type RoutineWorkflowPanelProps = {
   proposal: RoutineWorkflowProposal | null;
   revision?: number | null;
   updatedAt?: string | null;
-  action: "propose" | "accept" | "delete" | null;
+  action: "propose" | "continue" | "accept" | "delete" | null;
   feedback: "idle" | "success" | "warning" | "error";
   message: string;
   creating: boolean;
@@ -49,7 +49,6 @@ type RoutineWorkflowPanelProps = {
   onPropose: () => void;
   onContinueWithoutWorkflow: () => void;
   onAcceptProposal: () => void;
-  onDiscardProposal: () => void;
   onDelete: () => void;
 };
 
@@ -303,7 +302,9 @@ export function RoutineWorkflowPanel({
               disabled={busy || !canContinueWithoutWorkflow}
               onClick={onContinueWithoutWorkflow}
             >
-              {creating ? "Créer en mode libre" : "Continuer en mode libre"}
+              {action === "continue"
+                ? creating ? "Création en cours…" : "Enregistrement…"
+                : creating ? "Créer en mode libre" : "Continuer en mode libre"}
             </button>
           </article>
           <article className="routine-workflow-path guided">
@@ -353,7 +354,7 @@ export function RoutineWorkflowPanel({
         <div className="routine-workflow-decision">
           <div>
             <span>Décision</span>
-            <strong>Quel mode veux-tu conserver ?</strong>
+            <strong>Garder la routine actuelle ou appliquer cette proposition ?</strong>
             <small>
               Le prompt et les skills restent actifs dans les deux cas.
             </small>
@@ -364,7 +365,9 @@ export function RoutineWorkflowPanel({
               disabled={busy || !canContinueWithoutWorkflow}
               onClick={onContinueWithoutWorkflow}
             >
-              {workflow ? "Conserver le workflow actuel" : "Continuer sans workflow"}
+              {action === "continue"
+                ? "Enregistrement du mode actuel…"
+                : workflow ? "Conserver le workflow actuel" : "Continuer sans workflow"}
             </button>
             <button
               type="button"
