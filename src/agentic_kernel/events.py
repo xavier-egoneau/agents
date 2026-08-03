@@ -64,7 +64,11 @@ class JsonlEventStore:
         path = self.path_for(session_id)
         if not path.exists():
             return []
-        return [Event.model_validate_json(line) for line in path.read_text().splitlines() if line]
+        return [
+            Event.model_validate_json(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
 
     def list_session_ids(self) -> list[UUID]:
         """Return persisted sessions, newest file first.

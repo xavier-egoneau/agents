@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from .errors import ConfigurationError
 from .models import AgentConfig, ProviderRegistry, SkillConfig
+from .platform.secure_files import secure_file
 
 NATIVE_RPPL_COMMANDS: dict[str, dict[str, str]] = {
     "/compact": {
@@ -71,7 +72,7 @@ class ProjectConfig:
         for sensitive in ("providers.json", "secrets.json"):
             path = self.content_root / sensitive
             if path.exists():
-                path.chmod(0o600)
+                secure_file(path)
 
     def system_instructions(self) -> str:
         path = self.content_root / "system.md"

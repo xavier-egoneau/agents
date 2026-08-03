@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 from uuid import uuid4
 
@@ -76,6 +77,34 @@ def test_health_and_catalog(project: Path) -> None:
     assert validated.status_code == 200
     missing = client.post("/api/workspaces/validate", json={"path": str(project / "missing")})
     assert missing.status_code == 422
+
+
+def test_git_api_is_scoped_to_the_requested_workspace(project: Path, tmp_path: Path) -> None:
+    repository = tmp_path / "customer-project"
+    workspace = repository / "packages" / "web"
+    workspace.mkdir(parents=True)
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    (workspace / "app.ts").write_text("export const value = 1;\n", encoding="utf-8")
+
+    client = TestClient(create_app(project))
+    status = client.get("/api/git/status", params={"workspace": str(workspace)})
+
+    assert status.status_code == 200
+    payload = status.json()
+    assert payload["repo_root"] == str(repository.resolve())
+    assert payload["files"][0]["path"] == "packages/web/app.ts"
 
 
 def test_commands_merge_global_and_workspace_local_skills(project: Path) -> None:

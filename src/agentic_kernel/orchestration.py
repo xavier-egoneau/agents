@@ -17,6 +17,7 @@ from .events import JsonlEventStore
 from .guardian import action_family
 from .models import ApprovalRequest, BudgetConfig, Event, GuardianDecision, SecurityMode
 from .plans import PlanConflict, PlanNotFound, PlanService
+from .trace_context import bind_event_run_id, event_run_id
 
 
 @dataclass
@@ -69,7 +70,7 @@ class TracedSubAgentToolset(HarnessSubAgentToolset[RuntimeDeps]):
         deps: RuntimeDeps = ctx.deps
         attempt = await deps.reserve_run(agent_name)
         child_run_id = uuid4()
-        parent_run_id = _uuid_or(ctx.run_id, deps.root_run_id)
+        parent_run_id = event_run_id(deps.root_run_id)
         deps.events.append(
             Event(
                 session_id=deps.session_id,
@@ -94,7 +95,8 @@ class TracedSubAgentToolset(HarnessSubAgentToolset[RuntimeDeps]):
                 )
             )
             try:
-                output = await super().delegate_task(ctx, agent_name, task)
+                with bind_event_run_id(child_run_id):
+                    output = await super().delegate_task(ctx, agent_name, task)
             except Exception as exc:
                 deps.events.append(
                     Event(
@@ -191,7 +193,7 @@ def make_neutral_subagent_toolset(
         deps = ctx.deps
         attempt = await deps.reserve_run("subagent")
         child_run_id = uuid4()
-        parent_run_id = _uuid_or(ctx.run_id, deps.root_run_id)
+        parent_run_id = event_run_id(deps.root_run_id)
         if bool(plan_id) != bool(step_id):
             raise ValueError("plan_id and step_id must be supplied together")
         if plan_id and step_id:
@@ -267,11 +269,12 @@ def make_neutral_subagent_toolset(
                 )
             )
             try:
-                result = await agent.run(
-                    prompt,
-                    deps=deps,
-                    usage_limits=UsageLimits(request_limit=budgets.max_requests_per_agent),
-                )
+                with bind_event_run_id(child_run_id):
+                    result = await agent.run(
+                        prompt,
+                        deps=deps,
+                        usage_limits=UsageLimits(request_limit=budgets.max_requests_per_agent),
+                    )
             except Exception as exc:
                 deps.events.append(
                     Event(
@@ -344,12 +347,3 @@ def make_neutral_subagent_toolset(
         }
 
     return FunctionToolset(tools=[subagent_spawn])
-
-
-def _uuid_or(value: str | None, fallback: UUID) -> UUID:
-    if not value:
-        return fallback
-    try:
-        return UUID(str(value))
-    except ValueError:
-        return fallback

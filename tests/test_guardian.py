@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+
+import pytest
 
 from agentic_kernel.guardian import review_tool_call
 from agentic_kernel.models import GuardianVerdict, SecurityMode, ToolRisk
@@ -57,7 +60,10 @@ def test_outside_and_protected_paths(tmp_path: Path) -> None:
         == GuardianVerdict.DENY
     )
     outside.write_text("secret")
-    (tmp_path / "link").symlink_to(outside)
+    try:
+        (tmp_path / "link").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symbolic links are unavailable for this user: {exc}")
     assert (
         decide(tmp_path, "read", [ToolRisk.READ], SecurityMode.POWER, "link").verdict
         == GuardianVerdict.DENY
@@ -97,6 +103,18 @@ def test_missing_justification_is_denied(tmp_path: Path) -> None:
         workspace=tmp_path,
     )
     assert decision.verdict == GuardianVerdict.DENY
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path syntax")
+@pytest.mark.parametrize(
+    "path",
+    ["note.txt:secret", r"\\?\C:\Windows\system.ini", "NUL", "COM1.txt"],
+)
+def test_windows_ambiguous_and_device_paths_are_denied(tmp_path: Path, path: str) -> None:
+    assert (
+        decide(tmp_path, "read", [ToolRisk.READ], SecurityMode.POWER, path).verdict
+        == GuardianVerdict.DENY
+    )
 
 
 def test_private_web_target_always_requires_approval(tmp_path: Path) -> None:

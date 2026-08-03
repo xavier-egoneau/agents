@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from ..config import ProjectConfig
 from ..errors import ConfigurationError
 from ..models import ProviderRegistry
+from ..platform.secure_files import secure_file
 
 
 class MarkdownResourceBody(BaseModel):
@@ -215,7 +216,7 @@ def create_resource_router(project: ProjectConfig) -> APIRouter:
             encoding="utf-8",
         )
         os.replace(temporary, target)
-        target.chmod(0o600)
+        secure_file(target)
 
     @router.get("/providers")
     async def providers() -> dict[str, object]:

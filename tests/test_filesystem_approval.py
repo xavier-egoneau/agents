@@ -181,6 +181,45 @@ async def test_parallel_approvals_resume_as_one_batch(project: Path, monkeypatch
     assert second_target.read_text() == "new"
 
 
+async def test_read_tool_returns_canonical_result_and_uses_root_run_id(
+    project: Path, monkeypatch
+) -> None:
+    source = Path(__file__).parents[1] / "tools" / "modules" / "filesystem"
+    shutil.copytree(source, project / "tools" / "modules" / "filesystem")
+    ModuleRegistry(project / "tools").build_index()
+    (project / "note.txt").write_text("hello", encoding="utf-8")
+
+    def respond(messages, info):
+        called = any(
+            getattr(part, "tool_name", None) == "read"
+            for message in messages
+            for part in message.parts
+        )
+        if not called:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "read",
+                        {"path": "note.txt", "justification": "Inspect the requested file."},
+                        tool_call_id="read-1",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("done")])
+
+    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(respond))
+    kernel = Kernel(project)
+    result = await kernel.run(RunRequest(prompt="Read note.txt", workspace=project))
+
+    assert result.status is RunStatus.SUCCESS
+    events = kernel.events.read(result.session_id)
+    assert not [event for event in events if event.type == "tool.failed"]
+    completed = next(event for event in events if event.type == "tool.completed")
+    assert completed.run_id == result.run_id
+    assert set(completed.payload["result"]) == {"ok", "data", "error", "metadata"}
+    assert completed.payload["result"]["data"]["content"] == "hello"
+
+
 def test_disabled_tools_sidecar(project: Path) -> None:
     sidecar = project / "content-agents" / "agents" / "main.tools-disabled.json"
     sidecar.write_text(json.dumps({"tools": ["missing"]}), encoding="utf-8")

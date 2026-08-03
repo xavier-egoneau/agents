@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigurationError
+from .platform.secure_files import secure_file
 
 SECRET_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 
@@ -87,8 +88,8 @@ class SecretStore:
                 json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            os.chmod(temporary, 0o600)
+            secure_file(temporary)
             os.replace(temporary, self.path)
-            os.chmod(self.path, 0o600)
+            secure_file(self.path)
         finally:
             temporary.unlink(missing_ok=True)

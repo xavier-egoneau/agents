@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -31,6 +32,7 @@ from agentic_kernel.models import (
 )
 from agentic_kernel.modules import ModuleRegistry
 from agentic_kernel.providers import ProviderFactory
+from agentic_kernel.vision import VisionUnavailable
 
 
 def test_runtime_context_contains_timestamp_timezone_and_workspace(tmp_path: Path) -> None:
@@ -178,7 +180,8 @@ async def test_secret_commands_never_reach_model_or_session_log(project: Path, m
     assert kernel.events.read(stored.session_id) == []
     secrets_path = project / "content-agents" / "secrets.json"
     assert json.loads(secrets_path.read_text()) == {"DATABASE_PASSWORD": value}
-    assert secrets_path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert secrets_path.stat().st_mode & 0o777 == 0o600
 
     listed = await kernel.run(RunRequest(prompt="/secret_list", session_id=stored.session_id))
     assert listed.status == RunStatus.SUCCESS
@@ -231,6 +234,42 @@ async def test_non_vision_provider_uses_local_vision_transparently(
     serialized = json.dumps(kernel.snapshots.load(result.session_id, snapshot.payload))
     assert "A settings screen" in serialized
     assert "image_url" not in serialized
+
+
+async def test_missing_local_vision_degrades_without_failing_the_run(
+    project: Path, monkeypatch
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    kernel = Kernel(project)
+
+    async def unavailable(*args, **kwargs):
+        raise VisionUnavailable("llama-server absent")
+
+    monkeypatch.setattr(kernel.vision, "analyze_bytes", unavailable)
+    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: TestModel(call_tools=[]))
+    result = await kernel.run(
+        RunRequest(
+            prompt="Use this design",
+            images=[
+                ImageAttachment(
+                    name="screen.png",
+                    media_type="image/png",
+                    data_base64="eA==",
+                )
+            ],
+        )
+    )
+
+    assert result.status == RunStatus.SUCCESS
+    events = kernel.events.read(result.session_id)
+    failure = next(event for event in events if event.type == "tool.failed")
+    assert failure.payload["tool_name"] == "image_inspect"
+    snapshot = next(event for event in events if event.type == "messages.snapshot")
+    serialized = json.dumps(
+        kernel.snapshots.load(result.session_id, snapshot.payload), ensure_ascii=False
+    )
+    assert "Analyse visuelle indisponible" in serialized
+    assert "Ne déduis aucun détail visuel" in serialized
 
 
 def test_image_history_is_sanitized_for_text_only_models() -> None:
@@ -314,6 +353,7 @@ async def test_routine_notification_is_visible_to_an_immediate_user_reply(
     monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(respond))
     kernel = Kernel(project)
     session_id = uuid4()
+    notification = "Veille du matin\n\nVoici la veille actualis" + chr(233) + "e."
     kernel.events.append(
         Event(
             session_id=session_id,
@@ -323,7 +363,7 @@ async def test_routine_notification_is_visible_to_an_immediate_user_reply(
             payload={
                 "cron_job_id": "cron_morning",
                 "status": "success",
-                "content": "Veille du matin\n\nVoici la veille actualisée.",
+                "content": notification,
             },
         )
     )
@@ -331,7 +371,7 @@ async def test_routine_notification_is_visible_to_an_immediate_user_reply(
     await kernel.run(RunRequest(prompt="Relivre-la pour mon test", session_id=session_id))
 
     assert observed_text[-1] == [
-        "Veille du matin\n\nVoici la veille actualisée.",
+        notification,
         "Relivre-la pour mon test",
     ]
 

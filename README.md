@@ -72,10 +72,12 @@ Après le premier `npm install` dans `surfaces/web`, une seule commande lance le
 uv run amk web
 ```
 
-La commande arrête d'abord les anciennes instances AMK, puis lance l'API et la surface ensemble.
-Elle ne tue jamais un programme sans rapport : si le port web 3000 est déjà utilisé, elle choisit
-automatiquement le prochain port libre et affiche l'URL retenue. Un conflit sur le port API reste
-une erreur explicite. `Ctrl+C` arrête proprement les deux services.
+La commande arrête d'abord toutes les autres instances lancées avec `amk web`, même depuis un
+autre dossier ou sur d'autres ports, puis lance l'API et la surface ensemble. Cette exclusivité
+appartient uniquement à la surface web : un `amk serve` lancé seul n'est jamais arrêté. Si le port
+web 3000 appartient à une autre application, AMK choisit le prochain port libre et affiche l'URL
+retenue. Un conflit sur le port API reste une erreur explicite. `Ctrl+C` arrête proprement les deux
+services.
 
 Ouvrir l'URL `AMK Web` affichée au démarrage. La surface utilise
 `AMK_KERNEL_URL=http://127.0.0.1:8765` par défaut; cette variable peut pointer vers un backend
@@ -127,11 +129,19 @@ retirer pour un agent avec `{ "tools": ["delete"] }`.
 Les décisions et phases d'exécution sont enregistrées dans le JSONL de session. Ces traces sont
 séparées des observations bornées renvoyées au modèle et leurs champs secrets sont masqués. Le
 guardian reste la politique d’autorisation. `command_run` et `process_start`
-ajoutent une isolation d’exécution : sur macOS, `sandbox-exec` limite les
-écritures au workspace, aux artefacts de la session et à son runtime temporaire.
-Sans sandbox, `safe` et `limited` refusent l’exécution; `power` exige une
-approbation explicite. Cette abstraction pourra être remplacée par un backend
-Docker sans modifier le contrat des tools.
+ajoutent une isolation d’exécution via un backend propre à la plateforme. Sur
+macOS, `sandbox-exec` limite les écritures au workspace, aux artefacts de la
+session et à son runtime temporaire. Windows et Linux disposent de la même
+gestion structurée des processus et de leur arbre, mais ne déclarent pas encore
+d’isolation filesystem native. Sans backend d’isolation forte, `safe` et
+`limited` refusent l’exécution; `power` exige une approbation explicite. Les
+capacités sont interrogées par le Guardian plutôt que déduites du nom de l’OS.
+
+Les groupes de processus POSIX sont utilisés sur macOS et Linux. Windows utilise
+un groupe de processus natif et une terminaison récursive contrôlée. Les fichiers
+sensibles utilisent `0600` sur POSIX et une DACL limitée à l’utilisateur et à
+`SYSTEM` sous Windows. Le sélecteur de workspace est disponible via AppleScript
+sur macOS et le dialogue Tk natif sous Windows et Linux lorsqu’il est installé.
 
 ## Agents, skills, modules et sessions
 
@@ -289,3 +299,16 @@ surface et les parcours Playwright. Les tests réseau réels restent opt-in.
 ```bash
 ./scripts/check.sh
 ```
+
+Sous Windows PowerShell :
+
+```powershell
+uv sync --extra dev --python 3.12
+uv run playwright install chromium
+npm ci --prefix surfaces/web
+./scripts/check.ps1
+```
+
+La CI exécute les validations sur Ubuntu, macOS et Windows. Une sandbox absente
+n’est jamais assimilée à une isolation réussie : le backend natif non isolé reste
+réservé au mode `power` avec approbation.

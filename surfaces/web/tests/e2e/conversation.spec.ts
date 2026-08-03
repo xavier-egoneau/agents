@@ -1072,3 +1072,66 @@ test("a session can be deleted from history", async ({ page }) => {
   await page.getByLabel("Supprimer la session").click();
   await expect(page.getByText("Session à supprimer")).not.toBeVisible();
 });
+
+test("git changes open in a resizable review panel for the session workspace", async ({ page }) => {
+  const snapshot = {
+    available: true,
+    workspace: "/tmp/customer-project",
+    repo_root: "/tmp/customer-project",
+    branch: "feature/git-ui",
+    head: "abc1234",
+    additions: 2,
+    deletions: 1,
+    fingerprint: "fingerprint",
+    files: [{
+      path: "src/app.ts", status: "modified", staged: false,
+      additions: 2, deletions: 1, binary: false,
+      patch: "@@ -1 +1,2 @@\n-old\n+new\n+line",
+    }],
+  };
+  await page.unroute("**/api/kernel/**");
+  await installKernelMock(page, async (route, url) => {
+    if (url.pathname.endsWith("/git/status")) {
+      await route.fulfill({ json: snapshot });
+      return true;
+    }
+    if (url.pathname.endsWith("/git/branches")) {
+      await route.fulfill({ json: { current: snapshot.branch, branches: [snapshot.branch] } });
+      return true;
+    }
+    if (url.pathname.endsWith("/sessions/session-git")) {
+      await route.fulfill({ json: {
+        session_id: "session-git", agent_id: "main", prompt: "Modifie le projet",
+        workspace: snapshot.workspace, created_at: "2026-08-03T10:00:00Z",
+        updated_at: "2026-08-03T10:01:00Z", status: "success", output: "Fait.",
+        errors: [], event_count: 3, trigger: "user",
+        messages: [
+          { role: "user", content: "Modifie le projet", run_id: "run-git" },
+          { role: "assistant", content: "Fait.", run_id: "run-git" },
+        ],
+        events: [{ timestamp: "2026-08-03T10:01:00Z", session_id: "session-git",
+          run_id: "run-git", agent_id: "kernel", parent_run_id: null,
+          type: "git.snapshot", attempt: 0, payload: snapshot }],
+      } });
+      return true;
+    }
+    if (url.pathname.endsWith("/sessions")) {
+      await route.fulfill({ json: [{
+        session_id: "session-git", agent_id: "main", prompt: "Modifie le projet",
+        workspace: snapshot.workspace, created_at: "2026-08-03T10:00:00Z",
+        updated_at: "2026-08-03T10:01:00Z", status: "success", output: "Fait.",
+        errors: [], event_count: 3, trigger: "user",
+      }] });
+      return true;
+    }
+    return false;
+  });
+
+  await page.goto("/");
+  await page.getByText("Modifie le projet", { exact: true }).first().click();
+  await expect(page.getByText("1 fichier modifié")).toBeVisible();
+  await page.getByRole("button", { name: "src/app.ts" }).click();
+  await expect(page.locator(".git-review-panel")).toBeVisible();
+  await expect(page.locator(".git-review-body pre")).toContainText("+new");
+  await expect(page.getByRole("button", { name: "Valider (1)" })).toBeVisible();
+});

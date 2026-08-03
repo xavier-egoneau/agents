@@ -26,7 +26,6 @@ def _success(payload: dict[str, Any], **metadata: Any) -> dict[str, Any]:
         "data": payload,
         "error": None,
         "metadata": metadata,
-        **payload,
     }
 
 

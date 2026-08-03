@@ -6,7 +6,11 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -19,5 +23,10 @@ jobs:
           cache-dependency-path: surfaces/web/package-lock.json
       - run: uv sync --extra dev --locked
       - run: npm ci --prefix surfaces/web
-      - run: npx --prefix surfaces/web playwright install --with-deps chromium
-      - run: ./scripts/check.sh
+      - run: uv run playwright install chromium
+      - run: npx --prefix surfaces/web playwright install chromium
+      - run: uv run ruff check src tests tools/modules
+      - run: uv run pytest
+      - run: npm --prefix surfaces/web run lint
+      - run: npm --prefix surfaces/web run test:unit
+      - run: npm --prefix surfaces/web run test:e2e

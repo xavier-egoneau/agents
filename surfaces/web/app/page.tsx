@@ -43,6 +43,14 @@ import {
   type RoutineWorkflowProposal,
 } from "./components/routine-workflow-panel";
 import {
+  GitChangeCard,
+  GitCommitDialog,
+  GitReviewPanel,
+  GitToolbar,
+  type GitFile,
+  type GitSnapshot,
+} from "./components/git-workspace";
+import {
   CalendarClock,
   MessageSquarePlus,
 } from "lucide-react";
@@ -515,6 +523,16 @@ type SessionSummary = {
   events?: TraceEvent[];
 };
 
+function gitSnapshotForRun(events: TraceEvent[], runId?: string): GitSnapshot | null {
+  if (!runId) return null;
+  const event = [...events].reverse().find((item) =>
+    item.run_id === runId && item.type === "git.snapshot"
+  );
+  if (!event) return null;
+  const payload = event.payload as Partial<GitSnapshot>;
+  return payload.available && Array.isArray(payload.files) ? payload as GitSnapshot : null;
+}
+
 const visibleTraceTypes = new Set([
   "session.started", "run.suspended", "run.resumed", "run.transitioned",
   "agent.queued", "agent.started", "agent.retrying", "agent.completed", "agent.failed",
@@ -796,6 +814,17 @@ export default function Home() {
   const [cronWorkflowAction, setCronWorkflowAction] = useState<CronWorkflowAction>(null);
   const [cronWorkflowFeedback, setCronWorkflowFeedback] = useState<"idle" | "success" | "error">("idle");
   const [cronWorkflowMessage, setCronWorkflowMessage] = useState("");
+  const [gitSnapshot, setGitSnapshot] = useState<GitSnapshot | null>(null);
+  const [gitBranches, setGitBranches] = useState<string[]>([]);
+  const [gitSelectedFile, setGitSelectedFile] = useState<GitFile | null>(null);
+  const [gitReviewSnapshot, setGitReviewSnapshot] = useState<GitSnapshot | null>(null);
+  const [gitReviewOpen, setGitReviewOpen] = useState(false);
+  const [gitPanelWidth, setGitPanelWidth] = useState(560);
+  const [gitBusy, setGitBusy] = useState(false);
+  const [gitError, setGitError] = useState("");
+  const [gitCommitMessage, setGitCommitMessage] = useState<string | null>(null);
+  const [gitCommitFingerprint, setGitCommitFingerprint] = useState("");
+  const [gitCommitSource, setGitCommitSource] = useState("");
   const railContent = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -906,6 +935,37 @@ export default function Home() {
   const conversationWorkspace = activeSessionId
     ? activeSession?.workspace
     : activeWorkspace;
+
+  const refreshGit = useCallback(async (workspace: string) => {
+    try {
+      const [statusResponse, branchesResponse] = await Promise.all([
+        fetch(`/api/kernel/git/status?workspace=${encodeURIComponent(workspace)}`),
+        fetch(`/api/kernel/git/branches?workspace=${encodeURIComponent(workspace)}`),
+      ]);
+      const status = await readApiPayload<GitSnapshot>(statusResponse);
+      setGitSnapshot(status.available ? status : null);
+      if (branchesResponse.ok) {
+        const branchData = await readApiPayload<{ current: string; branches: string[] }>(branchesResponse);
+        setGitBranches(branchData.branches);
+      } else {
+        setGitBranches([]);
+      }
+    } catch {
+      setGitSnapshot(null);
+      setGitBranches([]);
+      setGitReviewOpen(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!conversationWorkspace || isRoutineInbox) {
+      setGitSnapshot(null);
+      setGitBranches([]);
+      setGitReviewOpen(false);
+      return;
+    }
+    void refreshGit(conversationWorkspace);
+  }, [conversationWorkspace, isRoutineInbox, running, refreshGit]);
   const commandMatches = useMemo(() => {
     const value = prompt.trimStart();
     if (!value.startsWith("/") || value.includes(" ")) return [];
@@ -2236,7 +2296,9 @@ export default function Home() {
           prompt: content,
           agent_id: agentId,
           skills: selectedSkills,
-          workspace: isRoutineInbox ? undefined : activeWorkspace || undefined,
+          workspace: isRoutineInbox
+            ? undefined
+            : conversationWorkspace || activeWorkspace || undefined,
           session_id: sessionId,
           security_mode: securityMode,
           provider_id: providerId || undefined,
@@ -2410,6 +2472,82 @@ export default function Home() {
     }
   }
 
+  function openGitReview(snapshot: GitSnapshot, file?: GitFile) {
+    setGitReviewSnapshot(snapshot);
+    setGitSelectedFile(file || snapshot.files[0] || null);
+    setGitReviewOpen(true);
+  }
+
+  function startGitResize() {
+    const move = (event: MouseEvent) => {
+      setGitPanelWidth(Math.max(360, Math.min(900, window.innerWidth - event.clientX)));
+    };
+    const stop = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", stop);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", stop);
+  }
+
+  async function switchGitBranch(branch: string) {
+    if (!conversationWorkspace || branch === gitSnapshot?.branch) return;
+    setGitBusy(true);
+    setGitError("");
+    try {
+      const response = await fetch("/api/kernel/git/switch", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspace: conversationWorkspace, branch }),
+      });
+      await readApiPayload(response);
+      await refreshGit(conversationWorkspace);
+    } catch (error) {
+      setGitError(error instanceof Error ? error.message : "Changement de branche impossible.");
+    } finally {
+      setGitBusy(false);
+    }
+  }
+
+  async function proposeGitCommit() {
+    if (!conversationWorkspace) return;
+    setGitBusy(true);
+    setGitError("");
+    try {
+      const response = await fetch("/api/kernel/git/commit-proposal", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspace: conversationWorkspace, provider_id: providerId, model: selectedModel }),
+      });
+      const data = await readApiPayload<{ message: string; fingerprint: string; source: string }>(response);
+      setGitCommitMessage(data.message);
+      setGitCommitFingerprint(data.fingerprint);
+      setGitCommitSource(data.source);
+    } catch (error) {
+      setGitError(error instanceof Error ? error.message : "Proposition impossible.");
+    } finally {
+      setGitBusy(false);
+    }
+  }
+
+  async function commitGitChanges() {
+    if (!conversationWorkspace || gitCommitMessage === null) return;
+    setGitBusy(true);
+    setGitError("");
+    try {
+      const response = await fetch("/api/kernel/git/commit", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspace: conversationWorkspace, message: gitCommitMessage, fingerprint: gitCommitFingerprint }),
+      });
+      await readApiPayload(response);
+      setGitCommitMessage(null);
+      setGitReviewOpen(false);
+      await refreshGit(conversationWorkspace);
+    } catch (error) {
+      setGitError(error instanceof Error ? error.message : "Commit impossible.");
+    } finally {
+      setGitBusy(false);
+    }
+  }
+
   const cronApprovalGroups = groupRoutineApprovals(cronTestApprovals);
   const persistedCron = cronEditor && !cronEditor.creating
     ? cronJobs.find((job) => job.id === cronEditor.id)
@@ -2487,7 +2625,9 @@ export default function Home() {
   );
 
   return (
-    <main className="shell">
+    <main className="shell" style={gitReviewOpen && gitReviewSnapshot
+      ? { gridTemplateColumns: `270px minmax(0, 1fr) ${gitPanelWidth}px` }
+      : undefined}>
       <aside className="rail">
         <header className="rail-head">
           <div className="brand">
@@ -3496,6 +3636,15 @@ export default function Home() {
             )}
           </div>
           <div className="topbar-actions">
+            {gitSnapshot && (
+              <GitToolbar
+                snapshot={gitSnapshot}
+                branches={gitBranches}
+                disabled={running || gitBusy}
+                onSwitch={(branch) => void switchGitBranch(branch)}
+                onValidate={() => void proposeGitCommit()}
+              />
+            )}
             <button
               type="button"
               className="new-conversation"
@@ -3557,6 +3706,14 @@ export default function Home() {
                             sessionId={activeSessionId}
                             artifacts={message.artifacts}
                           />
+                          {gitSnapshotForRun(traceEvents, message.runId) && (
+                            <GitChangeCard
+                              snapshot={gitSnapshotForRun(traceEvents, message.runId)!}
+                              onOpen={(file) => openGitReview(
+                                gitSnapshotForRun(traceEvents, message.runId)!, file,
+                              )}
+                            />
+                          )}
                         </>
                       ) : (
                         <p>{message.content}</p>
@@ -3725,6 +3882,31 @@ export default function Home() {
           />
         </form>
       </section>
+
+      {gitReviewOpen && gitReviewSnapshot && (
+        <GitReviewPanel
+          snapshot={gitReviewSnapshot}
+          selected={gitSelectedFile}
+          onSelect={setGitSelectedFile}
+          onClose={() => setGitReviewOpen(false)}
+          onResizeStart={startGitResize}
+        />
+      )}
+
+      {gitCommitMessage !== null && (
+        <GitCommitDialog
+          message={gitCommitMessage}
+          busy={gitBusy}
+          error={gitError}
+          source={gitCommitSource}
+          onMessage={setGitCommitMessage}
+          onCancel={() => { setGitCommitMessage(null); setGitError(""); }}
+          onCommit={() => void commitGitChanges()}
+        />
+      )}
+      {gitError && gitCommitMessage === null && (
+        <button type="button" className="git-toast" onClick={() => setGitError("")}>{gitError}</button>
+      )}
     </main>
   );
 }

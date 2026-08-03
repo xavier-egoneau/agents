@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
-import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -14,12 +12,15 @@ from pydantic import BaseModel, Field
 from .auth import OAuthManager
 from .config import ProjectConfig
 from .errors import AuthenticationError, ConfigurationError
+from .git_service import GitService
 from .kernel import Kernel
 from .models import Event, RunError, RunRequest, RunResult, RunStatus
+from .platform.dialogs import NativeDialogUnavailable, choose_directory
 from .providers import ProviderFactory
 from .routers.approvals import create_approval_router
 from .routers.artifacts import create_artifact_router
 from .routers.crons import _validate_stored_workflow, create_cron_router
+from .routers.git import create_git_router
 from .routers.plans import create_plan_router
 from .routers.resources import create_resource_router
 from .routers.runs import create_run_router
@@ -108,6 +109,7 @@ def _session_messages(events: list) -> list[dict[str, object]]:
 def create_app(root: Path | str = ".") -> FastAPI:
     project = ProjectConfig(root)
     kernel = Kernel(root)
+    git_service = GitService()
     running_tasks: dict[UUID, asyncio.Task[RunResult]] = {}
     cron_service = CronService(project.content_root / "state.db")
     cron_service.import_legacy_once(project.content_root / "agents" / "crons.json", project.root)
@@ -298,6 +300,7 @@ def create_app(root: Path | str = ".") -> FastAPI:
     )
     app.include_router(create_artifact_router(kernel))
     app.include_router(create_resource_router(project))
+    app.include_router(create_git_router(project, git_service))
 
     @app.get("/api/health")
     async def health() -> dict[str, object]:
@@ -362,34 +365,13 @@ def create_app(root: Path | str = ".") -> FastAPI:
         local application, so the kernel opens the OS picker and returns the
         selected path instead.
         """
-        if sys.platform != "darwin":
-            raise HTTPException(
-                status_code=501,
-                detail="Le sélecteur natif de dossier est actuellement disponible sur macOS.",
-            )
 
         def choose() -> str:
-            result = subprocess.run(
-                [
-                    "osascript",
-                    "-e",
-                    'POSIX path of (choose folder with prompt "Choisir un projet pour AMK")',
-                ],
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=300,
-            )
-            if result.returncode != 0:
-                # -128 is the normal AppleScript cancellation error.
-                if "User canceled" in result.stderr or "-128" in result.stderr:
-                    return ""
-                raise RuntimeError(result.stderr.strip() or "Sélecteur de dossier indisponible")
-            return result.stdout.strip()
+            return choose_directory("Choisir un projet pour AMK")
 
         try:
             selected = await asyncio.to_thread(choose)
-        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        except (OSError, NativeDialogUnavailable) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         if not selected:
             raise HTTPException(status_code=409, detail="Sélection annulée")

@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import json
 import shutil
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -18,6 +19,7 @@ from agentic_kernel.guardian import review_tool_call
 from agentic_kernel.kernel import Kernel
 from agentic_kernel.models import Event, GuardianVerdict, SecurityMode, ToolRisk
 from agentic_kernel.modules import ModuleRegistry
+from agentic_kernel.platform.sandbox import sandbox_capabilities
 
 
 def test_enriched_index_contains_runtime_schemas() -> None:
@@ -72,7 +74,12 @@ def test_command_guardian_modes(tmp_path: Path) -> None:
         workspace=tmp_path,
     )
     assert safe.verdict is GuardianVerdict.ASK
-    assert limited.verdict is GuardianVerdict.ALLOW
+    expected = (
+        GuardianVerdict.ALLOW
+        if sandbox_capabilities().execution_isolated
+        else GuardianVerdict.ASK
+    )
+    assert limited.verdict is expected
     assert install.verdict is GuardianVerdict.ASK
 
 
@@ -91,22 +98,23 @@ async def test_command_and_persistent_process_lifecycle(tmp_path: Path) -> None:
         state_db=content / "state.db",
         events=events,
         session_id=session_id,
+        security_mode=SecurityMode.POWER,
     )
     ctx = SimpleNamespace(deps=deps)
     short = await process_module.command_run(
-        ctx, "python3", ["-c", "print('ready')"], timeout_seconds=5
+        ctx, sys.executable, ["-c", "print('ready')"], timeout_seconds=5
     )
     assert short["ok"] is True
-    assert short["data"]["stdout"] == "ready\n"
+    assert short["data"]["stdout"].splitlines() == ["ready"]
     timed_out = await process_module.command_run(
-        ctx, "python3", ["-c", "import time; time.sleep(2)"], timeout_seconds=0.1
+        ctx, sys.executable, ["-c", "import time; time.sleep(2)"], timeout_seconds=0.1
     )
     assert timed_out["ok"] is False
     assert timed_out["error"]["type"] == "timeout"
 
     started = await process_module.process_start(
         ctx,
-        "python3",
+        sys.executable,
         ["-u", "-c", "import time; print('server:8123'); time.sleep(30)"],
     )
     process_id = started["data"]["process_id"]

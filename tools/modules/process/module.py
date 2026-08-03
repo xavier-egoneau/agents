@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import re
-import signal
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -17,6 +17,12 @@ from pydantic import Field
 from pydantic_ai import FunctionToolset, RunContext
 
 from agentic_kernel.execution_sandbox import ExecutionSandbox
+from agentic_kernel.platform.processes import (
+    process_running,
+    stop_async_process,
+    subprocess_group_kwargs,
+    terminate_tree,
+)
 
 MAX_CAPTURE_BYTES = 100_000
 MAX_OUTPUT_BYTES = 50_000
@@ -54,6 +60,20 @@ def _command(program: str, args: list[str]) -> list[str]:
         raise ValueError("invalid program")
     if any("\x00" in value for value in args):
         raise ValueError("invalid command argument")
+    if os.name == "nt":
+        resolved = shutil.which(program) or program
+        if Path(resolved).suffix.casefold() in {".cmd", ".bat"}:
+            if any(re.search(r"[&|<>^%!`\r\n]", value) for value in args):
+                raise ValueError("unsafe metacharacter in Windows command-shim argument")
+            return [
+                os.environ.get("COMSPEC", "cmd.exe"),
+                "/d",
+                "/c",
+                "call",
+                resolved,
+                *args,
+            ]
+        program = resolved
     return [program, *args]
 
 
@@ -82,11 +102,7 @@ def _record(ctx: RunContext[Any], process_id: str) -> dict[str, Any] | None:
 
 
 def _running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    return process_running(pid)
 
 
 def _redacted_command(command: list[str]) -> list[str]:
@@ -124,23 +140,19 @@ async def command_run(
         env=prepared.env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
+        **subprocess_group_kwargs(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout_seconds)
     except TimeoutError:
-        os.killpg(process.pid, signal.SIGTERM)
-        try:
-            await asyncio.wait_for(process.wait(), 3)
-        except TimeoutError:
-            os.killpg(process.pid, signal.SIGKILL)
-            await process.wait()
+        await stop_async_process(process, 3)
         return _failure(
             "timeout",
             f"command exceeded {timeout_seconds:g}s",
             duration_ms=(time.monotonic() - started) * 1000,
             command=_redacted_command(command),
             sandboxed=prepared.sandboxed,
+            sandbox_backend=prepared.backend,
         )
     finally:
         prepared.cleanup()
@@ -160,6 +172,7 @@ async def command_run(
         duration_ms=(time.monotonic() - started) * 1000,
         bytes_captured=min(len(stdout), MAX_CAPTURE_BYTES) + min(len(stderr), MAX_CAPTURE_BYTES),
         sandboxed=prepared.sandboxed,
+        sandbox_backend=prepared.backend,
     )
 
 
@@ -187,7 +200,7 @@ async def process_start(
             stdin=subprocess.DEVNULL,
             stdout=stream,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            **subprocess_group_kwargs(),
         )
     finally:
         stream.close()
@@ -220,6 +233,7 @@ async def process_start(
             "cwd": str(workdir),
             "started_at": started_at,
             "sandboxed": prepared.sandboxed,
+            "sandbox_backend": prepared.backend,
         }
     )
 
@@ -298,23 +312,13 @@ async def process_stop(
     forced = False
     is_running = process.poll() is None if process else _running(pid)
     if is_running:
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-        deadline = time.monotonic() + grace_seconds
-        while (
-            process.poll() is None if process else _running(pid)
-        ) and time.monotonic() < deadline:
-            await asyncio.sleep(0.1)
+        forced = await asyncio.to_thread(terminate_tree, pid, grace_seconds)
         if process is not None:
-            process.poll()
-        if process.poll() is None if process else _running(pid):
-            forced = True
             try:
-                os.killpg(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
+                await asyncio.to_thread(process.wait, 3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                forced = True
     process = _processes.pop(process_id, None)
     profile = _profiles.pop(process_id, None)
     if profile is not None:

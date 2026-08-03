@@ -4,14 +4,12 @@ import asyncio
 import hashlib
 import ipaddress
 import json
-import platform
-import shutil
+import os
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
-from uuid import UUID
 
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ApprovalRequired
@@ -28,6 +26,8 @@ from .models import (
     ToolRisk,
 )
 from .network_policy import network_scope
+from .platform.sandbox import sandbox_capabilities
+from .trace_context import event_run_id
 
 PROTECTED_PARTS = {".ssh", ".gnupg", ".aws", ".kube", ".git", ".codex"}
 SENSITIVE_NAMES = {
@@ -57,6 +57,8 @@ def guardian_parameters_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
 def canonical_path(raw: Any, workspace: Path) -> Path | None:
     if not isinstance(raw, str) or not raw.strip() or "\x00" in raw:
+        return None
+    if os.name == "nt" and _invalid_windows_path(raw):
         return None
     candidate = Path(raw).expanduser()
     return (workspace / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
@@ -104,7 +106,10 @@ def review_tool_call(
         verdict, reason = GuardianVerdict.DENY, "Paths traversing symbolic links are denied."
     elif any(
         candidate is not None
-        and (set(candidate.parts) & PROTECTED_PARTS or candidate.name in SENSITIVE_NAMES)
+        and (
+            {part.casefold() for part in candidate.parts} & PROTECTED_PARTS
+            or candidate.name.casefold() in SENSITIVE_NAMES
+        )
         for candidate in paths
     ):
         verdict, reason = GuardianVerdict.DENY, "Protected or secret paths are denied."
@@ -213,11 +218,29 @@ def _contains_symlink(raw: Any, workspace: Path) -> bool:
         parts = source.parts
     for part in parts:
         current = current / part
-        if current.is_symlink():
+        if current.is_symlink() or (hasattr(current, "is_junction") and current.is_junction()):
             return True
         if not current.exists():
             break
     return False
+
+
+def _invalid_windows_path(raw: str) -> bool:
+    normalized = raw.strip().replace("/", "\\")
+    lowered = normalized.casefold()
+    if lowered.startswith(("\\\\?\\", "\\\\.\\")):
+        return True
+    without_drive = normalized[2:] if len(normalized) >= 2 and normalized[1] == ":" else normalized
+    if ":" in without_drive:
+        return True
+    reserved = {"con", "prn", "aux", "nul", "clock$"}
+    reserved.update(f"com{number}" for number in range(1, 10))
+    reserved.update(f"lpt{number}" for number in range(1, 10))
+    return any(
+        part.rstrip(" .").split(".", 1)[0].casefold() in reserved
+        for part in without_drive.split("\\")
+        if part
+    )
 
 
 def action_family(risks: list[ToolRisk]) -> str:
@@ -236,6 +259,10 @@ def action_family(risks: list[ToolRisk]) -> str:
 def _review_execution(arguments: dict[str, Any], mode: SecurityMode) -> tuple[GuardianVerdict, str]:
     program = str(arguments.get("program", "")).strip()
     executable = Path(program).name.casefold()
+    for suffix in (".exe", ".cmd", ".bat", ".com"):
+        if executable.endswith(suffix):
+            executable = executable[: -len(suffix)]
+            break
     args = [str(value) for value in arguments.get("args", [])]
     lowered = [executable, *(value.casefold() for value in args)]
     command = " ".join(lowered)
@@ -260,11 +287,14 @@ def _review_execution(arguments: dict[str, Any], mode: SecurityMode) -> tuple[Gu
         "ruby",
         "perl",
         "php",
+        "powershell",
+        "pwsh",
+        "cmd",
     }
     external_path_argument = any(
         value.startswith(("/", "~/", "../")) or "/../" in value for value in args
     )
-    sandbox_available = platform.system() == "Darwin" and shutil.which("sandbox-exec") is not None
+    sandbox_available = sandbox_capabilities().execution_isolated
     if destructive:
         return GuardianVerdict.ASK, "Potentially destructive command requires approval."
     if mode is SecurityMode.SAFE:
@@ -353,7 +383,7 @@ class GuardianToolset(WrapperToolset[Any]):
     ) -> Any:
         deps = ctx.deps
         call_id = str(ctx.tool_call_id or "unknown")
-        run_id = _run_uuid(ctx.run_id, deps.root_run_id)
+        run_id = event_run_id(deps.root_run_id)
         risks = self.risks.get(name, [])
         proposed_arguments = redact(tool_args)
         if callable(getattr(deps, "secret_redactor", None)):
@@ -492,10 +522,3 @@ class GuardianToolset(WrapperToolset[Any]):
             )
         )
         return value
-
-
-def _run_uuid(value: str | None, fallback: UUID) -> UUID:
-    try:
-        return UUID(str(value)) if value else fallback
-    except ValueError:
-        return fallback

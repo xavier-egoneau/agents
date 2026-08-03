@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException

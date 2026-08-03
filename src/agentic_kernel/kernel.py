@@ -28,6 +28,7 @@ from .config import ProjectConfig
 from .context_service import ContextService, ModelContextRegistry, without_images
 from .errors import AuthenticationError, ConfigurationError, KernelError
 from .events import JsonlEventStore
+from .git_service import GitService
 from .models import (
     ApprovalRequest,
     Event,
@@ -46,6 +47,7 @@ from .providers import ProviderFactory
 from .run_executor import RunExecutor
 from .secrets import SecretStore
 from .snapshots import SnapshotStore
+from .trace_context import bind_event_run_id
 from .vision import LocalVisionService, VisionUnavailable
 from .workspace_map import WorkspaceMapService
 
@@ -89,6 +91,7 @@ class Kernel:
             self.config.content_root / "state.db",
         )
         self.active_runs: dict[Any, RuntimeDeps] = {}
+        self.git = GitService()
 
     async def run(self, request: RunRequest) -> RunResult:
         display_prompt = request.prompt
@@ -195,6 +198,7 @@ class Kernel:
             state="running",
             previous="created",
         )
+        git_baseline = self._capture_git_baseline(request, run_id, workspace)
         try:
             if request.images and not supports_vision:
                 request = await self._prepare_images_with_local_vision(request, run_id)
@@ -283,9 +287,78 @@ class Kernel:
             response = self._failed(request, run_id, RunStatus.FAILED, exc, retryable=True)
         if not response.artifacts:
             response.artifacts = self._run_artifacts(request.session_id, run_id)
+        self._capture_git_snapshot(request, run_id, workspace, git_baseline)
         self.executor.terminal(response)
         self.active_runs.pop(request.session_id, None)
         return response
+
+    def _capture_git_baseline(
+        self, request: RunRequest, run_id: UUID, workspace: Path
+    ) -> dict[str, str]:
+        if request.workspace is None:
+            return {}
+        try:
+            snapshot = self.git.snapshot(workspace, include_patches=False)
+            baseline = {item.path: item.fingerprint for item in snapshot.files}
+            if snapshot.available:
+                self.events.append(
+                    Event(
+                        session_id=request.session_id,
+                        run_id=run_id,
+                        agent_id="kernel",
+                        type="git.baseline",
+                        payload={"files": baseline},
+                    )
+                )
+            return baseline
+        except Exception:
+            return {}
+
+    def _capture_git_snapshot(
+        self,
+        request: RunRequest,
+        run_id: UUID,
+        workspace: Path,
+        baseline: dict[str, str] | None = None,
+    ) -> None:
+        if request.workspace is None:
+            return
+        try:
+            if baseline is None:
+                baseline_event = next(
+                    (
+                        event
+                        for event in reversed(self.events.read(request.session_id))
+                        if event.run_id == run_id and event.type == "git.baseline"
+                    ),
+                    None,
+                )
+                baseline = dict(baseline_event.payload.get("files", {})) if baseline_event else {}
+            snapshot = self.git.snapshot(workspace)
+            changed = [
+                item for item in snapshot.files if baseline.get(item.path) != item.fingerprint
+            ]
+            if snapshot.available and changed:
+                payload = snapshot.model_copy(
+                    update={
+                        "files": changed,
+                        "additions": sum(item.additions for item in changed),
+                        "deletions": sum(item.deletions for item in changed),
+                    }
+                )
+                self.events.append(
+                    Event(
+                        session_id=request.session_id,
+                        run_id=run_id,
+                        agent_id="kernel",
+                        type="git.snapshot",
+                        payload=payload.model_dump(),
+                    )
+                )
+        except Exception:
+            # Git is an optional presentation capability and must never turn
+            # an otherwise successful agent response into a failed run.
+            pass
 
     async def _prepare_images_with_local_vision(self, request: RunRequest, run_id) -> RunRequest:
         observations: list[str] = []
@@ -356,7 +429,13 @@ class Kernel:
                         },
                     )
                 )
-                raise
+                observations.append(
+                    f"## Image {index}: {safe_name}\n"
+                    "Analyse visuelle indisponible. L’image est bien jointe et archivée, "
+                    "mais son contenu n’a pas été observé. Ne déduis aucun détail visuel et "
+                    f"signale cette limite à l’utilisateur. Cause locale : {exc}"
+                )
+                continue
             self.events.append(
                 Event(
                     session_id=request.session_id,
@@ -381,9 +460,9 @@ class Kernel:
                 request.prompt,
                 (
                     "# Local vision observations\n\n"
-                    "The active model is text-only. Gemma 4 analyzed the attached "
-                    "images locally; use these observations as image evidence and "
-                    "state any remaining uncertainty."
+                    "The active model is text-only. The notes below state whether each "
+                    "attachment was analyzed locally. Use only recorded observations, "
+                    "never infer unavailable visual content, and state any limitation."
                 ),
                 *observations,
             ]
@@ -525,16 +604,17 @@ class Kernel:
             )
         )
         try:
-            result = await agent.run(
-                None,
-                message_history=messages,
-                deferred_tool_results=deferred,
-                deps=deps,
-                model_settings=ModelSettings(thinking=request.reasoning)
-                if request.reasoning
-                else None,
-                usage_limits=UsageLimits(request_limit=budgets.max_requests_per_agent),
-            )
+            with bind_event_run_id(run_id):
+                result = await agent.run(
+                    None,
+                    message_history=messages,
+                    deferred_tool_results=deferred,
+                    deps=deps,
+                    model_settings=ModelSettings(thinking=request.reasoning)
+                    if request.reasoning
+                    else None,
+                    usage_limits=UsageLimits(request_limit=budgets.max_requests_per_agent),
+                )
         except asyncio.CancelledError as exc:
             response = self._failed(request, run_id, RunStatus.CANCELLED, exc, retryable=False)
         except Exception as exc:
@@ -569,6 +649,7 @@ class Kernel:
                     ),
                 )
             )
+        self._capture_git_snapshot(request, run_id, deps.workspace)
         self.executor.terminal(response)
         self.active_runs.pop(request.session_id, None)
         return response
@@ -806,15 +887,16 @@ class Kernel:
                             for image in request.images
                         ],
                     ]
-                return await root_agent.run(
-                    user_prompt,
-                    message_history=message_history,
-                    deps=deps,
-                    model_settings=(
-                        ModelSettings(thinking=request.reasoning) if request.reasoning else None
-                    ),
-                    usage_limits=UsageLimits(request_limit=budgets.max_requests_per_agent),
-                )
+                with bind_event_run_id(run_id):
+                    return await root_agent.run(
+                        user_prompt,
+                        message_history=message_history,
+                        deps=deps,
+                        model_settings=(
+                            ModelSettings(thinking=request.reasoning) if request.reasoning else None
+                        ),
+                        usage_limits=UsageLimits(request_limit=budgets.max_requests_per_agent),
+                    )
             except ModelHTTPError as exc:
                 if not _transient_http_status(exc.status_code):
                     raise

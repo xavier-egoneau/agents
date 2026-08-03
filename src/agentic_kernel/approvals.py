@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from .models import ApprovalRequest
+from .platform.secure_files import secure_file
 
 
 class ApprovalStore:
@@ -23,8 +24,9 @@ class ApprovalStore:
             json.dumps({"approval": approval.model_dump(mode="json"), **state}, ensure_ascii=False),
             encoding="utf-8",
         )
-        temporary.chmod(0o600)
+        secure_file(temporary)
         os.replace(temporary, target)
+        secure_file(target)
 
     def load_state(self, approval_id: UUID) -> dict[str, Any] | None:
         path = self.path_for(approval_id)
@@ -38,7 +40,7 @@ class ApprovalStore:
         requests = []
         for path in sorted(self.root.glob("*.json")):
             try:
-                state = json.loads(path.read_text())
+                state = json.loads(path.read_text(encoding="utf-8"))
                 if "decision" in state:
                     continue
                 requests.append(ApprovalRequest.model_validate(state["approval"]))
@@ -126,10 +128,11 @@ class ApprovalStore:
                         ),
                         encoding="utf-8",
                     )
-                    candidate.chmod(0o600)
+                    secure_file(candidate)
                     temporary.append(candidate)
                 for candidate, target in zip(temporary, targets, strict=True):
                     os.replace(candidate, target)
+                    secure_file(target)
             finally:
                 for candidate in temporary:
                     candidate.unlink(missing_ok=True)
