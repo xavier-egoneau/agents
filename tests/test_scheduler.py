@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -78,6 +80,80 @@ def test_cron_crud_and_schedule_validation(tmp_path: Path) -> None:
     assert service.list() == []
     with pytest.raises(SchedulerError):
         service.create(payload(workspace, schedule="not a cron"))
+
+
+def test_disappeared_workspace_still_allows_updating_the_routine(tmp_path: Path) -> None:
+    """Une routine dont le dossier a disparu doit rester désactivable.
+
+    L'interface renvoie le workspace enregistré tel quel à chaque mise à jour :
+    revalider un champ inchangé rendait la routine impossible à désactiver ou à
+    corriger dès que son dossier était déplacé ou hérité d'une autre machine.
+    """
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+
+    workspace.rmdir()
+
+    updated = service.update(job.id, payload(workspace, enabled=False))
+    assert not updated.enabled
+    assert updated.workspace == workspace.resolve()
+
+
+def test_workspace_from_another_operating_system_is_left_untouched(tmp_path: Path) -> None:
+    """Une base déplacée entre systèmes contient des chemins d'un autre OS.
+
+    Résoudre un tel chemin fabrique une valeur différente de celle enregistrée
+    — sous Windows, `resolve()` préfixe un chemin POSIX absolu par la lettre du
+    lecteur courant. Comparer après résolution faisait passer un champ inchangé
+    pour une modification, et bloquait toute mise à jour de la routine.
+    """
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+    foreign = Path("/Users/quelquun/projets/agents")
+    with sqlite3.connect(tmp_path / "state.db") as connection:
+        connection.execute(
+            "UPDATE cron_jobs SET workspace = ? WHERE id = ?", (str(foreign), job.id)
+        )
+
+    reloaded = service.get(job.id)
+    updated = service.update(job.id, payload(reloaded.workspace, enabled=False))
+
+    assert not updated.enabled
+    assert updated.workspace == reloaded.workspace
+
+
+@pytest.mark.skipif(os.name != "nt", reason="normcase n'ignore la casse que sous Windows")
+def test_workspace_comparison_ignores_case_on_windows(tmp_path: Path) -> None:
+    """Le chemin relu depuis SQLite n'est pas passé par ``resolve()``.
+
+    Sous Windows une simple différence de casse suffisait à le faire considérer
+    comme modifié, donc à le revalider — et à rejeter la mise à jour d'une
+    routine dont le dossier n'existe plus.
+    """
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "Project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+    workspace.rename(tmp_path / "Project-renamed")
+
+    variant = Path(str(job.workspace).swapcase())
+    updated = service.update(job.id, payload(variant, enabled=False))
+
+    assert not updated.enabled
+
+
+def test_moving_a_routine_to_a_missing_workspace_is_still_rejected(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+
+    with pytest.raises(SchedulerError, match="Workspace introuvable"):
+        service.update(job.id, payload(tmp_path / "ailleurs"))
 
 
 def test_cron_can_run_without_an_associated_workspace(tmp_path: Path) -> None:

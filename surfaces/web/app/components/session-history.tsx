@@ -1,5 +1,7 @@
 "use client";
 
+import { Icon } from "../theme/theme-context";
+
 export type SessionHistoryItem = {
   session_id: string;
   prompt: string;
@@ -28,12 +30,7 @@ export function SessionHistory({
   onDelete,
 }: SessionHistoryProps) {
   return (
-    <section className="rail-section history-section">
-      <div className="section-title">
-        <p className="eyebrow">Historique</p>
-        <span>{sessions.length}</span>
-      </div>
-      <div className="session-list">
+    <div className="session-list">
         {sessions.map((session) => {
           const unread = unreadSessionIds.has(session.session_id);
           return (
@@ -80,7 +77,9 @@ export function SessionHistory({
                 disabled={running}
                 aria-label="Reprendre la session"
                 title="Reprendre à partir des traces persistées"
-              >↻</button>
+              >
+                <Icon name="refresh" size="xs" />
+              </button>
               {session.trigger !== "routine_inbox" && (
                 <button
                   className="session-delete"
@@ -88,16 +87,13 @@ export function SessionHistory({
                   aria-label="Supprimer la session"
                   title="Supprimer la session"
                 >
-                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" />
-                  </svg>
+                  <Icon name="remove" size="xs" />
                 </button>
               )}
             </div>
           );
         })}
-        {sessions.length === 0 && <p className="empty-label">Aucune session</p>}
-      </div>
-    </section>
+      {sessions.length === 0 && <p className="empty-label">Aucune session</p>}
+    </div>
   );
 }

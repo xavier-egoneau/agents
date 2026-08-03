@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, GitBranch, Trash2 } from "lucide-react";
+import { Icon } from "../theme/theme-context";
 
 export type PlanStep = {
   id: string;
@@ -53,12 +53,12 @@ export function CurrentPlanPanel({
             onClick={onDelete}
             aria-label="Supprimer le plan"
             title="Supprimer le plan"
-          ><Trash2 size={19} /></button>
+          ><Icon name="remove" size="md" /></button>
           <button
             type="button"
             onClick={() => onExpandedChange(!expanded)}
             aria-label={expanded ? "Replier le plan" : "Ouvrir le plan"}
-          ><ChevronDown size={22} /></button>
+          ><Icon name="chevronDown" size="lg" /></button>
         </div>
       </header>
       {expanded && (
@@ -82,7 +82,7 @@ export function CurrentPlanPanel({
               </span>
               {step.parallelizable && (
                 <span className="parallel-badge">
-                  <GitBranch size={14} /> parallélisable
+                  <Icon name="git" size="xs" /> parallélisable
                 </span>
               )}
               {step.status === "in_progress" && <span className="step-running" />}

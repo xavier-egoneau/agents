@@ -342,6 +342,33 @@ structuré demandé. Le serveur décidera ensuite s’il peut être présenté �
 - Conserve kernel_guardian comme autorité; ne présume jamais qu’une permission est acquise.
 - Le statut ready exige zéro dépendance manquante; blocked exige de les documenter.
 - N’inclus aucun secret et n’utilise aucune date figée au moment de la proposition.""",
+            # Ces règles sont appliquées par validate_accepted(). Le manuel
+            # workflow-creator les renvoie vers references/workflow-format.md,
+            # que le modèle ne peut pas lire en mode proposition puisqu'il n'a
+            # aucun outil. Non énoncées ici, elles étaient devinées — d'où des
+            # propositions systématiquement rejetées sur la syntaxe.
+            """Syntaxe vérifiée par le validateur. Toute déviation fait rejeter la proposition :
+- Référence différée : `${racine.chemin}`, avec UNE seule paire d’accolades précédée
+  d’un `$`. N’écris jamais `${{...}}`, `{{...}}` ni `{...}`.
+- Seules trois racines existent : `${parameters.nom}`, `${variables.nom}`,
+  `${steps.identifiant.champ}`. Toute autre racine est refusée.
+- La racine n’est jamais implicite. `${start_date}` est refusé même si
+  `start_date` est déclaré dans `variables` : écris `${variables.start_date}`.
+  Toute référence contient donc au moins un point.
+- Un `${parameters.nom}` doit correspondre à une clé déclarée dans `parameters`,
+  un `${variables.nom}` à une clé déclarée dans `variables`, et un
+  `${steps.identifiant...}` à un `steps[].id` existant qui figure dans le
+  `needs` de l’étape courante.
+- Chaque entrée de `variables` a un champ `from` commençant obligatoirement par
+  `runtime.` : `runtime.local_date`, `runtime.now`, `runtime.timezone` ou
+  `runtime.scheduled_for`.
+- `steps[].id` est en minuscules, chiffres et tirets (`^[a-z0-9][a-z0-9-]*$`).
+  Les noms de `parameters` et `variables` suivent la même forme, tiret ou
+  underscore au choix.
+- `steps[].evidence.from_steps` ne contient que des `steps[].id` déclarés, et
+  uniquement ceux dont l’étape courante dépend via `needs` — directement ou
+  transitivement. N’invente jamais un nom de résultat comme `events_data` ou
+  `news_results_1` : utilise l’identifiant de l’étape elle-même.""",
         ]
     )
 
@@ -414,7 +441,11 @@ def _validation_errors(
             errors.append(f"nom de paramètre ou variable invalide: {name}")
     for name, variable in workflow.variables.items():
         if not variable.source.startswith("runtime."):
-            errors.append(f"variables.{name}.from doit référencer runtime")
+            errors.append(
+                f"variables.{name}.from doit commencer par 'runtime.' "
+                "(runtime.local_date, runtime.now, runtime.timezone ou "
+                f"runtime.scheduled_for), reçu : {variable.source!r}"
+            )
             continue
         runtime_name = variable.source.split(".", 1)[1]
         if runtime_name not in _RUNTIME_VARIABLES:
@@ -578,7 +609,30 @@ def _reference_errors(
         for reference in _REFERENCE_PATTERN.findall(text):
             root, separator, tail = reference.partition(".")
             if not separator or not tail:
-                errors.append(f"{location} contient une référence invalide: {reference}")
+                # Reference sans racine (`${start_date}`). Si le nom existe
+                # ailleurs dans le document, on donne directement la forme
+                # attendue plutot qu'un simple constat d'invalidite.
+                bare = reference.strip()
+                suggestion = next(
+                    (
+                        f"{namespace}.{bare}"
+                        for namespace, names in (
+                            ("variables", variables),
+                            ("parameters", parameters),
+                            ("steps", steps),
+                        )
+                        if bare in names
+                    ),
+                    "",
+                )
+                errors.append(
+                    f"{location} référence {reference!r} sans racine : "
+                    + (
+                        f"écrire ${{{suggestion}}}"
+                        if suggestion
+                        else "toute référence doit commencer par parameters., variables. ou steps."
+                    )
+                )
             elif root == "parameters" and tail not in parameters:
                 errors.append(f"{location} référence un paramètre inconnu: {reference}")
             elif root == "variables" and tail not in variables:
@@ -594,7 +648,20 @@ def _reference_errors(
                     f"{location} référence une étape absente de son graphe needs: {reference}"
                 )
             elif root not in {"parameters", "variables", "steps"}:
-                errors.append(f"{location} contient une référence non supportée: {reference}")
+                # Une racine commencant par "{" trahit une double accolade
+                # (`${{...}}`). Le message brut affichait alors un fragment
+                # tronque, illisible pour l'utilisateur comme pour la boucle
+                # de reparation : on nomme la cause.
+                if root.startswith("{"):
+                    errors.append(
+                        f"{location} utilise ${{{{...}}}} au lieu de ${{...}} : "
+                        f"écrire ${{{root.lstrip('{')}.{tail.rstrip('}')}}}"
+                    )
+                else:
+                    errors.append(
+                        f"{location} contient une référence non supportée: {reference} "
+                        "(racines autorisées : parameters, variables, steps)"
+                    )
     return errors
 
 

@@ -221,6 +221,91 @@ def test_unknown_and_invalid_tool_arguments_are_rejected(tmp_path: Path) -> None
     assert any("args.limit" in error for error in caught.value.errors)
 
 
+def test_double_brace_reference_names_the_syntax_error(tmp_path: Path) -> None:
+    """`${{...}}` est l'erreur de syntaxe la plus fréquente des modèles.
+
+    Le message brut affichait un fragment tronqué (`{variables.today`) que ni
+    l'utilisateur ni la boucle de réparation ne pouvaient exploiter.
+    """
+    current_basis = basis(tmp_path)
+    raw = workflow().model_dump(mode="json", by_alias=True)
+    raw["steps"][0]["args"]["query"] = "${{variables.today}}"
+    definition = WorkflowDefinition.model_validate(raw)
+
+    with pytest.raises(WorkflowValidationError) as caught:
+        validate_accepted(accepted(definition, current_basis), current_basis)
+
+    assert any("au lieu de ${...}" in error for error in caught.value.errors)
+    assert any("${variables.today}" in error for error in caught.value.errors)
+
+
+def test_rootless_reference_suggests_the_qualified_form(tmp_path: Path) -> None:
+    """`${today}` au lieu de `${variables.today}` : la racine n'est pas implicite."""
+    current_basis = basis(tmp_path)
+    raw = workflow().model_dump(mode="json", by_alias=True)
+    raw["steps"][0]["args"]["query"] = "${today}"
+    definition = WorkflowDefinition.model_validate(raw)
+
+    with pytest.raises(WorkflowValidationError) as caught:
+        validate_accepted(accepted(definition, current_basis), current_basis)
+
+    assert any("${variables.today}" in error for error in caught.value.errors)
+
+
+def test_rootless_unknown_reference_lists_the_namespaces(tmp_path: Path) -> None:
+    current_basis = basis(tmp_path)
+    raw = workflow().model_dump(mode="json", by_alias=True)
+    raw["steps"][0]["args"]["query"] = "${inconnu}"
+    definition = WorkflowDefinition.model_validate(raw)
+
+    with pytest.raises(WorkflowValidationError) as caught:
+        validate_accepted(accepted(definition, current_basis), current_basis)
+
+    assert any("parameters., variables. ou steps." in error for error in caught.value.errors)
+
+
+def test_variable_source_error_lists_the_accepted_runtime_keys(tmp_path: Path) -> None:
+    current_basis = basis(tmp_path)
+    raw = workflow().model_dump(mode="json", by_alias=True)
+    raw["variables"]["today"] = {"from": "context.local_date"}
+    definition = WorkflowDefinition.model_validate(raw)
+
+    with pytest.raises(WorkflowValidationError) as caught:
+        validate_accepted(accepted(definition, current_basis), current_basis)
+
+    assert any("runtime.local_date" in error for error in caught.value.errors)
+    assert any("context.local_date" in error for error in caught.value.errors)
+
+
+def test_invented_evidence_ids_are_rejected(tmp_path: Path) -> None:
+    """Le modèle référençait `save_as` au lieu de l'identifiant de l'étape."""
+    current_basis = basis(tmp_path)
+    raw = workflow().model_dump(mode="json", by_alias=True)
+    raw["steps"][1]["evidence"]["from_steps"] = ["news_results"]
+    definition = WorkflowDefinition.model_validate(raw)
+
+    with pytest.raises(WorkflowValidationError) as caught:
+        validate_accepted(accepted(definition, current_basis), current_basis)
+
+    assert any("ids inconnus" in error for error in caught.value.errors)
+
+
+def test_proposal_instructions_state_the_validated_syntax() -> None:
+    """Les règles appliquées par le validateur doivent être énoncées au modèle.
+
+    Elles vivaient uniquement dans references/workflow-format.md, que le modèle
+    ne peut pas lire en mode proposition puisqu'il n'a aucun outil.
+    """
+    from agentic_kernel.workflows import _proposal_instructions
+
+    instructions = _proposal_instructions("Manuel workflow-creator.")
+
+    assert "${variables.nom}" in instructions
+    assert "${{" in instructions
+    assert "runtime.local_date" in instructions
+    assert "from_steps" in instructions
+
+
 def test_cycle_and_unknown_reference_are_rejected(tmp_path: Path) -> None:
     current_basis = basis(tmp_path)
     definition = workflow(

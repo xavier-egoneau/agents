@@ -45,15 +45,28 @@ import {
 import {
   GitChangeCard,
   GitCommitDialog,
-  GitReviewPanel,
+  GitReviewBody,
   GitToolbar,
   type GitFile,
   type GitSnapshot,
 } from "./components/git-workspace";
 import {
-  CalendarClock,
-  MessageSquarePlus,
-} from "lucide-react";
+  ChromeEmpty,
+  Dock,
+  IconRail,
+  Resizer,
+  Shell,
+  SidePanel,
+  SidePanelSection,
+  type DockTab,
+  type RailEntry,
+} from "./components/layout/shell";
+import { usePanels } from "./components/layout/use-panels";
+import { FileExplorer } from "./components/layout/file-explorer";
+import { ThemePicker } from "./components/layout/theme-picker";
+import { Icon } from "./theme/theme-context";
+
+type DockTabId = "git" | "files";
 
 type Agent = {
   id: string;
@@ -281,9 +294,39 @@ async function readApiPayload<T = Record<string, unknown>>(response: Response): 
     const detail = typeof payload === "object" && payload !== null && "detail" in payload
       ? (payload as { detail?: unknown }).detail
       : null;
-    throw new Error(String(detail || `La demande a échoué (${response.status}).`));
+    throw new Error(formatApiDetail(detail) || `La demande a échoué (${response.status}).`);
   }
   return payload as T;
+}
+
+/**
+ * Met en forme le `detail` d'une réponse d'erreur.
+ *
+ * FastAPI renvoie une chaîne pour nos `HTTPException`, mais une LISTE d'objets
+ * `{loc, msg, type}` quand c'est Pydantic qui refuse le corps de la requête.
+ * Un `String()` direct sur cette liste produisait « [object Object] », ce qui
+ * masquait complètement la cause du refus.
+ */
+function formatApiDetail(detail: unknown): string {
+  if (!detail) return "";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (!isRecord(item)) return JSON.stringify(item);
+        const field = Array.isArray(item.loc)
+          // On retire le premier segment ("body", "query"…), sans intérêt ici.
+          ? item.loc.slice(1).filter((part) => part !== "").join(".")
+          : "";
+        const message = typeof item.msg === "string" ? item.msg : JSON.stringify(item);
+        return field ? `${field} : ${message}` : message;
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (isRecord(detail) && typeof detail.msg === "string") return detail.msg;
+  return JSON.stringify(detail);
 }
 
 function groupRoutineApprovals(approvals: Approval[]) {
@@ -358,7 +401,20 @@ function cronRequestBody(editor: CronEditor, acceptedWorkflow?: RoutineWorkflowP
     enabled: editor.enabled,
     auto_resume: editor.auto_resume,
     notification_session_id: editor.notification_session_id,
-    ...(acceptedWorkflow ? { accepted_workflow: acceptedWorkflow } : {}),
+    ...(acceptedWorkflow
+      ? {
+        accepted_workflow: {
+          workflow: acceptedWorkflow.workflow,
+          basis_hash: acceptedWorkflow.basis_hash,
+          // Le kernel attend `list[str]`. La forme `{message}` n'existe que
+          // pour l'affichage : la renvoyer telle quelle faisait refuser le
+          // corps par Pydantic, une erreur par avertissement.
+          warnings: acceptedWorkflow.warnings.map(
+            (warning) => typeof warning === "string" ? warning : warning.message || "",
+          ).filter(Boolean),
+        },
+      }
+      : {}),
   };
 }
 
@@ -367,6 +423,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 class WorkflowProposalDisplayError extends Error {}
+
+/**
+ * Récupère le `detail` renvoyé par le kernel. Sans lui, un échec de génération
+ * (502) se réduit à « vérifie le fournisseur » alors que le backend explique
+ * précisément ce qui a échoué — le diagnostic était jeté avec le corps.
+ */
+async function apiErrorDetail(response: Response): Promise<string> {
+  try {
+    const payload: unknown = await response.clone().json();
+    if (isRecord(payload) && typeof payload.detail === "string") return payload.detail.trim();
+  } catch {
+    /* réponse vide ou non JSON */
+  }
+  return "";
+}
+
+async function workflowProposalError(response: Response): Promise<WorkflowProposalDisplayError> {
+  const guidance = workflowProposalErrorForStatus(response.status);
+  const detail = await apiErrorDetail(response);
+  return detail
+    ? new WorkflowProposalDisplayError(`${guidance.message}\n\nDétail : ${detail}`)
+    : guidance;
+}
 
 function workflowProposalErrorForStatus(status: number): WorkflowProposalDisplayError {
   if (status === 404) {
@@ -385,6 +464,11 @@ function workflowProposalErrorForStatus(status: number): WorkflowProposalDisplay
     return new WorkflowProposalDisplayError(
       "Le fournisseur du modèle est temporairement indisponible. "
       + "Attends un instant, puis réessaie.",
+    );
+  }
+  if (status === 502) {
+    return new WorkflowProposalDisplayError(
+      "Le modèle a répondu, mais sa réponse n’a pas pu être transformée en workflow.",
     );
   }
   if (status === 422) {
@@ -818,13 +902,16 @@ export default function Home() {
   const [gitBranches, setGitBranches] = useState<string[]>([]);
   const [gitSelectedFile, setGitSelectedFile] = useState<GitFile | null>(null);
   const [gitReviewSnapshot, setGitReviewSnapshot] = useState<GitSnapshot | null>(null);
-  const [gitReviewOpen, setGitReviewOpen] = useState(false);
-  const [gitPanelWidth, setGitPanelWidth] = useState(560);
   const [gitBusy, setGitBusy] = useState(false);
   const [gitError, setGitError] = useState("");
   const [gitCommitMessage, setGitCommitMessage] = useState<string | null>(null);
   const [gitCommitFingerprint, setGitCommitFingerprint] = useState("");
   const [gitCommitSource, setGitCommitSource] = useState("");
+  // Etat du shell : panneaux redimensionnables + onglet actif du dock droit.
+  const panels = usePanels();
+  const [dockTab, setDockTab] = useState<DockTabId>("git");
+  const [explorerFile, setExplorerFile] = useState<{ path: string; content: string } | null>(null);
+  const [explorerError, setExplorerError] = useState("");
   const railContent = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -953,7 +1040,8 @@ export default function Home() {
     } catch {
       setGitSnapshot(null);
       setGitBranches([]);
-      setGitReviewOpen(false);
+      setGitReviewSnapshot(null);
+      setGitSelectedFile(null);
     }
   }, []);
 
@@ -961,7 +1049,8 @@ export default function Home() {
     if (!conversationWorkspace || isRoutineInbox) {
       setGitSnapshot(null);
       setGitBranches([]);
-      setGitReviewOpen(false);
+      setGitReviewSnapshot(null);
+      setGitSelectedFile(null);
       return;
     }
     void refreshGit(conversationWorkspace);
@@ -1737,7 +1826,7 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(cronRequestBody(cronEditor)),
       });
-      if (!response.ok) throw workflowProposalErrorForStatus(response.status);
+      if (!response.ok) throw await workflowProposalError(response);
       const proposal = workflowProposalFromPayload(await readApiPayload<unknown>(response));
       if (cronWorkflowProposalRequest.current !== requestId) return;
       setCronWorkflowProposal(proposal);
@@ -2475,19 +2564,8 @@ export default function Home() {
   function openGitReview(snapshot: GitSnapshot, file?: GitFile) {
     setGitReviewSnapshot(snapshot);
     setGitSelectedFile(file || snapshot.files[0] || null);
-    setGitReviewOpen(true);
-  }
-
-  function startGitResize() {
-    const move = (event: MouseEvent) => {
-      setGitPanelWidth(Math.max(360, Math.min(900, window.innerWidth - event.clientX)));
-    };
-    const stop = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", stop);
-    };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", stop);
+    setDockTab("git");
+    panels.setOpen("right", true);
   }
 
   async function switchGitBranch(branch: string) {
@@ -2539,7 +2617,9 @@ export default function Home() {
       });
       await readApiPayload(response);
       setGitCommitMessage(null);
-      setGitReviewOpen(false);
+      // Les diffs n'existent plus apres le commit : on vide la revue.
+      setGitReviewSnapshot(null);
+      setGitSelectedFile(null);
       await refreshGit(conversationWorkspace);
     } catch (error) {
       setGitError(error instanceof Error ? error.message : "Commit impossible.");
@@ -2624,57 +2704,184 @@ export default function Home() {
     && !cronWorkflowAction,
   );
 
+  const unreadCronCount = cronRuns.filter((item) => item.delivery_status === "unread").length;
+
+  /**
+   * Le rail ne s'affiche que lorsque le panneau est replié — il en est le
+   * substitut, pas un doublon. Sa première entrée rouvre donc le panneau ;
+   * les suivantes ouvrent les modales de configuration.
+   */
+  const railEntries: RailEntry[] = [
+    {
+      id: "panel",
+      icon: "panelLeftOpen",
+      label: "Ouvrir l'espace de travail",
+      badge: unreadSessionIds.size || undefined,
+      onSelect: () => panels.setOpen("left", true),
+    },
+    { id: "agents", icon: "agent", label: "Agents", onSelect: () => openManagement("agents") },
+    { id: "skills", icon: "skill", label: "Skills", onSelect: () => openManagement("skills") },
+    { id: "providers", icon: "provider", label: "Providers", onSelect: () => openManagement("providers") },
+    {
+      id: "crons",
+      icon: "automation",
+      label: "Automatisations",
+      badge: unreadCronCount || undefined,
+      onSelect: () => openManagement("crons"),
+    },
+  ];
+
+  const dockTabs: DockTab[] = [
+    { id: "git", icon: "git", label: "Révision Git", badge: gitSnapshot?.files.length || undefined },
+    { id: "files", icon: "fileTree", label: "Fichiers du projet" },
+  ];
+
+  // Statut git par chemin : colore l'explorateur sans second appel réseau.
+  const changedPaths = new Map<string, string>(
+    (gitSnapshot?.files ?? []).map((file) => [file.path, file.status.toLowerCase()] as const),
+  );
+
+  const openExplorerFile = async (path: string) => {
+    if (!conversationWorkspace) return;
+    setExplorerError("");
+    try {
+      const query = new URLSearchParams({ workspace: conversationWorkspace, path });
+      const response = await fetch(`/api/kernel/files/content?${query}`);
+      if (!response.ok) {
+        const detail = await response.json().catch(() => null);
+        throw new Error(detail?.detail || `HTTP ${response.status}`);
+      }
+      setExplorerFile((await response.json()) as { path: string; content: string });
+    } catch (error) {
+      setExplorerFile(null);
+      setExplorerError(error instanceof Error ? error.message : "Lecture impossible.");
+    }
+  };
+
   return (
-    <main className="shell" style={gitReviewOpen && gitReviewSnapshot
-      ? { gridTemplateColumns: `270px minmax(0, 1fr) ${gitPanelWidth}px` }
-      : undefined}>
-      <aside className="rail">
-        <header className="rail-head">
-          <div className="brand">
-            <span className="brand-mark">A</span>
-            <div>
-              <strong>AMK</strong>
-              <small>Agentic kernel</small>
+    <Shell
+      leftOpen={panels.left.open}
+      rightOpen={panels.right.open}
+      leftWidth={panels.left.width}
+      rightWidth={panels.right.width}
+      resizing={panels.resizing}
+    >
+      <IconRail
+        brand="A"
+        onBrandClick={newConversation}
+        collapsed={panels.left.open}
+        entries={railEntries}
+        footer={
+          <>
+            <ThemePicker />
+            <span
+              className="rail-item rail-status"
+              data-state={catalogError ? "offline" : "online"}
+              data-tip={catalogError || `Kernel connecté · ${catalog?.default_provider || "…"}`}
+              role="status"
+              aria-label="État du kernel"
+            >
+              <Icon name="activity" size="md" />
+            </span>
+          </>
+        }
+      />
+
+      <SidePanel
+        title="Espace de travail"
+        collapsed={!panels.left.open}
+        footer={
+          <>
+            <div className={`kernel-status ${catalogError ? "offline" : ""}`} role="status">
+              <span />
+              <div>
+                <strong>{catalogError ? "Kernel hors ligne" : "Kernel connecté"}</strong>
+                <small>{catalogError || catalog?.default_provider || "connexion…"}</small>
+              </div>
             </div>
-          </div>
-        </header>
-
-        <div className="rail-content" ref={railContent}>
-          <ResourceNavigation
-            projectName={activeWorkspaceInfo?.name}
-            projectPath={activeWorkspaceInfo?.path}
-            agentId={activeAgent?.id}
-            agentProvider={activeAgent?.provider}
-            selectedSkillCount={selectedSkills.length}
-            availableSkillCount={catalog?.skills.length || 0}
-            providerCount={catalog?.providers.length || 0}
-            defaultProvider={catalog?.default_provider}
-            activeCronCount={cronJobs.filter((job) => job.enabled).length}
-            unreadCronCount={cronRuns.filter((item) => item.delivery_status === "unread").length}
-            onOpen={openManagement}
+            <ThemePicker placement="panel" />
+          </>
+        }
+        actions={
+          <>
+            <button
+              type="button"
+              className="ibtn sm"
+              data-tip="Nouvelle conversation"
+              data-tip-side="bottom-end"
+              aria-label="Nouvelle conversation"
+              disabled={running}
+              onClick={newConversation}
+            >
+              <Icon name="newChat" size="sm" />
+            </button>
+            <button
+              type="button"
+              className="ibtn sm"
+              data-tip="Replier le panneau"
+              data-tip-side="bottom-end"
+              aria-label="Replier le panneau latéral"
+              onClick={() => panels.toggle("left")}
+            >
+              <Icon name="panelLeftClose" size="sm" />
+            </button>
+          </>
+        }
+        resizer={
+          <Resizer
+            side="end"
+            label="Largeur du panneau latéral"
+            active={panels.resizing === "left"}
+            onPointerDown={panels.startResize("left")}
+            onKeyDown={panels.nudge("left")}
           />
+        }
+      >
+        <div ref={railContent} className="side-panel-stack">
+          <SidePanelSection>
+            <ResourceNavigation
+              projectName={activeWorkspaceInfo?.name}
+              workspaceCount={workspaces.length}
+              agentId={activeAgent?.id}
+              agentCount={catalog?.agents.length || 0}
+              selectedSkillCount={selectedSkills.length}
+              availableSkillCount={catalog?.skills.length || 0}
+              providerCount={catalog?.providers.length || 0}
+              defaultProvider={catalog?.default_provider}
+              cronCount={cronJobs.length}
+              activeCronCount={cronJobs.filter((job) => job.enabled).length}
+              unreadCronCount={unreadCronCount}
+              onOpen={openManagement}
+            />
+          </SidePanelSection>
 
-          <SessionHistory
-            sessions={sessions}
-            activeSessionId={activeSessionId}
-            unreadSessionIds={unreadSessionIds}
-            running={running}
-            onOpen={(sessionId) => void openSession(sessionId)}
-            onResume={(sessionId) => void resumeSession(sessionId)}
-            onDelete={(sessionId) => void deleteSession(sessionId)}
-          />
+          {selectedSkills.length > 0 && (
+            <SidePanelSection title={`Skills actives · ${selectedSkills.length}`}>
+              <div className="selected-skills">
+                {selectedSkills.map((skill) => (
+                  <button key={skill} type="button" onClick={() => openManagement("skills")}>
+                    {skill}
+                  </button>
+                ))}
+              </div>
+            </SidePanelSection>
+          )}
+
+          {/* L'historique occupe tout l'espace restant et scrolle seul : le
+              contexte reste visible quelle que soit la longueur de la liste. */}
+          <SidePanelSection title="Historique" count={sessions.length} grow>
+            <SessionHistory
+              sessions={sessions}
+              activeSessionId={activeSessionId}
+              unreadSessionIds={unreadSessionIds}
+              running={running}
+              onOpen={(sessionId) => void openSession(sessionId)}
+              onResume={(sessionId) => void resumeSession(sessionId)}
+              onDelete={(sessionId) => void deleteSession(sessionId)}
+            />
+          </SidePanelSection>
         </div>
-
-        <footer className="rail-footer">
-          <div className={`kernel-status ${catalogError ? "offline" : ""}`}>
-            <span />
-            <div>
-              <strong>{catalogError ? "Kernel hors ligne" : "Kernel connecté"}</strong>
-              <small>{catalogError || catalog?.default_provider || "connexion…"}</small>
-            </div>
-          </div>
-        </footer>
-      </aside>
+      </SidePanel>
 
       {managementModal && (
         <div className="management-backdrop" onMouseDown={closeManagement}>
@@ -2707,13 +2914,13 @@ export default function Home() {
                         ? createCron()
                         : createResource(managementModal)}
                     aria-label="Ajouter"
-                  >+</button>
+                  ><Icon name="add" size="sm" /></button>
                 )}
                 <button onClick={closeManagement}
                   disabled={Boolean(
                     cronEditor && (cronWorkflowMutationBusy || savingResource || testingCron)
                   )}
-                  aria-label="Fermer">×</button>
+                  aria-label="Fermer"><Icon name="close" size="sm" /></button>
               </div>
             </header>
 
@@ -2899,13 +3106,15 @@ export default function Home() {
                     aria-label="Choisir un dossier"
                     title="Choisir un dossier"
                   >
-                    {pickingWorkspace ? "…" : (
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M3.5 6.5h6l2 2h9v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" />
-                      </svg>
-                    )}
+                    <Icon
+                      name={pickingWorkspace ? "running" : "folderOpen"}
+                      size="sm"
+                      className={pickingWorkspace ? "spin" : undefined}
+                    />
                   </button>
-                  <button className="add-workspace" disabled={!workspaceInput.trim()}>+</button>
+                  <button className="add-workspace" disabled={!workspaceInput.trim()} aria-label="Ajouter le projet">
+                    <Icon name="add" size="sm" />
+                  </button>
                 </form>
                 {workspaceError && <small className="workspace-error">{workspaceError}</small>}
                 <div className="management-list">
@@ -2924,7 +3133,7 @@ export default function Home() {
                         onClick={() => forgetWorkspace(workspace.path)}
                         disabled={workspaces.length <= 1}
                         aria-label={`Oublier ${workspace.name}`}
-                      >×</button>
+                      ><Icon name="close" size="sm" /></button>
                     </div>
                   ))}
                 </div>
@@ -2949,12 +3158,12 @@ export default function Home() {
                       <button
                         onClick={() => editResource("agents", resource)}
                         aria-label={`Éditer ${resource.id}`}
-                      >✎</button>
+                      ><Icon name="edit" size="sm" /></button>
                       <button
                         disabled={resource.id === "main"}
                         onClick={() => void deleteResource("agents", resource.id)}
                         aria-label={`Supprimer ${resource.id}`}
-                      >⌫</button>
+                      ><Icon name="remove" size="sm" /></button>
                     </div>
                   </div>
                 ))}
@@ -2980,11 +3189,11 @@ export default function Home() {
                       <button
                         onClick={() => editResource("skills", resource)}
                         aria-label={`Éditer ${resource.id}`}
-                      >✎</button>
+                      ><Icon name="edit" size="sm" /></button>
                       <button
                         onClick={() => void deleteResource("skills", resource.id)}
                         aria-label={`Supprimer ${resource.id}`}
-                      >⌫</button>
+                      ><Icon name="remove" size="sm" /></button>
                     </div>
                   </div>
                 ))}
@@ -3205,12 +3414,12 @@ export default function Home() {
                       <button
                         onClick={() => setProviderEditor({ ...provider, creating: false })}
                         aria-label={`Éditer ${provider.id}`}
-                      >✎</button>
+                      ><Icon name="edit" size="sm" /></button>
                       <button
                         disabled={provider.id === defaultProvider}
                         onClick={() => void deleteProvider(provider.id)}
                         aria-label={`Supprimer ${provider.id}`}
-                      >⌫</button>
+                      ><Icon name="remove" size="sm" /></button>
                     </div>
                   </div>
                 ))}
@@ -3402,8 +3611,25 @@ export default function Home() {
                       {workspaces.map((workspace) => (
                         <option value={workspace.path} key={workspace.path}>{workspace.name}</option>
                       ))}
+                      {/* Sans cette option, un chemin absent de la liste — base
+                          déplacée, projet supprimé — ne correspond à aucune
+                          entrée : le select affiche « Aucun » alors que la
+                          routine porte toujours ce dossier. */}
+                      {cronEditor.workspace
+                        && !workspaces.some((item) => item.path === cronEditor.workspace) && (
+                        <option value={cronEditor.workspace}>
+                          {cronEditor.workspace} — dossier introuvable
+                        </option>
+                      )}
                     </select>
                   </label>
+                  {cronEditor.workspace
+                    && !workspaces.some((item) => item.path === cronEditor.workspace) && (
+                    <p className="cron-note field-wide">
+                      Ce dossier n’existe pas sur cette machine. Choisis « Aucun » pour exécuter la
+                      routine sans workspace, ou sélectionne un projet existant.
+                    </p>
+                  )}
                   <label className="field-wide">
                     Résultats envoyés dans
                     <select value={cronEditor.notification_session_id} onChange={(event) =>
@@ -3484,77 +3710,101 @@ export default function Home() {
                   onAcceptProposal={() => void acceptCronWorkflowChoice()}
                   onDelete={() => void deleteCronWorkflow()}
                 />
-                {!cronWorkflowProposal && (
-                  <>
-                    <p className="cron-note">
-                      Teste la routine avant de l’activer. Les demandes ASK validées pendant le test
-                      seront mémorisées pour cette routine, uniquement pour l’outil et la cible affichés.
-                    </p>
-                    {!cronEditor.creating && (
-                      <div className={`cron-test-panel ${cronTestFeedback}`} aria-busy={testingCron}>
-                    <div className="cron-test-heading">
-                      <strong>Validation avant automatisation</strong>
-                      {cronApprovalStatus && cronApprovalStatus.approved_scopes.length > 0
-                        && !cronPermissionConfigDirty
-                        && !testingCron
-                        && cronTestApprovals.length === 0 && (
-                        <span className="cron-prevalidation-badge">
-                          ✓ Prévalidation active
-                        </span>
-                      )}
-                      <small
-                        role={cronTestFeedback === "error" ? "alert" : "status"}
-                        aria-live="polite"
-                      >
-                        {testingCron && <span className="cron-test-spinner" aria-hidden="true" />}
-                        {cronPermissionConfigDirty
-                          ? "Enregistre les modifications avant de relancer la prévalidation."
-                          : cronTestMessage || "Lance un test pour détecter les autorisations nécessaires."}
-                      </small>
-                    </div>
-                    {cronTestApprovals.length > 0 && (
-                      <ul>
-                        {cronApprovalGroups.map((group) => (
-                          <li key={group.key}>
-                            <strong>{group.tool_name}</strong>
-                            <span>
-                              {group.count > 1 ? `${group.count} actions prévues · ` : ""}
-                              {group.justifications[0]}
-                            </span>
-                            {group.path && <code>{group.path}</code>}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <div className="cron-test-actions">
-                      {cronTestApprovals.length > 0 ? (
-                        <>
-                          <button disabled={testingCron || cronPermissionConfigDirty}
-                            onClick={() => void resolveCronTestApprovals(false)}>
-                            {cronTestDecision === "reject" ? "Refus en cours…" : "Tout refuser"}
-                          </button>
-                          <button className="primary" disabled={testingCron || cronPermissionConfigDirty}
-                            onClick={() => void resolveCronTestApprovals(true)}>
-                            {cronTestDecision === "approve"
-                              ? "Autorisation en cours…"
-                              : "Autoriser cette routine"}
-                          </button>
-                        </>
-                      ) : (
-                        <button disabled={testingCron || cronEditor.in_flight || cronPermissionConfigDirty}
-                          onClick={() => void testCron(cronEditor.id)}>
-                          {testingCron
-                            ? "Test en cours…"
-                            : cronPermissionConfigDirty
-                              ? "Enregistrer avant de tester"
-                              : "Tester la routine"}
-                        </button>
-                      )}
-                    </div>
+                {!cronWorkflowProposal && !cronEditor.creating && (() => {
+                  // Le bloc n'est une alerte que s'il y a réellement quelque chose
+                  // à trancher. Prévalidé et sans modification en attente, il se
+                  // réduit à une ligne de statut.
+                  const pending = cronTestApprovals.length > 0;
+                  const prevalidated = Boolean(
+                    cronApprovalStatus?.approved_scopes.length
+                    && !cronPermissionConfigDirty
+                    && !testingCron
+                    && !pending,
+                  );
+                  const tone = pending
+                    ? "attention"
+                    : cronTestFeedback === "idle"
+                      ? prevalidated ? "settled" : "neutral"
+                      : cronTestFeedback;
+
+                  return (
+                    <div className={`cron-test-panel ${tone}`} aria-busy={testingCron}>
+                      <div className="cron-test-heading">
+                        <strong>
+                          {pending
+                            ? "Autorisations à accorder"
+                            : prevalidated
+                              ? "Routine prévalidée"
+                              : "Prévalidation"}
+                        </strong>
+                        {prevalidated && (
+                          <span className="cron-prevalidation-badge">
+                            {cronApprovalStatus?.approved_scopes.length} autorisation
+                            {(cronApprovalStatus?.approved_scopes.length || 0) > 1 ? "s" : ""}
+                          </span>
+                        )}
+                        {(!prevalidated || cronTestMessage) && (
+                          <small
+                            role={cronTestFeedback === "error" ? "alert" : "status"}
+                            aria-live="polite"
+                          >
+                            {testingCron && <span className="cron-test-spinner" aria-hidden="true" />}
+                            {cronPermissionConfigDirty
+                              ? "Enregistre les modifications avant de relancer la prévalidation."
+                              : cronTestMessage
+                                || "Un test détecte les autorisations dont la routine aura besoin."}
+                          </small>
+                        )}
                       </div>
-                    )}
-                  </>
-                )}
+
+                      {pending && (
+                        <ul>
+                          {cronApprovalGroups.map((group) => (
+                            <li key={group.key}>
+                              <strong>{group.tool_name}</strong>
+                              <span>
+                                {group.count > 1 ? `${group.count} actions prévues · ` : ""}
+                                {group.justifications[0]}
+                              </span>
+                              {group.path && <code>{group.path}</code>}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+
+                      <div className="cron-test-actions">
+                        {pending ? (
+                          <>
+                            <button disabled={testingCron || cronPermissionConfigDirty}
+                              onClick={() => void resolveCronTestApprovals(false)}>
+                              {cronTestDecision === "reject" ? "Refus en cours…" : "Tout refuser"}
+                            </button>
+                            <button className="primary" disabled={testingCron || cronPermissionConfigDirty}
+                              onClick={() => void resolveCronTestApprovals(true)}>
+                              {cronTestDecision === "approve"
+                                ? "Autorisation en cours…"
+                                : "Autoriser cette routine"}
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            disabled={testingCron || cronEditor.in_flight || cronPermissionConfigDirty}
+                            onClick={() => void testCron(cronEditor.id)}
+                            title="Les demandes validées pendant le test sont mémorisées pour cette routine, uniquement pour l’outil et la cible affichés."
+                          >
+                            {testingCron
+                              ? "Test en cours…"
+                              : cronPermissionConfigDirty
+                                ? "Enregistrer avant de tester"
+                                : prevalidated
+                                  ? "Retester"
+                                  : "Tester la routine"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div className="resource-editor-actions">
                   <button
                     onClick={closeCronEditor}
@@ -3601,16 +3851,18 @@ export default function Home() {
                         onClick={() => void toggleCron(job, !job.enabled)}
                         title={job.enabled ? "Désactiver" : "Activer"}><span /></button>
                       <button onClick={() => void runCronNow(job.id)} disabled={job.in_flight || !job.enabled}
-                        title="Lancer maintenant">▶</button>
+                        title="Lancer maintenant" aria-label="Lancer maintenant"><Icon name="play" size="sm" /></button>
                       <button onClick={() => void openCronEditor(job)}
-                        title="Éditer">✎</button>
-                      <button onClick={() => void deleteCron(job.id)} title="Supprimer">⌫</button>
+                        title="Éditer" aria-label="Éditer"><Icon name="edit" size="sm" /></button>
+                      <button onClick={() => void deleteCron(job.id)} title="Supprimer" aria-label="Supprimer">
+                        <Icon name="remove" size="sm" />
+                      </button>
                     </div>
                   </div>
                 ))}
                 {cronJobs.length === 0 && (
                   <div className="management-empty">
-                    <CalendarClock />
+                    <Icon name="automation" size="xl" />
                     <p>Aucune automatisation. Ajoute une routine avec le bouton +.</p>
                   </div>
                 )}
@@ -3622,43 +3874,60 @@ export default function Home() {
 
       <section className="workspace">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">Conversation active</p>
+          {/* Pas de bouton d'ouverture ici : quand le panneau est replié, le
+              rail d'icônes prend sa place et porte déjà cette action. */}
+          <div className="topbar-title">
             <h1>{isRoutineInbox ? "Routines" : activeAgent?.id || "main"}</h1>
-            {isRoutineInbox ? (
-              <small className="active-cwd">Boîte globale · aucun workspace associé</small>
-            ) : conversationWorkspace ? (
-              <small className="active-cwd" title={conversationWorkspace}>
-                {conversationWorkspace}
-              </small>
-            ) : (
-              <small className="active-cwd">Aucun workspace associé</small>
-            )}
+            <small title={conversationWorkspace || undefined}>
+              {isRoutineInbox
+                ? "Boîte globale · aucun workspace"
+                : conversationWorkspace || "Aucun workspace associé"}
+            </small>
           </div>
+
           <div className="topbar-actions">
             {gitSnapshot && (
-              <GitToolbar
-                snapshot={gitSnapshot}
-                branches={gitBranches}
-                disabled={running || gitBusy}
-                onSwitch={(branch) => void switchGitBranch(branch)}
-                onValidate={() => void proposeGitCommit()}
-              />
+              <div className="topbar-group">
+                <GitToolbar
+                  snapshot={gitSnapshot}
+                  branches={gitBranches}
+                  disabled={running || gitBusy}
+                  onSwitch={(branch) => void switchGitBranch(branch)}
+                  onValidate={() => void proposeGitCommit()}
+                />
+              </div>
             )}
-            <button
-              type="button"
-              className="new-conversation"
-              onClick={newConversation}
-              disabled={running}
-              title="Nouvelle conversation"
-            >
-              <MessageSquarePlus aria-hidden="true" />
-              <span>Nouvelle conversation</span>
-            </button>
+
             <div className="model-badge">
               <span />
               {selectedModel || activeAgent?.model || "modèle par défaut"}
             </div>
+
+            <button
+              type="button"
+              className="ibtn"
+              data-tip="Nouvelle conversation"
+              data-tip-side="bottom-end"
+              aria-label="Nouvelle conversation"
+              onClick={newConversation}
+              disabled={running}
+            >
+              <Icon name="newChat" size="md" />
+            </button>
+
+            <span className="topbar-sep" />
+
+            <button
+              type="button"
+              className="ibtn"
+              data-tip={panels.right.open ? "Fermer le panneau droit" : "Ouvrir le panneau droit"}
+              data-tip-side="left"
+              aria-label="Basculer le panneau droit"
+              aria-pressed={panels.right.open}
+              onClick={() => panels.toggle("right")}
+            >
+              <Icon name={panels.right.open ? "panelRightClose" : "panelRightOpen"} size="md" />
+            </button>
           </div>
         </header>
 
@@ -3791,7 +4060,7 @@ export default function Home() {
                     type="button"
                     aria-label={`Retirer ${image.name}`}
                     onClick={() => setComposerImages((current) => current.filter((item) => item.id !== image.id))}
-                  >×</button>
+                  ><Icon name="close" size="xs" /></button>
                 </figure>
               ))}
             </div>
@@ -3883,15 +4152,76 @@ export default function Home() {
         </form>
       </section>
 
-      {gitReviewOpen && gitReviewSnapshot && (
-        <GitReviewPanel
-          snapshot={gitReviewSnapshot}
-          selected={gitSelectedFile}
-          onSelect={setGitSelectedFile}
-          onClose={() => setGitReviewOpen(false)}
-          onResizeStart={startGitResize}
-        />
-      )}
+      <Dock
+        tabs={dockTabs}
+        activeTab={dockTab}
+        onTabChange={(id) => setDockTab(id as DockTabId)}
+        collapsed={!panels.right.open}
+        title={dockTab === "git" ? "Révision" : "Fichiers"}
+        subtitle={
+          dockTab === "git"
+            ? gitReviewSnapshot
+              ? `${gitReviewSnapshot.branch || "—"} · ${gitReviewSnapshot.files.length} fichier(s)`
+              : gitSnapshot?.branch || undefined
+            : activeWorkspaceInfo?.name
+        }
+        actions={
+          <button
+            type="button"
+            className="ibtn sm"
+            data-tip="Fermer"
+            data-tip-side="left"
+            aria-label="Fermer le panneau droit"
+            onClick={() => panels.setOpen("right", false)}
+          >
+            <Icon name="close" size="sm" />
+          </button>
+        }
+        resizer={
+          <Resizer
+            side="start"
+            label="Largeur du panneau droit"
+            active={panels.resizing === "right"}
+            onPointerDown={panels.startResize("right")}
+            onKeyDown={panels.nudge("right")}
+          />
+        }
+      >
+        {dockTab === "git" ? (
+          <GitReviewBody
+            snapshot={gitReviewSnapshot || gitSnapshot}
+            selected={gitSelectedFile}
+            onSelect={setGitSelectedFile}
+          />
+        ) : explorerFile ? (
+          <div className="git-review-body" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
+            <section>
+              <h3>
+                {explorerFile.path}
+                <button
+                  type="button"
+                  className="ibtn sm"
+                  style={{ float: "right", marginTop: -6 }}
+                  aria-label="Revenir à l'arborescence"
+                  onClick={() => setExplorerFile(null)}
+                >
+                  <Icon name="close" size="xs" />
+                </button>
+              </h3>
+              <pre>{explorerFile.content}</pre>
+            </section>
+          </div>
+        ) : explorerError ? (
+          <ChromeEmpty icon="error">{explorerError}</ChromeEmpty>
+        ) : (
+          <FileExplorer
+            workspace={conversationWorkspace || undefined}
+            kernelUrl={(path) => `/api/kernel${path.replace("/api", "")}`}
+            changedPaths={changedPaths}
+            onOpenFile={(path) => void openExplorerFile(path)}
+          />
+        )}
+      </Dock>
 
       {gitCommitMessage !== null && (
         <GitCommitDialog
@@ -3907,6 +4237,6 @@ export default function Home() {
       {gitError && gitCommitMessage === null && (
         <button type="button" className="git-toast" onClick={() => setGitError("")}>{gitError}</button>
       )}
-    </main>
+    </Shell>
   );
 }

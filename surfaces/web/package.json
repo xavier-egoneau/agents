@@ -13,6 +13,7 @@
     "test:unit": "npm run build && node --test tests/rendered-html.test.mjs",
     "test:e2e": "playwright test",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "check:contrast": "node scripts/check-contrast.mjs",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

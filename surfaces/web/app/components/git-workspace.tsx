@@ -1,6 +1,7 @@
 "use client";
 
-import { GitBranch, X } from "lucide-react";
+import { Icon } from "../theme/theme-context";
+import { ChromeEmpty } from "./layout/shell";
 
 export type GitFile = {
   path: string;
@@ -36,7 +37,11 @@ export function GitChangeCard({
   return (
     <section className="git-change-card">
       <header>
-        <div><strong>{snapshot.files.length} fichier{snapshot.files.length > 1 ? "s" : ""} modifié{snapshot.files.length > 1 ? "s" : ""}</strong>
+        <div>
+          <strong>
+            {snapshot.files.length} fichier{snapshot.files.length > 1 ? "s" : ""} modifié
+            {snapshot.files.length > 1 ? "s" : ""}
+          </strong>
           <span><b>+{snapshot.additions}</b> <i>-{snapshot.deletions}</i></span>
         </div>
         <button type="button" onClick={() => onOpen()}>Examiner</button>
@@ -44,7 +49,8 @@ export function GitChangeCard({
       <div>
         {snapshot.files.map((file) => (
           <button type="button" key={file.path} onClick={() => onOpen(file)}>
-            <span>{file.path}</span><em><b>+{file.additions}</b> <i>-{file.deletions}</i></em>
+            <span>{file.path}</span>
+            <em><b>+{file.additions}</b> <i>-{file.deletions}</i></em>
           </button>
         ))}
       </div>
@@ -63,43 +69,72 @@ export function GitToolbar({
 }) {
   return (
     <div className="git-toolbar">
-      <GitBranch aria-hidden="true" />
-      <select aria-label="Branche Git" value={snapshot.branch || ""}
-        disabled={disabled} onChange={(event) => onSwitch(event.target.value)}>
+      <select
+        aria-label="Branche Git"
+        value={snapshot.branch || ""}
+        disabled={disabled}
+        onChange={(event) => onSwitch(event.target.value)}
+      >
         {branches.map((branch) => <option key={branch}>{branch}</option>)}
       </select>
-      <button type="button" disabled={disabled || !snapshot.files.length} onClick={onValidate}>
-        Valider{snapshot.files.length ? ` (${snapshot.files.length})` : ""}
+      <button
+        type="button"
+        className="ibtn sm"
+        data-tip={`Valider${snapshot.files.length ? ` ${snapshot.files.length} fichier(s)` : ""}`}
+        data-tip-side="bottom"
+        aria-label="Valider les modifications"
+        disabled={disabled || !snapshot.files.length}
+        onClick={onValidate}
+      >
+        <Icon name="gitCommit" size="sm" />
+        {snapshot.files.length > 0 && <span className="rail-badge">{snapshot.files.length}</span>}
       </button>
     </div>
   );
 }
 
-export function GitReviewPanel({
-  snapshot, selected, onSelect, onClose, onResizeStart,
+/**
+ * Contenu du dock, plus un panneau autonome : le cadre (largeur, fermeture,
+ * redimensionnement) est gere par le shell.
+ */
+export function GitReviewBody({
+  snapshot, selected, onSelect,
 }: {
-  snapshot: GitSnapshot;
+  snapshot: GitSnapshot | null;
   selected: GitFile | null;
   onSelect: (file: GitFile) => void;
-  onClose: () => void;
-  onResizeStart: () => void;
 }) {
+  if (!snapshot || !snapshot.available) {
+    return <ChromeEmpty icon="git">Aucun dépôt Git détecté dans ce projet.</ChromeEmpty>;
+  }
+  if (!snapshot.files.length) {
+    return <ChromeEmpty icon="success">Aucune modification en attente.</ChromeEmpty>;
+  }
+
   const file = selected || snapshot.files[0] || null;
   return (
-    <aside className="git-review-panel">
-      <button type="button" className="git-resizer" aria-label="Redimensionner le panneau"
-        onMouseDown={onResizeStart} />
-      <header><div><small>Révision · {snapshot.branch}</small><strong>{snapshot.files.length} fichiers · <b>+{snapshot.additions}</b> <i>-{snapshot.deletions}</i></strong></div>
-        <button type="button" onClick={onClose} aria-label="Fermer"><X /></button></header>
-      <div className="git-review-body">
-        <nav>{snapshot.files.map((item) => <button type="button" key={item.path}
-          className={file?.path === item.path ? "active" : ""} onClick={() => onSelect(item)}>
-          <span>{item.path}</span><em><b>+{item.additions}</b> <i>-{item.deletions}</i></em></button>)}</nav>
-        <section><h3>{file?.path || "Aucun fichier"}</h3>
-          {file?.binary ? <p>Fichier binaire — aperçu indisponible.</p> : <pre>{file?.patch || "Aucune différence textuelle."}</pre>}
-        </section>
-      </div>
-    </aside>
+    <div className="git-review-body">
+      <nav aria-label="Fichiers modifiés">
+        {snapshot.files.map((item) => (
+          <button
+            type="button"
+            key={item.path}
+            className={file?.path === item.path ? "active" : ""}
+            onClick={() => onSelect(item)}
+            title={item.path}
+          >
+            <span>{item.path}</span>
+            <em><b>+{item.additions}</b> <i>-{item.deletions}</i></em>
+          </button>
+        ))}
+      </nav>
+      <section>
+        <h3>{file?.path || "Aucun fichier"}</h3>
+        {file?.binary
+          ? <p>Fichier binaire — aperçu indisponible.</p>
+          : <pre>{file?.patch || "Aucune différence textuelle."}</pre>}
+      </section>
+    </div>
   );
 }
 
@@ -114,12 +149,32 @@ export function GitCommitDialog({
   onCancel: () => void;
   onCommit: () => void;
 }) {
-  return <div className="git-dialog-backdrop"><section className="git-dialog" role="dialog" aria-modal="true" aria-labelledby="git-dialog-title">
-    <header><div><small>Tout le dépôt courant</small><h2 id="git-dialog-title">Valider les modifications</h2></div><button type="button" onClick={onCancel} disabled={busy}><X /></button></header>
-    <p>Ce commit inclura toutes les modifications du workspace, pas seulement celles de la dernière réponse.</p>
-    <label>Message de commit<textarea autoFocus value={message} onChange={(event) => onMessage(event.target.value)} rows={7} /></label>
-    {source === "fallback" && <small>Le modèle était indisponible : un message local a été proposé.</small>}
-    {error && <div className="git-dialog-error" role="alert">{error}</div>}
-    <footer><button type="button" onClick={onCancel} disabled={busy}>Annuler</button><button type="button" className="primary" onClick={onCommit} disabled={busy || !message.trim()}>{busy ? "Validation…" : "Créer le commit"}</button></footer>
-  </section></div>;
+  return (
+    <div className="git-dialog-backdrop">
+      <section className="git-dialog" role="dialog" aria-modal="true" aria-labelledby="git-dialog-title">
+        <header>
+          <div>
+            <small>Tout le dépôt courant</small>
+            <h2 id="git-dialog-title">Valider les modifications</h2>
+          </div>
+          <button type="button" onClick={onCancel} disabled={busy} aria-label="Fermer">
+            <Icon name="close" size="sm" />
+          </button>
+        </header>
+        <p>Ce commit inclura toutes les modifications du workspace, pas seulement celles de la dernière réponse.</p>
+        <label>
+          Message de commit
+          <textarea autoFocus value={message} onChange={(event) => onMessage(event.target.value)} rows={7} />
+        </label>
+        {source === "fallback" && <small>Le modèle était indisponible : un message local a été proposé.</small>}
+        {error && <div className="git-dialog-error" role="alert">{error}</div>}
+        <footer>
+          <button type="button" onClick={onCancel} disabled={busy}>Annuler</button>
+          <button type="button" className="primary" onClick={onCommit} disabled={busy || !message.trim()}>
+            {busy ? "Validation…" : "Créer le commit"}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from uuid import uuid4
 
@@ -26,6 +27,8 @@ from ..workflows import (
     validate_accepted,
 )
 from .runs import LaunchRun
+
+_log = logging.getLogger(__name__)
 
 
 class CronJobBody(CronJobInput):
@@ -65,8 +68,15 @@ def create_cron_router(
             proposal = await workflow_proposal_factory(payload).propose(basis)
             return proposal.model_dump(mode="json", by_alias=True)
         except WorkflowGenerationError as exc:
+            # La cause d'origine (erreur du fournisseur, schema refuse, parsing)
+            # n'apparait que dans le chainage : sans trace, seul le message
+            # reformule remonte et le diagnostic est perdu.
+            _log.exception("Echec de generation du workflow pour %s", payload.agent_id)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except (WorkflowValidationError, KernelError, ValueError) as exc:
+            _log.warning(
+                "Proposition de workflow refusee pour %s : %s", payload.agent_id, exc
+            )
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.get("")

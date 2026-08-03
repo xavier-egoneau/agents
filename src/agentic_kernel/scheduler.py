@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -257,6 +258,49 @@ class CronService:
         result = croniter(expression, reference).get_next(datetime)
         return result if result.tzinfo else result.replace(tzinfo=reference.tzinfo)
 
+    @staticmethod
+    def _same_workspace(candidate: Path, current: Path | None) -> bool:
+        """Compare les chemins TELS QU'ÉCRITS, sans les résoudre.
+
+        La comparaison porte volontairement sur la valeur brute. Une base
+        déplacée entre systèmes contient des chemins d'un autre OS : sous
+        Windows, ``Path('/Users/x/projet').resolve()`` fabrique
+        ``C:\\Users\\x\\projet`` en ajoutant la lettre du lecteur courant. Le
+        chemin résolu ne correspond alors jamais à celui enregistré, et un
+        champ pourtant inchangé passe pour une modification.
+        """
+        if current is None:
+            return False
+        return os.path.normcase(str(candidate)) == os.path.normcase(str(current))
+
+    def _validated_workspace(
+        self,
+        payload: CronJobInput,
+        *,
+        current: Path | None = None,
+    ) -> Path | None:
+        """Résout le workspace, et ne le valide que lorsqu'il change.
+
+        Une routine dont le dossier a disparu — projet déplacé, base héritée
+        d'une autre machine — doit rester modifiable. Sans cette exception elle
+        devient inaccessible : chaque enregistrement, y compris une simple
+        désactivation, renvoie le chemin fautif tel quel et se fait rejeter,
+        alors même que l'opération ne touche pas à ce champ.
+        """
+        if payload.workspace is None:
+            return None
+        # Comparaison AVANT résolution : c'est la valeur brute qui a été
+        # enregistrée, et la résoudre ici la rendrait incomparable.
+        if self._same_workspace(payload.workspace, current):
+            return current
+        workspace = payload.workspace.expanduser().resolve()
+        if not workspace.is_dir():
+            raise SchedulerError(
+                f"Workspace introuvable : {workspace}. Corrige le dossier de la "
+                "routine, ou laisse le champ vide pour l’exécuter sans workspace."
+            )
+        return workspace
+
     def create(
         self,
         payload: CronJobInput,
@@ -265,9 +309,8 @@ class CronService:
         workflow_basis_hash: str | None = None,
     ) -> CronJob:
         self.validate_schedule(payload.schedule)
-        workspace = payload.workspace.expanduser().resolve() if payload.workspace else None
-        if workspace is not None and not workspace.is_dir():
-            raise SchedulerError(f"Workspace introuvable : {workspace}")
+        # A la creation il n'y a pas d'existant : le chemin doit etre valide.
+        workspace = self._validated_workspace(payload)
         now = datetime.now(UTC)
         job_id = f"cron_{uuid4().hex}"
         session_id = uuid4()
@@ -328,11 +371,9 @@ class CronService:
         return self._row(row)
 
     def update(self, job_id: str, payload: CronJobInput) -> CronJob:
-        self.get(job_id)
+        existing = self.get(job_id)
         self.validate_schedule(payload.schedule)
-        workspace = payload.workspace.expanduser().resolve() if payload.workspace else None
-        if workspace is not None and not workspace.is_dir():
-            raise SchedulerError(f"Workspace introuvable : {workspace}")
+        workspace = self._validated_workspace(payload, current=existing.workspace)
         now = datetime.now(UTC)
         next_run = self.next_fire(payload.schedule)
         with self._connect() as connection:
@@ -376,9 +417,7 @@ class CronService:
         if job.in_flight:
             raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
         self.validate_schedule(payload.schedule)
-        workspace = payload.workspace.expanduser().resolve() if payload.workspace else None
-        if workspace is not None and not workspace.is_dir():
-            raise SchedulerError(f"Workspace introuvable : {workspace}")
+        workspace = self._validated_workspace(payload, current=job.workspace)
         now = datetime.now(UTC)
         next_run = self.next_fire(payload.schedule)
         with self._connect() as connection:

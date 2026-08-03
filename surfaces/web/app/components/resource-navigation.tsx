@@ -1,83 +1,97 @@
 "use client";
 
-import {
-  Bot,
-  CalendarClock,
-  ChevronRight,
-  FolderOpen,
-  PlugZap,
-  Sparkles,
-} from "lucide-react";
+import { Icon } from "../theme/theme-context";
+import type { IconName } from "../theme/icons";
 
 export type ResourceSection = "projects" | "agents" | "skills" | "providers" | "crons";
 
 type ResourceNavigationProps = {
   projectName?: string;
-  projectPath?: string;
+  workspaceCount: number;
   agentId?: string;
-  agentProvider?: string;
+  agentCount: number;
   selectedSkillCount: number;
   availableSkillCount: number;
   providerCount: number;
   defaultProvider?: string;
+  cronCount: number;
   activeCronCount: number;
   unreadCronCount: number;
   onOpen: (section: ResourceSection) => void;
 };
 
+/**
+ * Navigation de contexte. Ordre de lecture volontaire :
+ *   1. le titre de la section — l'information la plus stable, donc le repère ;
+ *   2. ce qui est actif dessous — l'information qui change ;
+ *   3. le nombre d'occurrences en pastille — purement indicatif.
+ */
 export function ResourceNavigation({
   projectName,
-  projectPath,
+  workspaceCount,
   agentId,
-  agentProvider,
+  agentCount,
   selectedSkillCount,
   availableSkillCount,
   providerCount,
   defaultProvider,
+  cronCount,
   activeCronCount,
   unreadCronCount,
   onOpen,
 }: ResourceNavigationProps) {
-  const cards = [
+  const cards: Array<{
+    section: ResourceSection;
+    icon: IconName;
+    title: string;
+    active: string;
+    count: number;
+    /** Signale une nouveauté à traiter : la pastille passe en accent. */
+    alert?: boolean;
+    accentIcon?: boolean;
+  }> = [
     {
-      section: "projects" as const,
-      label: "Projet actif",
-      title: projectName || "Choisir un projet",
-      detail: projectPath || "Aucun CWD",
-      icon: <FolderOpen />,
+      section: "projects",
+      icon: "project",
+      title: "Projets",
+      active: projectName || "Aucun projet actif",
+      count: workspaceCount,
     },
     {
-      section: "agents" as const,
-      label: "Agent actif",
-      title: agentId || "Aucun agent",
-      detail: agentProvider || "Non configuré",
-      icon: <Bot />,
-      iconClassName: "agent-icon",
+      section: "agents",
+      icon: "agent",
+      title: "Agents",
+      active: agentId || "Aucun agent actif",
+      count: agentCount,
+      accentIcon: true,
     },
     {
-      section: "skills" as const,
-      label: "Skills",
-      title: selectedSkillCount
+      section: "skills",
+      icon: "skill",
+      title: "Skills",
+      active: selectedSkillCount
         ? `${selectedSkillCount} sélectionnée${selectedSkillCount > 1 ? "s" : ""}`
         : "Aucune sélection",
-      detail: `${availableSkillCount} disponible${availableSkillCount > 1 ? "s" : ""}`,
-      icon: <Sparkles />,
+      count: availableSkillCount,
     },
     {
-      section: "providers" as const,
-      label: "Providers",
-      title: `${providerCount} configuré${providerCount > 1 ? "s" : ""}`,
-      detail: `Défaut · ${defaultProvider || "aucun"}`,
-      icon: <PlugZap />,
+      section: "providers",
+      icon: "provider",
+      title: "Providers",
+      active: defaultProvider || "Aucun provider par défaut",
+      count: providerCount,
     },
     {
-      section: "crons" as const,
-      label: "Automatisations",
-      title: `${activeCronCount} active${activeCronCount > 1 ? "s" : ""}`,
-      detail: unreadCronCount
+      section: "crons",
+      icon: "automation",
+      title: "Routines",
+      active: unreadCronCount
         ? `${unreadCronCount} nouveau${unreadCronCount > 1 ? "x" : ""} résultat${unreadCronCount > 1 ? "s" : ""}`
-        : "Cronjobs et reprises",
-      icon: <CalendarClock />,
+        : activeCronCount
+          ? `${activeCronCount} active${activeCronCount > 1 ? "s" : ""}`
+          : "Aucune routine active",
+      count: cronCount,
+      alert: unreadCronCount > 0,
     },
   ];
 
@@ -87,20 +101,24 @@ export function ResourceNavigation({
         <button
           className="context-card"
           key={card.section}
+          type="button"
           onClick={() => onOpen(card.section)}
         >
-          <span
-            className={`context-icon ${card.iconClassName || ""}`.trim()}
-            aria-hidden="true"
-          >
-            {card.icon}
+          <span className={`context-icon${card.accentIcon ? " agent-icon" : ""}`} aria-hidden="true">
+            <Icon name={card.icon} size="sm" />
           </span>
-          <span>
-            <small>{card.label}</small>
+          <span className="context-copy">
             <strong>{card.title}</strong>
-            <em>{card.detail}</em>
+            <em>{card.active}</em>
           </span>
-          <ChevronRight className="context-chevron" aria-hidden="true" />
+          {card.count > 0 && (
+            <span
+              className={`context-count${card.alert ? " alert" : ""}`}
+              aria-label={`${card.count} au total`}
+            >
+              {card.count > 99 ? "99+" : card.count}
+            </span>
+          )}
         </button>
       ))}
     </nav>

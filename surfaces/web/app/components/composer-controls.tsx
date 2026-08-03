@@ -1,5 +1,7 @@
 "use client";
 
+import { Icon } from "../theme/theme-context";
+
 export type SecurityMode = "safe" | "limited" | "power";
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -53,7 +55,7 @@ export function ComposerControls({
           disabled={!canAttach}
           aria-label="Ajouter une image"
           title={vision ? "Ajouter une image" : "Ajouter une image · analyse locale Gemma 4"}
-        >+</button>
+        ><Icon name="attach" size="md" /></button>
         <label title="Niveau de permission">
           <span className={`permission-dot ${securityMode}`} />
           <select
@@ -116,7 +118,9 @@ export function ComposerControls({
             title="Arrêter le run"
           ><span /></button>
         )}
-        <button className="send" disabled={!canSend} aria-label="Envoyer">↑</button>
+        <button className="send" disabled={!canSend} aria-label="Envoyer">
+          <Icon name="send" size="md" />
+        </button>
       </div>
     </div>
   );

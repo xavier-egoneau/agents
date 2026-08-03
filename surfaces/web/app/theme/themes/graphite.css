@@ -1,0 +1,61 @@
+/* ============================================================================
+   THEME "graphite" — defaut. Clair, neutre, accent teal.
+   Ne contient QUE des redefinitions de tokens : aucun selecteur de composant.
+   ========================================================================== */
+
+[data-theme="graphite"] {
+  color-scheme: light;
+
+  --font-display: var(--font-sans);
+
+  --surface-app: #f6f7f8;
+  --surface-panel: #ffffff;
+  --surface-panel-alt: #fafbfb;
+  --surface-sunken: #eceef0;
+  --surface-overlay: #ffffff;
+  --surface-hover: #f1f3f4;
+  --surface-active: #e6e9eb;
+  --surface-selected: #e8f1f1;
+  --surface-scrim: #0c0f1199;
+
+  --surface-rail: #16181b;
+  --surface-rail-alt: #1d2023;
+  --surface-rail-hover: #282c30;
+  --surface-rail-active: #33383d;
+  --surface-dock: #131517;
+  --surface-dock-alt: #1a1d1f;
+
+  --text-strong: #0d0f11;
+  --text-default: #23272b;
+  --text-muted: #667079;
+  --text-faint: #8a929b;
+  --text-on-rail: #eef0f1;
+  --text-on-rail-muted: #8f979e;
+  --text-on-dock: #e4e7e9;
+  --text-on-dock-muted: #858e94;
+  --text-link: #0d7a72;
+  --text-link-hover: #0a5f59;
+
+  --border-subtle: #e8eaec;
+  --border-default: #d6dade;
+  --border-strong: #b3bac0;
+  --border-rail: #2b2f33;
+  --border-dock: #24282b;
+
+  --accent: #0d8074;
+  --accent-hover: #0b6d63;
+  --accent-active: #095a52;
+  --accent-soft: #d6efec;
+  --accent-soft-text: #085048;
+  --accent-on-rail: #4ad6c6;
+
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+
+  --code-bg: #16191c;
+  --code-fg: #e4e9ea;
+  --code-border: #282d31;
+  --inline-code-bg: #eceef0;
+  --inline-code-fg: #23272b;
+}

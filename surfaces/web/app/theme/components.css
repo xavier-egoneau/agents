@@ -1,0 +1,333 @@
+/* ============================================================================
+   COMPOSANTS — navigation du panneau, historique, projets.
+
+   Tout ici est exprime en --ctx-* : ces composants vivent dans le panneau
+   sombre ET dans la modale claire. Aucune couleur "de rail" en dur, sinon on
+   retombe sur du blanc sur blanc au moindre deplacement ou changement de theme.
+   ========================================================================== */
+
+/* --- Cartes de contexte (Projet / Agent / Skills / Providers / Crons) ------- */
+
+.context-nav { display: grid; gap: 3px; }
+
+.context-card {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ctx-text);
+  padding: 7px 8px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.context-card:hover { background: var(--ctx-hover); }
+.context-copy { min-width: 0; }
+.context-card strong,
+.context-card em {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Le titre porte le poids : c'est le repere de lecture. */
+.context-card strong { font: var(--weight-semibold) var(--text-base) var(--font-sans); }
+/* Ce qui est actif, en retrait typographique mais toujours lisible. */
+.context-card em {
+  margin-top: 2px;
+  color: var(--ctx-text-muted);
+  font: normal var(--text-sm) var(--font-sans);
+}
+
+/* Compteur purement indicatif : discret, il ne doit pas concurrencer le titre.
+   line-height: 1 explicite — le raccourci `font` remet line-height a `normal`,
+   ce qui decale le chiffre dans une pastille aussi basse. */
+.context-count {
+  display: grid;
+  place-content: center;
+  min-width: 21px;
+  height: 19px;
+  border-radius: var(--radius-pill);
+  background: var(--ctx-active);
+  color: var(--ctx-text-muted);
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.context-count.alert { background: var(--ctx-accent); color: var(--ctx-surface); }
+
+.context-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--ctx-active);
+  color: var(--ctx-text-muted);
+}
+.context-card:hover .context-icon { color: var(--ctx-text); }
+.context-icon.agent-icon { background: var(--accent); color: var(--text-on-accent); }
+
+/* --- Historique de sessions ------------------------------------------------- */
+
+.session-list { display: grid; gap: 1px; }
+
+.session-entry {
+  position: relative;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  color: var(--ctx-text-muted);
+}
+.session-entry:hover { background: var(--ctx-hover); color: var(--ctx-text); }
+.session-entry.active { background: var(--ctx-active); color: var(--ctx-text); }
+
+.session-open {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 7px 60px 7px 9px;
+  text-align: left;
+  cursor: pointer;
+}
+.session-list strong,
+.session-list small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-list strong { font: var(--weight-medium) var(--text-sm) var(--font-sans); }
+.session-list small { margin-top: 3px; color: var(--ctx-text-faint); font: var(--font-meta); }
+
+/* Actions revelees au survol. `display: grid` + `place-items` : sans ca l'icone
+   s'aligne sur la baseline du texte et parait decentree. */
+.session-resume,
+.session-delete {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  margin: 0;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.session-resume { right: 31px; color: var(--ctx-accent); }
+.session-delete { right: 5px; color: var(--ctx-text-faint); }
+.session-entry:hover .session-resume,
+.session-entry:hover .session-delete,
+.session-entry.active .session-resume,
+.session-entry.active .session-delete,
+.session-resume:focus-visible,
+.session-delete:focus-visible { opacity: 1; }
+.session-resume:hover { background: var(--ctx-active); }
+.session-delete:hover { background: var(--danger); color: var(--text-on-accent); }
+.session-resume:disabled { opacity: 0.3; cursor: default; }
+
+.session-state { width: 7px; height: 7px; border-radius: var(--radius-circle); background: var(--neutral-dot); }
+.session-state.success { background: var(--success); }
+.session-state.failed,
+.session-state.timeout { background: var(--danger); }
+.session-state.approval_pending { background: var(--warning); }
+
+.session-unread {
+  position: absolute;
+  z-index: 2;
+  top: 6px;
+  right: 8px;
+  width: 7px;
+  height: 7px;
+  border: 2px solid var(--ctx-surface);
+  border-radius: var(--radius-circle);
+  background: var(--ctx-accent);
+}
+.session-entry.unread .session-open strong { color: var(--ctx-text); }
+.session-entry:hover .session-unread,
+.session-entry.active .session-unread { opacity: 0; }
+
+.automation-chip {
+  display: inline-block;
+  margin-left: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--ctx-active);
+  color: var(--ctx-accent);
+  padding: 2px 5px;
+  vertical-align: 1px;
+  font: var(--text-3xs) var(--font-mono);
+}
+
+.empty-label { padding: 10px; color: var(--ctx-text-faint); font-size: var(--text-sm); }
+
+/* --- Agents et skills dans le panneau -------------------------------------- */
+
+.agent-list,
+.skill-list { display: grid; gap: 2px; }
+
+.agent-row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ctx-text-muted);
+  padding: 9px;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-row:hover { background: var(--ctx-hover); color: var(--ctx-text); }
+.agent-row.active { background: var(--ctx-active); color: var(--ctx-text); }
+.agent-row strong,
+.agent-row small { display: block; }
+.agent-row strong { font-size: var(--text-md); }
+.agent-row small { margin-top: 3px; color: var(--ctx-text-faint); }
+
+.presence { width: 7px; height: 7px; border-radius: var(--radius-circle); background: var(--neutral-dot); }
+.active .presence { background: var(--ctx-accent); }
+
+.skill-row {
+  display: flex;
+  gap: 9px;
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  color: var(--ctx-text-muted);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+.skill-row:hover { background: var(--ctx-hover); color: var(--ctx-text); }
+.skill-row input { accent-color: var(--ctx-accent); }
+
+/* --- Liste et formulaire de workspaces --------------------------------------
+   Ce bloc est le cas d'ecole : il apparait dans le panneau sombre ET dans la
+   modale claire. En --ctx-* il n'a besoin d'aucune surcouche par contexte. */
+
+.workspace-list { display: grid; gap: 2px; }
+
+.workspace-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  border-radius: var(--radius-sm);
+}
+.workspace-row:hover { background: var(--ctx-hover); }
+.workspace-row.active { background: var(--ctx-active); }
+.workspace-row > button:first-child {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ctx-text);
+  padding: 8px 9px;
+  text-align: left;
+  cursor: pointer;
+}
+.workspace-row strong,
+.workspace-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-row strong { font: var(--weight-medium) var(--text-sm) var(--font-sans); }
+.workspace-row small { margin-top: 2px; color: var(--ctx-text-muted); font: var(--font-meta); }
+
+.forget-workspace {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--ctx-text-faint);
+  cursor: pointer;
+}
+.forget-workspace:hover { background: var(--danger); color: var(--text-on-accent); }
+
+.workspace-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--control-height) var(--control-height);
+  gap: 6px;
+  margin-top: 10px;
+}
+.workspace-form input {
+  min-width: 0;
+  border: 1px solid var(--ctx-border);
+  border-radius: var(--radius-sm);
+  background: var(--ctx-sunken);
+  color: var(--ctx-text);
+  caret-color: var(--ctx-accent);
+  padding: 0 9px;
+  outline: 0;
+  font-size: var(--text-sm);
+}
+.workspace-form input::placeholder { color: var(--ctx-text-faint); }
+.workspace-form input:focus { border-color: var(--ctx-accent); box-shadow: var(--focus-ring); }
+
+.workspace-form button {
+  display: grid;
+  place-items: center;
+  height: var(--control-height);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.workspace-form button:disabled { opacity: 0.4; cursor: default; }
+
+/* Bouton secondaire : contour + texte issus du contexte, donc lisible aussi
+   bien sur le rail sombre que sur le fond blanc de la modale. */
+.workspace-form .pick-workspace {
+  border: 1px solid var(--ctx-border);
+  background: transparent;
+  color: var(--ctx-text-muted);
+}
+.workspace-form .pick-workspace:hover:not(:disabled) {
+  background: var(--ctx-hover);
+  border-color: var(--ctx-accent);
+  color: var(--ctx-text);
+}
+.workspace-form .add-workspace { background: var(--accent); color: var(--text-on-accent); }
+.workspace-form .add-workspace:hover:not(:disabled) { background: var(--accent-hover); }
+
+.workspace-error { display: block; margin-top: 6px; color: var(--danger); font-size: var(--text-2xs); }
+.workspace-known-label {
+  margin: 14px 8px 6px;
+  color: var(--ctx-text-faint);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  font: var(--weight-semibold) var(--text-2xs) var(--font-mono);
+}
+.active-cwd {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--ctx-text-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--text-xs) var(--font-mono);
+}

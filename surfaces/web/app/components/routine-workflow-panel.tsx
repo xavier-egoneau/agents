@@ -256,28 +256,22 @@ export function RoutineWorkflowPanel({
     >
       <div className="routine-workflow-heading">
         <div>
-          <span className="routine-workflow-kicker">
-            {proposal
-              ? "Choix à confirmer"
-              : saved
-                ? "Mode d’exécution actuel"
-                : "Deux chemins possibles"}
-          </span>
+          <span className="routine-workflow-kicker">Exécution</span>
           <strong id="routine-workflow-title">
             {proposal
-              ? "Proposition non enregistrée"
+              ? "Workflow proposé — à valider"
               : saved
-                ? `${workflow?.status === "ready" ? "Workflow actif" : "Workflow enregistré"}${revision ? ` · v${revision}` : ""}`
-                : "Mode libre — sans workflow"}
+                ? `${workflow?.status === "ready" ? "Workflow guidé" : "Workflow en brouillon"}${revision ? ` · v${revision}` : ""}`
+                : "Mode libre"}
           </strong>
           <small>
             {proposal
-              ? "Vérifie le déroulé proposé, puis choisis de garder le mode actuel ou d’appliquer ce guide."
+              ? "Rien n’est appliqué tant que tu n’as pas accepté."
               : saved
                 ? workflow?.status === "ready"
-                  ? "La routine suit ce guide en plus de son prompt et de ses skills."
-                  : "Ce workflow est conservé, mais la routine ne peut pas l’exécuter tant qu’il n’est pas prêt."
-                : "Le workflow est facultatif : la routine peut fonctionner librement, ou suivre un déroulé que tu valides."}
+                  ? "La routine suit ce déroulé, en plus de son prompt et de ses skills."
+                  : "Conservé, mais non exécutable tant que ses dépendances ne sont pas résolues."
+                : "L’agent choisit ses outils et leur ordre à chaque lancement."}
           </small>
         </div>
         {displayed?.status && (
@@ -287,36 +281,44 @@ export function RoutineWorkflowPanel({
         )}
       </div>
 
-      {!displayed && (
+      {/* À la création, le mode est un vrai choix : il faut enregistrer l'un ou
+          l'autre. Sur une routine existante, le mode libre est déjà l'état
+          courant — le presenter comme une option a choisir laissait croire
+          qu'aucun mode n'etait actif. */}
+      {!displayed && creating && (
         <div className="routine-workflow-paths" aria-label="Choix du mode d’exécution">
           <article className="routine-workflow-path current">
-            <span>Choix 1 · actuel</span>
-            <strong>Continuer en mode libre</strong>
-            <p>
-              L’agent suit le prompt et les skills, puis choisit ses outils et leur ordre à chaque
-              lancement.
-            </p>
+            <strong>Mode libre</strong>
+            <p>L’agent choisit ses outils et leur ordre à chaque lancement.</p>
             <button
               type="button"
               className="secondary"
               disabled={busy || !canContinueWithoutWorkflow}
               onClick={onContinueWithoutWorkflow}
             >
-              {action === "continue"
-                ? creating ? "Création en cours…" : "Enregistrement…"
-                : creating ? "Créer en mode libre" : "Continuer en mode libre"}
+              {action === "continue" ? "Création en cours…" : "Créer en mode libre"}
             </button>
           </article>
-          <article className="routine-workflow-path guided">
-            <span>Choix 2 · facultatif</span>
-            <strong>Optimiser avec un workflow proposé</strong>
-            <p>
-              L’outil prépare des étapes précises à relire. Rien n’est appliqué sans ta validation.
-            </p>
-            <button type="button" disabled={busy || !canPropose} onClick={onPropose}>
-              {action === "propose" ? "Proposition en cours…" : "Préparer un workflow guidé"}
+          <article className="routine-workflow-path">
+            <strong>Workflow guidé</strong>
+            <p>Des étapes précises, préparées puis relues par toi avant application.</p>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy || !canPropose}
+              onClick={onPropose}
+            >
+              {action === "propose" ? "Préparation…" : "Préparer un workflow"}
             </button>
           </article>
+        </div>
+      )}
+
+      {!displayed && !creating && (
+        <div className="routine-workflow-actions">
+          <button type="button" disabled={busy || !canPropose} onClick={onPropose}>
+            {action === "propose" ? "Préparation…" : "Passer en workflow guidé…"}
+          </button>
         </div>
       )}
 
@@ -351,43 +353,34 @@ export function RoutineWorkflowPanel({
       )}
 
       {proposal && (
-        <div className="routine-workflow-decision">
-          <div>
-            <span>Décision</span>
-            <strong>Garder la routine actuelle ou appliquer cette proposition ?</strong>
-            <small>
-              Le prompt et les skills restent actifs dans les deux cas.
-            </small>
-          </div>
-          <div className="routine-workflow-actions">
-            <button
-              type="button"
-              disabled={busy || !canContinueWithoutWorkflow}
-              onClick={onContinueWithoutWorkflow}
-            >
-              {action === "continue"
-                ? "Enregistrement du mode actuel…"
-                : workflow ? "Conserver le workflow actuel" : "Continuer sans workflow"}
-            </button>
-            <button
-              type="button"
-              className="primary"
-              disabled={busy || !canAcceptProposal}
-              onClick={onAcceptProposal}
-            >
-              {action === "accept" ? "Acceptation en cours…" : "Accepter ce workflow"}
-            </button>
-          </div>
+        <div className="routine-workflow-actions">
+          <button
+            type="button"
+            disabled={busy || !canContinueWithoutWorkflow}
+            onClick={onContinueWithoutWorkflow}
+          >
+            {action === "continue"
+              ? "Enregistrement…"
+              : workflow ? "Garder la version actuelle" : "Rester en mode libre"}
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy || !canAcceptProposal}
+            onClick={onAcceptProposal}
+          >
+            {action === "accept" ? "Application…" : "Appliquer ce workflow"}
+          </button>
         </div>
       )}
 
       {!creating && saved && (
         <div className="routine-workflow-actions">
           <button type="button" disabled={busy || !canPropose} onClick={onPropose}>
-            {action === "propose" ? "Proposition en cours…" : "Proposer une version optimisée"}
+            {action === "propose" ? "Préparation…" : "Régénérer"}
           </button>
           <button type="button" className="danger" disabled={busy || !canDelete} onClick={onDelete}>
-            {action === "delete" ? "Suppression…" : "Supprimer le workflow…"}
+            {action === "delete" ? "Suppression…" : "Repasser en mode libre"}
           </button>
         </div>
       )}

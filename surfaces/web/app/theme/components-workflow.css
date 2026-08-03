@@ -1,0 +1,303 @@
+/* ============================================================================
+   COMPOSANTS — panneau de routine / workflow.
+   ========================================================================== */
+
+.routine-workflow-panel {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-panel-alt);
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+/* Un workflow enregistre ou propose est un etat normal, pas une alerte : seules
+   les vraies anomalies prennent une couleur de statut. */
+.routine-workflow-panel.saved { border-color: var(--border-default); }
+.routine-workflow-panel.proposal,
+.routine-workflow-panel.proposal.success { border-color: var(--accent); }
+.routine-workflow-panel.success { border-color: var(--success); }
+.routine-workflow-panel.warning { border-color: var(--warning); background: var(--warning-soft); }
+.routine-workflow-panel.error { border-color: var(--danger); background: var(--danger-soft); }
+
+.routine-workflow-heading {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 14px;
+}
+.routine-workflow-heading > div { min-width: 0; }
+.routine-workflow-heading strong,
+.routine-workflow-heading small { display: block; }
+.routine-workflow-heading > div > strong { margin-top: 4px; color: var(--text-strong); font-size: var(--text-lg); line-height: var(--leading-tight); }
+.routine-workflow-heading small { margin-top: 5px; color: var(--text-muted); font-size: var(--text-sm); font-weight: var(--weight-normal); line-height: var(--leading-normal); }
+.routine-workflow-kicker {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  font: var(--weight-semibold) var(--text-3xs) var(--font-mono);
+}
+.routine-workflow-status {
+  max-width: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  padding: 5px 9px;
+  text-transform: uppercase;
+  font: var(--text-3xs) var(--font-mono);
+}
+.routine-workflow-status.ready { background: var(--success-soft); color: var(--success-text); }
+.routine-workflow-status.blocked,
+.routine-workflow-status.draft { background: var(--warning-soft); color: var(--warning-text); }
+
+.routine-workflow-paths {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.routine-workflow-path {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-panel);
+  padding: 13px;
+}
+.routine-workflow-path > strong { color: var(--text-strong); font-size: var(--text-base); line-height: var(--leading-tight); }
+.routine-workflow-path > p { flex: 1; margin: 0; color: var(--text-muted); font-size: var(--text-xs); line-height: var(--leading-normal); }
+/* Les deux options sont equivalentes tant qu'aucune n'est active : aucune ne
+   doit etre mise en avant, sous peine de passer pour l'etat courant. */
+.routine-workflow-path button {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height);
+  margin-top: 3px;
+  border: 1px solid var(--ctx-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ctx-text);
+  padding: 9px 11px;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+  white-space: normal;
+}
+.routine-workflow-path button:hover:not(:disabled) { background: var(--ctx-hover); }
+
+.routine-workflow-preview { min-width: 0; display: grid; gap: 12px; }
+.routine-workflow-meta {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-panel) 78%, transparent);
+  padding: 10px 11px;
+}
+.routine-workflow-meta span { color: var(--text-muted); font-size: var(--text-2xs); }
+.routine-workflow-meta strong { color: var(--text-default); font-size: var(--text-xs); font-weight: var(--weight-medium); line-height: var(--leading-normal); }
+
+.routine-workflow-sequence { min-width: 0; display: grid; gap: 9px; }
+.routine-workflow-sequence-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.routine-workflow-sequence-heading strong { color: var(--text-strong); font-size: var(--text-sm); }
+.routine-workflow-sequence-heading span { color: var(--text-muted); font: var(--text-3xs) var(--font-mono); }
+
+.routine-workflow-steps { min-width: 0; display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.routine-workflow-steps > li {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 0 0 11px;
+}
+.routine-workflow-steps > li:last-child { padding-bottom: 0; }
+.routine-workflow-steps > li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 30px;
+  bottom: 0;
+  left: 14px;
+  width: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--border-default);
+}
+.routine-workflow-step-number {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-circle);
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  font: var(--weight-semibold) var(--text-xs) var(--font-mono);
+}
+.routine-workflow-step-content {
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  padding: 12px;
+}
+.routine-workflow-step-content > header {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 9px;
+}
+.routine-workflow-step-content > header strong { min-width: 0; color: var(--text-strong); font-size: var(--text-base); line-height: var(--leading-snug); }
+.routine-workflow-step-content > header span {
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  padding: 4px 7px;
+  text-transform: uppercase;
+  font: var(--text-3xs) var(--font-mono);
+}
+.routine-workflow-step-content > p { margin: 0; color: var(--text-muted); font-size: var(--text-xs); line-height: var(--leading-normal); white-space: normal; }
+
+.routine-workflow-step-tool {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel-alt);
+  padding: 8px 9px;
+}
+.routine-workflow-step-tool > span { color: var(--text-muted); font-size: var(--text-2xs); }
+.routine-workflow-step-tool > div { min-width: 0; }
+.routine-workflow-step-tool strong,
+.routine-workflow-step-tool code { display: block; }
+.routine-workflow-step-tool strong { color: var(--text-default); font-size: var(--text-xs); line-height: var(--leading-snug); }
+.routine-workflow-step-tool code {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font: var(--text-3xs) / var(--leading-snug) var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.routine-workflow-step-needs {
+  border-left: 2px solid var(--border-default);
+  padding-left: 8px;
+  color: var(--text-muted) !important;
+  font-size: var(--text-2xs) !important;
+}
+.routine-workflow-step-args {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--border-subtle);
+}
+.routine-workflow-step-args > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(90px, 0.35fr) minmax(0, 1fr);
+  gap: 10px;
+  background: var(--surface-panel);
+  padding: 8px 9px;
+}
+.routine-workflow-step-args dt { color: var(--text-muted); font-size: var(--text-2xs); line-height: var(--leading-snug); }
+.routine-workflow-step-args dd { min-width: 0; margin: 0; }
+.routine-workflow-step-args code {
+  display: block;
+  max-width: 100%;
+  color: var(--text-default);
+  font: var(--text-2xs) / var(--leading-normal) var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.routine-workflow-empty { margin: 0; color: var(--text-muted); font-size: var(--text-xs); }
+
+.routine-workflow-dependencies,
+.routine-workflow-warnings {
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  padding: 10px 11px;
+}
+.routine-workflow-dependencies > strong,
+.routine-workflow-warnings > strong { font-size: var(--text-xs); }
+.routine-workflow-dependencies ul,
+.routine-workflow-warnings ul { display: grid; gap: 5px; margin: 6px 0 0; padding-left: 17px; }
+.routine-workflow-dependencies li,
+.routine-workflow-warnings li { font-size: var(--text-2xs); line-height: var(--leading-normal); overflow-wrap: anywhere; }
+.routine-workflow-date { color: var(--text-muted); font: var(--text-3xs) var(--font-mono); }
+
+.routine-workflow-feedback {
+  min-width: 0;
+  min-height: 17px;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  color: var(--success-text);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  /* Le detail renvoye par le kernel est ajoute apres un saut de ligne. */
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.routine-workflow-feedback .cron-test-spinner { margin-top: 1px; }
+.routine-workflow-panel.error .routine-workflow-feedback { color: var(--danger-text); }
+.routine-workflow-panel.warning .routine-workflow-feedback { color: var(--warning-text); }
+
+.routine-workflow-actions { min-width: 0; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.routine-workflow-actions button {
+  min-width: 0;
+  min-height: var(--control-height);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  color: var(--text-default);
+  padding: 9px 12px;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+  white-space: normal;
+}
+.routine-workflow-actions button.primary { border-color: var(--accent); background: var(--accent); color: var(--text-on-accent); }
+.routine-workflow-actions button.danger { border-color: var(--danger); color: var(--danger); }
+.routine-workflow-path button:disabled,
+.routine-workflow-actions button:disabled { opacity: 0.5; cursor: wait; }
+
+@media (max-width: 560px) {
+  .routine-workflow-panel { padding: 13px; }
+  .routine-workflow-heading { grid-template-columns: 1fr; }
+  .routine-workflow-status { justify-self: start; }
+  .routine-workflow-paths { grid-template-columns: 1fr; }
+  .routine-workflow-steps > li { grid-template-columns: 26px minmax(0, 1fr); gap: 8px; }
+  .routine-workflow-steps > li:not(:last-child)::after { top: 27px; left: 12px; }
+  .routine-workflow-step-number { width: 26px; height: 26px; }
+  .routine-workflow-step-content { padding: 10px; }
+  .routine-workflow-step-content > header { grid-template-columns: 1fr; }
+  .routine-workflow-step-content > header span { justify-self: start; }
+  .routine-workflow-step-tool,
+  .routine-workflow-step-args > div { grid-template-columns: 1fr; gap: 4px; }
+  .routine-workflow-actions { display: grid; grid-template-columns: 1fr; }
+  .routine-workflow-actions button { width: 100%; }
+}

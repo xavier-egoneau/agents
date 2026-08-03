@@ -1,0 +1,679 @@
+/* ============================================================================
+   BASE — structure fixe. AUCUNE couleur, police ou valeur visuelle en dur.
+   Tout passe par les tokens declares dans tokens.css.
+   ========================================================================== */
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html,
+body { min-height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--surface-app);
+  color: var(--text-default);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+textarea,
+input,
+select { font: inherit; }
+
+button { color: inherit; }
+
+:focus-visible { outline: var(--focus-outline); outline-offset: 2px; }
+
+::selection { background: var(--accent-soft); color: var(--accent-soft-text); }
+
+/* Barres de defilement discretes, pilotees par les tokens */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: var(--radius-pill); background: var(--border-strong); background-clip: content-box; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ============================================================================
+   SCOPES DE CONTEXTE
+   ----------------------------------------------------------------------------
+   Chaque conteneur qui change de luminosite redeclare son contexte. Il ne
+   fournit que la surface et la couleur de texte : muted, bordures, hover et
+   active sont derives (voir tokens.css), donc le contraste suit
+   automatiquement, y compris au survol et dans un theme sombre.
+
+   Les composants portables (.ibtn, .btn, .workspace-form, .icon-list…) ne
+   doivent utiliser QUE des --ctx-*. C'est la regle qui empeche le blanc sur
+   blanc quand on deplace un composant ou qu'on ajoute un template.
+   ========================================================================== */
+
+/* ----------------------------------------------------------------------------
+   1. LES DERIVATIONS — repetees dans chaque scope, obligatoirement.
+
+   Une custom property herite sa valeur CALCULEE : les var() qu'elle contient
+   sont resolus au point de DECLARATION, pas au point d'usage. Declarer
+   `--ctx-hover: color-mix(…var(--ctx-surface))` uniquement dans :root la
+   figerait donc sur la surface claire, et le rail sombre heriterait un hover
+   quasi blanc — texte blanc sur fond blanc.
+
+   D'ou ce bloc : chaque selecteur qui declare un contexte doit AUSSI recalculer
+   les derivations. Ajouter un scope = ajouter son selecteur a cette liste.
+   -------------------------------------------------------------------------- */
+:root,
+.ctx-chrome,
+.ctx-chrome-alt,
+.ctx-dock,
+.ctx-panel,
+.ctx-app,
+.icon-rail,
+.side-panel,
+.dock,
+.workspace,
+.management-modal,
+.git-dialog,
+.slash-autocomplete,
+.theme-menu,
+.rail-popover,
+.dock-tabs,
+.composer,
+.current-plan,
+.process-trace,
+.git-change-card {
+  --ctx-text-strong: var(--ctx-text);
+  /* 76% / 60% : seuils sous lesquels le texte secondaire passe en dessous de
+     4.5:1 une fois pose sur --ctx-hover. Verifie par npm run check:contrast. */
+  --ctx-text-muted: color-mix(in srgb, var(--ctx-text) 76%, var(--ctx-surface));
+  --ctx-text-faint: color-mix(in srgb, var(--ctx-text) 60%, var(--ctx-surface));
+  /* Separateur decoratif vs contour de champ, qui doit atteindre 3:1. */
+  --ctx-border: color-mix(in srgb, var(--ctx-text) 20%, var(--ctx-surface));
+  --ctx-border-control: color-mix(in srgb, var(--ctx-text) 55%, var(--ctx-surface));
+  --ctx-border-subtle: color-mix(in srgb, var(--ctx-text) 11%, var(--ctx-surface));
+  --ctx-hover: color-mix(in srgb, var(--ctx-text) 9%, var(--ctx-surface));
+  --ctx-active: color-mix(in srgb, var(--ctx-text) 16%, var(--ctx-surface));
+  --ctx-sunken: color-mix(in srgb, var(--ctx-text) 6%, var(--ctx-surface));
+}
+
+/* ----------------------------------------------------------------------------
+   2. LES SCOPES — chacun ne fournit que ses trois valeurs d'entree.
+   -------------------------------------------------------------------------- */
+
+.ctx-chrome {
+  --ctx-surface: var(--surface-rail);
+  --ctx-text: var(--text-on-rail);
+  --ctx-accent: var(--accent-on-rail);
+}
+.ctx-chrome-alt {
+  --ctx-surface: var(--surface-rail-alt);
+  --ctx-text: var(--text-on-rail);
+  --ctx-accent: var(--accent-on-rail);
+}
+.ctx-dock {
+  --ctx-surface: var(--surface-dock);
+  --ctx-text: var(--text-on-dock);
+  --ctx-accent: var(--accent-on-rail);
+}
+/* A poser sur toute surface claire imbriquee dans du chrome sombre
+   (modale, dialogue, popover clair) pour remettre le contexte a plat. */
+.ctx-panel {
+  --ctx-surface: var(--surface-panel);
+  --ctx-text: var(--text-default);
+  --ctx-accent: var(--accent);
+}
+.ctx-app {
+  --ctx-surface: var(--surface-app);
+  --ctx-text: var(--text-default);
+  --ctx-accent: var(--accent);
+}
+
+/* --- Primitives partagees ------------------------------------------------- */
+
+.eyebrow {
+  margin: 0;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+  font: var(--font-eyebrow);
+}
+
+.truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Rotation continue : a poser sur n'importe quelle icone d'attente. */
+.spin { animation: icon-spin 0.9s linear infinite; }
+@keyframes icon-spin { to { transform: rotate(360deg); } }
+
+/* Bouton icone generique : la brique de l'interface.
+   Entierement exprime en --ctx-*, donc utilisable indifferemment sur le rail
+   sombre, dans le dock ou dans une modale claire. Le hover est un melange
+   avec la surface du contexte : il ne peut pas devenir invisible. */
+.ibtn {
+  position: relative; /* ancre les pastilles .rail-badge */
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--control-height);
+  height: var(--control-height);
+  padding: 0;
+  border: 0;
+  border-radius: var(--btn-radius);
+  background: transparent;
+  color: var(--ctx-text-muted);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.ibtn:hover:not(:disabled) { background: var(--ctx-hover); color: var(--ctx-text); }
+.ibtn:disabled { opacity: 0.35; cursor: default; }
+.ibtn.sm { width: var(--control-height-sm); height: var(--control-height-sm); }
+.ibtn.lg { width: var(--control-height-lg); height: var(--control-height-lg); }
+.ibtn.round { border-radius: var(--radius-circle); }
+.ibtn.outlined { border: 1px solid var(--ctx-border); }
+.ibtn.accent { background: var(--accent); color: var(--text-on-accent); }
+.ibtn.accent:hover:not(:disabled) { background: var(--accent-hover); color: var(--text-on-accent); }
+.ibtn.danger:hover:not(:disabled) { background: var(--danger); color: var(--text-on-accent); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: var(--control-height);
+  border: 1px solid var(--ctx-border);
+  border-radius: var(--btn-radius);
+  background: transparent;
+  color: var(--ctx-text);
+  padding: 0 13px;
+  cursor: pointer;
+  font: var(--btn-font);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.btn:hover:not(:disabled) { background: var(--ctx-hover); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn.primary { border-color: var(--accent); background: var(--accent); color: var(--text-on-accent); }
+.btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn.danger { border-color: var(--danger); background: transparent; color: var(--danger); }
+.btn.danger:hover:not(:disabled) { background: var(--danger); color: var(--text-on-accent); }
+
+/* Infobulle CSS pour tout element portant data-tip (rail d'icones, docks). */
+[data-tip] { position: relative; }
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  z-index: 70;
+  top: 50%;
+  left: calc(100% + 10px);
+  transform: translateY(-50%) scale(0.96);
+  transform-origin: left center;
+  border-radius: var(--radius-xs);
+  background: var(--surface-rail-active);
+  color: var(--text-on-rail);
+  padding: 6px 9px;
+  white-space: nowrap;
+  font: var(--weight-medium) var(--text-sm) / 1 var(--font-sans);
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+[data-tip][data-tip-side="bottom"]::after {
+  top: calc(100% + 9px);
+  left: 50%;
+  transform: translateX(-50%) scale(0.96);
+  transform-origin: top center;
+}
+[data-tip][data-tip-side="left"]::after {
+  left: auto;
+  right: calc(100% + 10px);
+  transform-origin: right center;
+}
+/* Pour un bouton proche du bord droit d'un conteneur en overflow:hidden
+   (en-tete du panneau, du dock) : l'infobulle s'aligne sur sa droite au lieu
+   d'etre centree, sinon elle est coupee par le clipping du conteneur. */
+[data-tip][data-tip-side="bottom-end"]::after {
+  top: calc(100% + 9px);
+  left: auto;
+  right: 0;
+  transform: scale(0.96);
+  transform-origin: top right;
+}
+[data-tip][data-tip-side="bottom-end"]:hover::after,
+[data-tip][data-tip-side="bottom-end"]:focus-visible::after { transform: scale(1); }
+[data-tip]:hover::after,
+[data-tip]:focus-visible::after { opacity: 1; transform: translateY(-50%) scale(1); }
+[data-tip][data-tip-side="bottom"]:hover::after { transform: translateX(-50%) scale(1); }
+[data-tip][data-tip-side="left"]:hover::after { transform: translateY(-50%) scale(1); }
+
+/* ============================================================================
+   SHELL — rail d'icones | panneau gauche | zone centrale | dock droit
+   ========================================================================== */
+
+.shell {
+  --col-rail: 0px;
+  --col-left: var(--w-sidepanel, var(--sidepanel-default));
+  --col-right: var(--w-dock, var(--dock-default));
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: var(--col-rail) var(--col-left) minmax(0, 1fr) var(--col-right);
+  transition: grid-template-columns var(--dur-base) var(--ease);
+}
+/* Le rail n'existe que comme substitut du panneau replie : les deux afficheraient
+   sinon les memes entrees cote a cote. */
+.shell[data-left="closed"] { --col-left: 0px; --col-rail: var(--iconrail-width); }
+.shell[data-right="closed"] { --col-right: 0px; }
+.shell[data-resizing="true"] { transition: none; user-select: none; cursor: col-resize; }
+
+/* --- Rail d'icones --------------------------------------------------------- */
+
+.icon-rail {
+  /* Contexte sombre : tout ce qui est imbrique en herite. */
+  --ctx-surface: var(--surface-rail);
+  --ctx-text: var(--text-on-rail);
+  --ctx-accent: var(--accent-on-rail);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: 100vh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  border-right: 1px solid var(--border-rail);
+  background: var(--surface-rail);
+  color: var(--text-on-rail);
+  padding: 10px 0;
+}
+/* `visibility` plutot qu'`overflow: hidden` : le rail heberge le menu de theme,
+   qui s'ouvre sur sa droite et serait sinon clippe. */
+.shell[data-left="open"] .icon-rail { visibility: hidden; border-right-width: 0; }
+
+.rail-brand {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  justify-self: center;
+  border-radius: var(--radius-md);
+  border: 0;
+  background: var(--accent);
+  color: var(--text-on-accent);
+  cursor: pointer;
+  font: var(--weight-bold) var(--text-lg) var(--font-mono);
+}
+
+.rail-nav,
+.rail-foot {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  align-content: start;
+}
+.rail-foot { align-content: end; }
+
+.rail-item {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ctx-text-faint);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.rail-item:hover { background: var(--ctx-hover); color: var(--ctx-text); }
+.rail-item[aria-current="true"] { background: var(--ctx-active); color: var(--ctx-text); }
+.rail-item[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -10px;
+  width: 3px;
+  height: 20px;
+  transform: translateY(-50%);
+  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+  background: var(--accent-on-rail);
+}
+
+/* Pastille de comptage. `--badge-ring` vaut la surface qui l'entoure : le rail
+   la redefinit, ailleurs elle prend celle du panneau clair. */
+.rail-badge {
+  --badge-ring: var(--surface-panel);
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 16px;
+  height: 16px;
+  display: grid;
+  place-content: center;
+  border: 2px solid var(--badge-ring);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  padding: 0 3px;
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs);
+  font-weight: var(--weight-bold);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.icon-rail .rail-badge { --badge-ring: var(--surface-rail); background: var(--accent-on-rail); color: var(--surface-rail); }
+.dock-tabs .rail-badge { --badge-ring: var(--surface-dock-alt); background: var(--accent-on-rail); color: var(--surface-dock); }
+.file-explorer .rail-badge,
+.dock .rail-badge { --badge-ring: var(--surface-dock); }
+.rail-badge.dot { min-width: 9px; width: 9px; height: 9px; padding: 0; }
+
+.rail-divider { width: 24px; height: 1px; margin: 6px 0; background: var(--border-rail); }
+
+.rail-status { position: relative; }
+.rail-status::after {
+  content: "";
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--surface-rail);
+  border-radius: var(--radius-circle);
+  background: var(--success);
+}
+.rail-status[data-state="offline"]::after { background: var(--danger); }
+
+/* --- Panneau lateral gauche ------------------------------------------------ */
+
+.side-panel {
+  --ctx-surface: var(--surface-rail-alt);
+  --ctx-text: var(--text-on-rail);
+  --ctx-accent: var(--accent-on-rail);
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  height: 100vh;
+  min-width: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border-right: 1px solid var(--border-rail);
+  background: var(--surface-rail-alt);
+  color: var(--text-on-rail);
+}
+.shell[data-left="closed"] .side-panel { border-right-width: 0; }
+
+.side-panel-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--topbar-height);
+  border-bottom: 1px solid var(--border-rail);
+  padding: 0 8px 0 16px;
+}
+.side-panel-head h2 {
+  margin: 0;
+  color: var(--text-on-rail);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  font: var(--weight-semibold) var(--text-sm) var(--font-mono);
+}
+/* Le corps ne scrolle pas : c'est la section `grow` qui le fait. Sans ca,
+   faire defiler l'historique ferait disparaitre les cartes de contexte. */
+.side-panel-body { min-height: 0; display: grid; overflow: hidden; padding: 12px 10px; }
+.side-panel-stack {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.side-panel-section { min-height: 0; display: flex; flex-direction: column; }
+.side-panel-section.grow { flex: 1; }
+.side-panel-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 6px 7px;
+}
+.side-panel-section-head .eyebrow { color: var(--ctx-text-faint); }
+.side-panel-section-head > span {
+  margin-left: auto;
+  color: var(--ctx-text-faint);
+  font: var(--font-meta);
+}
+.side-panel-section-body { min-height: 0; }
+
+.side-panel-foot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--ctx-border-subtle);
+  padding: 8px 8px 8px 14px;
+}
+.kernel-status { min-width: 0; display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: center; gap: 9px; }
+.kernel-status > span { width: 8px; height: 8px; border-radius: var(--radius-circle); background: var(--success); }
+.kernel-status.offline > span { background: var(--danger); }
+.kernel-status > div { min-width: 0; }
+.kernel-status strong,
+.kernel-status small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kernel-status strong { font: var(--weight-medium) var(--text-sm) var(--font-sans); }
+.kernel-status small { margin-top: 2px; color: var(--ctx-text-faint); font: var(--font-meta); }
+.side-panel-section.grow .side-panel-section-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+/* --- Poignees de redimensionnement ----------------------------------------- */
+
+.resizer {
+  position: absolute;
+  z-index: 30;
+  top: 0;
+  bottom: 0;
+  width: var(--resizer-hit);
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+.resizer.at-end { right: calc(var(--resizer-hit) / -2); }
+.resizer.at-start { left: calc(var(--resizer-hit) / -2); }
+.resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background var(--dur-fast) var(--ease);
+}
+.resizer:hover::after,
+.resizer:focus-visible::after,
+.resizer[data-active="true"]::after { background: var(--accent); }
+
+.panel-shell { position: relative; min-width: 0; }
+
+/* --- Zone centrale ---------------------------------------------------------- */
+
+.workspace {
+  --ctx-surface: var(--surface-app);
+  --ctx-text: var(--text-default);
+  --ctx-accent: var(--accent);
+  position: relative;
+  min-width: 0;
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--surface-app);
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  min-height: var(--topbar-height);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--surface-app) 82%, transparent);
+  backdrop-filter: var(--blur-overlay);
+  padding: 0 14px;
+}
+.topbar-title { min-width: 0; display: grid; gap: 1px; }
+.topbar-title h1 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--weight-semibold) var(--text-lg) / 1.3 var(--font-display);
+}
+.topbar-title small {
+  overflow: hidden;
+  color: var(--text-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--font-meta);
+}
+.topbar-actions { display: flex; align-items: center; gap: 4px; }
+.topbar-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-panel);
+  padding: 3px;
+}
+.topbar-sep { width: 1px; height: 20px; margin: 0 4px; background: var(--border-subtle); }
+
+/* --- Dock droit ------------------------------------------------------------- */
+
+.dock {
+  --ctx-surface: var(--surface-dock);
+  --ctx-text: var(--text-on-dock);
+  --ctx-accent: var(--accent-on-rail);
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  height: 100vh;
+  min-width: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--iconrail-width);
+  border-left: 1px solid var(--border-dock);
+  background: var(--surface-dock);
+  color: var(--text-on-dock);
+}
+.shell[data-right="closed"] .dock { border-left-width: 0; }
+
+.dock-body { min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.dock-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--topbar-height);
+  border-bottom: 1px solid var(--border-dock);
+  padding: 0 8px 0 14px;
+}
+.dock-head-title { min-width: 0; display: grid; gap: 2px; }
+.dock-head-title strong {
+  overflow: hidden;
+  color: var(--text-on-dock);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--weight-semibold) var(--text-base) var(--font-sans);
+}
+.dock-head-title small { color: var(--text-on-dock-muted); font: var(--font-meta); }
+.dock-content { min-height: 0; overflow: hidden; }
+
+.dock-tabs {
+  /* Fond distinct du dock : redeclare son contexte pour que le survol des
+     onglets se derive de LA surface sur laquelle ils sont posés. */
+  --ctx-surface: var(--surface-dock-alt);
+  --ctx-text: var(--text-on-dock);
+  --ctx-accent: var(--accent-on-rail);
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 4px;
+  border-left: 1px solid var(--border-dock);
+  background: var(--surface-dock-alt);
+  padding: 10px 0;
+}
+.dock-tab {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ctx-text-faint);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.dock-tab:hover { background: var(--ctx-hover); color: var(--ctx-text); }
+.dock-tab[aria-selected="true"] { background: var(--ctx-active); color: var(--ctx-text); }
+.dock-tab[aria-selected="true"]::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -10px;
+  width: 3px;
+  height: 20px;
+  transform: translateY(-50%);
+  border-radius: var(--radius-pill) 0 0 var(--radius-pill);
+  background: var(--accent-on-rail);
+}
+
+/* Etats vides communs aux panneaux sombres */
+.chrome-empty {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 8px;
+  height: 100%;
+  padding: 30px 22px;
+  color: var(--text-on-dock-muted);
+  text-align: center;
+}
+.chrome-empty svg { opacity: 0.4; }
+.chrome-empty p { margin: 0; font-size: var(--text-sm); line-height: var(--leading-normal); }
+
+/* ============================================================================
+   Responsive : le shell passe en pile, les panneaux deviennent des tiroirs.
+   ========================================================================== */
+
+@media (max-width: 900px) {
+  /* Le panneau devient un tiroir superpose : le rail reste donc affiche en
+     permanence, sinon plus rien ne permet de naviguer. */
+  .shell {
+    grid-template-columns: var(--iconrail-width) minmax(0, 1fr);
+    transition: none;
+  }
+  .shell[data-left="open"] .icon-rail { visibility: visible; }
+  .side-panel,
+  .dock {
+    position: fixed;
+    z-index: 60;
+    top: 0;
+    bottom: 0;
+    height: 100dvh;
+    box-shadow: var(--shadow-xl);
+  }
+  .side-panel { left: var(--iconrail-width); width: min(var(--sidepanel-max), 78vw); }
+  .dock { right: 0; left: auto; width: min(var(--dock-max), 94vw); }
+  .shell[data-left="closed"] .side-panel,
+  .shell[data-right="closed"] .dock { display: none; }
+  .resizer { display: none; }
+  .topbar { padding: 0 10px; }
+}

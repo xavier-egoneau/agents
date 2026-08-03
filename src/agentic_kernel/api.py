@@ -20,6 +20,7 @@ from .providers import ProviderFactory
 from .routers.approvals import create_approval_router
 from .routers.artifacts import create_artifact_router
 from .routers.crons import _validate_stored_workflow, create_cron_router
+from .routers.files import create_files_router
 from .routers.git import create_git_router
 from .routers.plans import create_plan_router
 from .routers.resources import create_resource_router
@@ -301,6 +302,7 @@ def create_app(root: Path | str = ".") -> FastAPI:
     app.include_router(create_artifact_router(kernel))
     app.include_router(create_resource_router(project))
     app.include_router(create_git_router(project, git_service))
+    app.include_router(create_files_router())
 
     @app.get("/api/health")
     async def health() -> dict[str, object]:
