@@ -23,6 +23,7 @@ from agentic_kernel.kernel import (
 )
 from agentic_kernel.models import (
     ApprovalRequest,
+    Event,
     ImageAttachment,
     RunRequest,
     RunStatus,
@@ -291,6 +292,48 @@ async def test_session_reuses_complete_message_history(project: Path, monkeypatc
     events = kernel.events.read(first.session_id)
     assert sum(event.type == "session.started" for event in events) == 2
     assert sum(event.type == "messages.snapshot" for event in events) == 2
+
+
+async def test_routine_notification_is_visible_to_an_immediate_user_reply(
+    project: Path, monkeypatch
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    observed_text: list[list[str]] = []
+
+    def respond(messages, _info):
+        observed_text.append(
+            [
+                str(part.content)
+                for message in messages
+                for part in message.parts
+                if getattr(part, "part_kind", None) in {"user-prompt", "text"}
+            ]
+        )
+        return ModelResponse(parts=[TextPart("ok")])
+
+    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(respond))
+    kernel = Kernel(project)
+    session_id = uuid4()
+    kernel.events.append(
+        Event(
+            session_id=session_id,
+            run_id=uuid4(),
+            agent_id="main",
+            type="routine.notification",
+            payload={
+                "cron_job_id": "cron_morning",
+                "status": "success",
+                "content": "Veille du matin\n\nVoici la veille actualisée.",
+            },
+        )
+    )
+
+    await kernel.run(RunRequest(prompt="Relivre-la pour mon test", session_id=session_id))
+
+    assert observed_text[-1] == [
+        "Veille du matin\n\nVoici la veille actualisée.",
+        "Relivre-la pour mon test",
+    ]
 
 
 async def test_runtime_skill_is_injected(project: Path, monkeypatch) -> None:

@@ -48,12 +48,14 @@ def create_run_router(
     @router.post("", response_model=RunResult)
     async def run_agent(payload: WebRunRequest) -> RunResult:
         try:
+            session = kernel.events.projection.session(payload.session_id)
+            is_routine_inbox = bool(session and session.get("trigger") == "routine_inbox")
             return await launch(
                 RunRequest(
                     prompt=payload.prompt,
                     agent_id=payload.agent_id,
                     skills=payload.skills,
-                    workspace=payload.workspace or project_root,
+                    workspace=None if is_routine_inbox else payload.workspace or project_root,
                     security_mode=payload.security_mode,
                     session_id=payload.session_id,
                     provider_id=payload.provider_id,

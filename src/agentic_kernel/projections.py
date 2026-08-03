@@ -176,12 +176,15 @@ class SessionProjection:
         if event.type == "routine.inbox.created":
             payload = event.payload
             db.execute(
-                """INSERT OR IGNORE INTO projected_sessions
+                """INSERT INTO projected_sessions
                    (session_id, agent_id, prompt, workspace, trigger, cron_job_id,
                     created_at, updated_at, status, output, errors_json,
                     event_count, last_sequence)
                    VALUES (?, ?, ?, NULL, 'routine_inbox', NULL, ?, ?, 'success',
-                           '', '[]', 1, ?)""",
+                           '', '[]', 1, ?)
+                   ON CONFLICT(session_id) DO UPDATE SET
+                     prompt='Routines', workspace=NULL, trigger='routine_inbox',
+                     cron_job_id=NULL""",
                 (session_id, event.agent_id, str(payload.get("prompt", "Routines")),
                  timestamp, timestamp, sequence),
             )
@@ -194,9 +197,16 @@ class SessionProjection:
                     created_at, updated_at, status, event_count, last_sequence)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', 1, ?)
                    ON CONFLICT(session_id) DO UPDATE SET
-                     agent_id=excluded.agent_id, prompt=excluded.prompt,
-                     workspace=excluded.workspace, trigger=excluded.trigger,
-                     cron_job_id=excluded.cron_job_id, updated_at=excluded.updated_at,
+                     agent_id=excluded.agent_id,
+                     prompt=CASE WHEN projected_sessions.trigger='routine_inbox'
+                       THEN 'Routines' ELSE excluded.prompt END,
+                     workspace=CASE WHEN projected_sessions.trigger='routine_inbox'
+                       THEN NULL ELSE excluded.workspace END,
+                     trigger=CASE WHEN projected_sessions.trigger='routine_inbox'
+                       THEN 'routine_inbox' ELSE excluded.trigger END,
+                     cron_job_id=CASE WHEN projected_sessions.trigger='routine_inbox'
+                       THEN NULL ELSE excluded.cron_job_id END,
+                     updated_at=excluded.updated_at,
                      status='running', event_count=event_count + 1,
                      last_sequence=excluded.last_sequence""",
                 (

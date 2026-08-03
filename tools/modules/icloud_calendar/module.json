@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "id": "icloud_calendar",
+  "name": "Agenda iCloud",
+  "description": "Lecture bornée des calendriers et événements iCloud via CalDAV.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {
+      "name": "icloud_list_calendars",
+      "description": "Lister les calendriers accessibles dans le compte iCloud configuré.",
+      "category": "calendar",
+      "risk_tags": ["read", "network", "external"],
+      "timeout_seconds": 30,
+      "cancellable": true
+    },
+    {
+      "name": "icloud_list_events",
+      "description": "Lire les événements iCloud compris dans une période bornée.",
+      "category": "calendar",
+      "risk_tags": ["read", "network", "external"],
+      "timeout_seconds": 30,
+      "cancellable": true
+    }
+  ],
+  "enabled": true
+}

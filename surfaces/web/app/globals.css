@@ -174,6 +174,9 @@ label.resource-select { cursor: pointer; }
 .resource-actions button:disabled { opacity: .25; cursor: not-allowed; }
 .resource-editor.cron-editor { display: flex; flex-direction: column; align-items: stretch; }
 .cron-editor > * { flex: 0 0 auto; }
+.editor-back { align-self: flex-start; margin: 0 0 14px; padding: 0; border: 0; background: transparent; color: var(--accent); font: 650 11px var(--font-geist-mono); cursor: pointer; }
+.editor-back:hover { text-decoration: underline; }
+.editor-back:disabled { color: var(--muted); cursor: default; text-decoration: none; }
 .cron-editor textarea { min-height: 130px; resize: vertical; }
 .cron-summary, .permission-inherited { display: flex; justify-content: space-between; align-items: center; gap: 16px; min-height: 52px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 11px; background: #f6f5f0; }
 .cron-summary span, .permission-inherited span { color: var(--muted); font-size: 11px; }

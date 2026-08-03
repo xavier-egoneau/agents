@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic_ai import BinaryContent, ModelMessagesTypeAdapter
-from pydantic_ai.messages import ImageUrl, ModelRequest, UserPromptPart
+from pydantic_ai.messages import ImageUrl, ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from .errors import ConfigurationError
 from .models import Event, RunError, RunResult, RunStatus
@@ -275,6 +275,10 @@ class ContextService:
                 history.append(
                     ModelRequest(parts=[UserPromptPart(content=event.payload["prompt"])])
                 )
+            elif event.type == "routine.notification":
+                content = event.payload.get("content")
+                if isinstance(content, str) and content:
+                    history.append(ModelResponse(parts=[TextPart(content=content)]))
         if context_window_tokens is None and run_id is not None:
             self.events.append(
                 Event(

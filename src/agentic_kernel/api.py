@@ -114,7 +114,8 @@ def create_app(root: Path | str = ".") -> FastAPI:
     cron_service.repair_orphaned_blocks(
         {item.session_id for item in kernel.list_approvals()}
     )
-    if kernel.events.projection.session(ROUTINE_INBOX_SESSION_ID) is None:
+    routine_inbox = kernel.events.projection.session(ROUTINE_INBOX_SESSION_ID)
+    if routine_inbox is None or routine_inbox.get("trigger") != "routine_inbox":
         kernel.events.append(
             Event(
                 session_id=ROUTINE_INBOX_SESSION_ID,

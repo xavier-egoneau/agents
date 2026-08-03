@@ -3508,6 +3508,225 @@
     },
     {
       "schema_version": 2,
+      "id": "icloud_calendar",
+      "name": "Agenda iCloud",
+      "description": "Lecture bornée des calendriers et événements iCloud via CalDAV.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "icloud_list_calendars",
+          "description": "Lister les calendriers accessibles dans le compte iCloud configuré.",
+          "category": "calendar",
+          "risk_tags": [
+            "read",
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "$defs": {
+              "ToolError": {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "title": "Type",
+                    "type": "string"
+                  },
+                  "message": {
+                    "title": "Message",
+                    "type": "string"
+                  },
+                  "retryable": {
+                    "default": false,
+                    "title": "Retryable",
+                    "type": "boolean"
+                  },
+                  "details": {
+                    "additionalProperties": true,
+                    "title": "Details",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
+                ],
+                "title": "ToolError",
+                "type": "object"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Framework-independent result contract shared by every executable tool.",
+            "properties": {
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "data": {
+                "default": null,
+                "title": "Data"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ToolError"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "metadata": {
+                "additionalProperties": true,
+                "title": "Metadata",
+                "type": "object"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "title": "ToolResult",
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": true,
+          "persistent": false
+        },
+        {
+          "name": "icloud_list_events",
+          "description": "Lire les événements iCloud compris dans une période bornée.",
+          "category": "calendar",
+          "risk_tags": [
+            "read",
+            "network",
+            "external"
+          ],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "start": {
+                "type": "string"
+              },
+              "end": {
+                "type": "string"
+              },
+              "calendar": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "limit": {
+                "default": 100,
+                "maximum": 500,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "start",
+              "end"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "$defs": {
+              "ToolError": {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "title": "Type",
+                    "type": "string"
+                  },
+                  "message": {
+                    "title": "Message",
+                    "type": "string"
+                  },
+                  "retryable": {
+                    "default": false,
+                    "title": "Retryable",
+                    "type": "boolean"
+                  },
+                  "details": {
+                    "additionalProperties": true,
+                    "title": "Details",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
+                ],
+                "title": "ToolError",
+                "type": "object"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Framework-independent result contract shared by every executable tool.",
+            "properties": {
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "data": {
+                "default": null,
+                "title": "Data"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ToolError"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "metadata": {
+                "additionalProperties": true,
+                "title": "Metadata",
+                "type": "object"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "title": "ToolResult",
+            "type": "object"
+          },
+          "timeout_seconds": 30.0,
+          "cancellable": true,
+          "persistent": false
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
       "id": "mcp",
       "name": "MCP",
       "description": "Découverte et appels MCP via des connexions configurées hors contexte.",

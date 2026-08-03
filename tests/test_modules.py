@@ -51,7 +51,7 @@ def test_repository_catalog_passes_the_tool_result_contract() -> None:
     index = ModuleRegistry(tools_root).check_index()
     tools = [tool for manifest in index.modules for tool in manifest.tools]
 
-    assert len(index.modules) == 14
+    assert len(index.modules) == 15
     assert len(tools) >= 70
     for tool in tools:
         assert tool.input_schema["type"] == "object"

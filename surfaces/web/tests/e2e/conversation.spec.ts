@@ -82,6 +82,63 @@ test("management cards and history remain directly accessible", async ({ page })
   await expect(page.getByText("Historique", { exact: true })).toBeVisible();
 });
 
+test("automations always opens the list and routine details provide a back link", async ({ page }) => {
+  await page.unroute("**/api/kernel/**");
+  await installKernelMock(page, async (route, url) => {
+    if (url.pathname.endsWith("/approval-status")) {
+      await route.fulfill({
+        json: { approved_scopes: [], pending_count: 0, pending_run_id: null },
+      });
+      return true;
+    }
+    if (url.pathname.endsWith("/crons")) {
+      await route.fulfill({
+        json: [{
+          id: "cron-1",
+          name: "Bonjour",
+          schedule: "0 9 * * *",
+          prompt: "Dis bonjour",
+          workspace: null,
+          agent_id: "main",
+          skills: [],
+          security_mode: "limited",
+          provider_id: "test",
+          model: "test-model",
+          reasoning: "medium",
+          enabled: true,
+          auto_resume: true,
+          session_id: "session-cron-1",
+          notification_session_id: "33333333-3333-4333-8333-333333333333",
+          next_run_at: null,
+          last_run_at: null,
+          last_status: null,
+          last_error: null,
+          last_retryable: false,
+          in_flight: false,
+          blocked: false,
+        }],
+      });
+      return true;
+    }
+    return false;
+  });
+
+  await page.goto("/");
+  await waitForHydration(page);
+  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await page.getByText("Bonjour", { exact: true }).click();
+  await expect(page.getByRole("button", { name: "← Retour aux routines" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Fermer" }).click();
+  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await expect(page.getByText("Bonjour", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "← Retour aux routines" })).not.toBeVisible();
+
+  await page.getByText("Bonjour", { exact: true }).click();
+  await page.getByRole("button", { name: "← Retour aux routines" }).click();
+  await expect(page.getByText("Bonjour", { exact: true })).toBeVisible();
+});
+
 test("a new routine previews and saves a workflow only after explicit acceptance", async ({ page }) => {
   const createdBodies: Record<string, unknown>[] = [];
   let proposalRequests = 0;
@@ -173,7 +230,7 @@ test("a new routine previews and saves a workflow only after explicit acceptance
   await page.goto("/");
   await waitForHydration(page);
   await page.getByRole("button", { name: /Automatisations/ }).click();
-  await page.getByRole("button", { name: "Ajouter" }).click();
+  await page.getByRole("button", { name: "Ajouter", exact: true }).click();
 
   await expect(page.getByRole("group", { name: "Skills de la routine" })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: /workflow-creator/ })).not.toBeVisible();
@@ -263,7 +320,7 @@ test("a routine can be created with skills and no workflow", async ({ page }) =>
   await page.goto("/");
   await waitForHydration(page);
   await page.getByRole("button", { name: /Automatisations/ }).click();
-  await page.getByRole("button", { name: "Ajouter" }).click();
+  await page.getByRole("button", { name: "Ajouter", exact: true }).click();
   await page.getByRole("checkbox", { name: /daily-review/ }).check();
   await page.getByLabel("Demande exécutée").fill("Résume les éléments importants.");
   await page.getByRole("button", { name: "Créer en mode libre" }).click();

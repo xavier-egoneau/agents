@@ -11,7 +11,7 @@ from agentic_kernel.models import ApprovalRequest, Event, RunRequest
 from agentic_kernel.modules import ModuleRegistry
 from agentic_kernel.plans import PlanService, PlanStepInput
 from agentic_kernel.routers.crons import _workflow_basis
-from agentic_kernel.scheduler import CronJobInput
+from agentic_kernel.scheduler import ROUTINE_INBOX_SESSION_ID, CronJobInput
 from agentic_kernel.workflows import (
     AcceptedWorkflow,
     WorkflowDefinition,
@@ -865,6 +865,28 @@ def test_session_history_has_global_routine_inbox_and_hides_execution_sessions(
         item["trigger"] == "routine_inbox" and item["workspace"] is None for item in sessions
     )
     assert all(item["session_id"] != str(automation_session) for item in sessions)
+
+
+def test_routine_inbox_keeps_its_stable_name_after_a_user_reply(project: Path) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    app = create_app(project)
+    from agentic_kernel.events import JsonlEventStore
+
+    JsonlEventStore(project / "content-agents" / "sessions").append(
+        Event(
+            session_id=ROUTINE_INBOX_SESSION_ID,
+            run_id=uuid4(),
+            agent_id="main",
+            type="session.started",
+            payload={"prompt": "pourquoi ?", "trigger": "user", "workspace": str(project)},
+        )
+    )
+
+    sessions = TestClient(app).get("/api/sessions").json()
+    inbox = next(item for item in sessions if item["session_id"] == str(ROUTINE_INBOX_SESSION_ID))
+    assert inbox["prompt"] == "Routines"
+    assert inbox["trigger"] == "routine_inbox"
+    assert inbox["workspace"] is None
 
 
 def test_markdown_agent_and_skill_crud(project: Path) -> None:

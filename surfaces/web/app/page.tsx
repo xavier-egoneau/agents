@@ -898,6 +898,14 @@ export default function Home() {
     () => workspaces.find((workspace) => workspace.path === activeWorkspace),
     [workspaces, activeWorkspace],
   );
+  const activeSession = useMemo(
+    () => sessions.find((session) => session.session_id === activeSessionId),
+    [activeSessionId, sessions],
+  );
+  const isRoutineInbox = activeSession?.trigger === "routine_inbox";
+  const conversationWorkspace = activeSessionId
+    ? activeSession?.workspace
+    : activeWorkspace;
   const commandMatches = useMemo(() => {
     const value = prompt.trimStart();
     if (!value.startsWith("/") || value.includes(" ")) return [];
@@ -1167,10 +1175,12 @@ export default function Home() {
   useEffect(() => {
     if (!managementModal) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setManagementModal(null);
+      if (event.key === "Escape") closeManagement();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
+  // closeManagement deliberately reads the current editor/busy state.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [managementModal]);
 
   const refreshCrons = useCallback(async () => {
@@ -1568,6 +1578,22 @@ export default function Home() {
   function closeCronEditor() {
     resetCronWorkflowState();
     setCronEditor(null);
+  }
+
+  function openManagement(section: ResourceSection) {
+    setManagementError("");
+    setResourceEditor(null);
+    setProviderEditor(null);
+    closeCronEditor();
+    setManagementModal(section);
+  }
+
+  function closeManagement() {
+    if (cronEditor && (cronWorkflowMutationBusy || savingResource || testingCron)) return;
+    setManagementModal(null);
+    setResourceEditor(null);
+    setProviderEditor(null);
+    closeCronEditor();
   }
 
   function createCron() {
@@ -2210,7 +2236,7 @@ export default function Home() {
           prompt: content,
           agent_id: agentId,
           skills: selectedSkills,
-          workspace: activeWorkspace || undefined,
+          workspace: isRoutineInbox ? undefined : activeWorkspace || undefined,
           session_id: sessionId,
           security_mode: securityMode,
           provider_id: providerId || undefined,
@@ -2485,7 +2511,7 @@ export default function Home() {
             defaultProvider={catalog?.default_provider}
             activeCronCount={cronJobs.filter((job) => job.enabled).length}
             unreadCronCount={cronRuns.filter((item) => item.delivery_status === "unread").length}
-            onOpen={setManagementModal}
+            onOpen={openManagement}
           />
 
           <SessionHistory
@@ -2511,7 +2537,7 @@ export default function Home() {
       </aside>
 
       {managementModal && (
-        <div className="management-backdrop" onMouseDown={() => setManagementModal(null)}>
+        <div className="management-backdrop" onMouseDown={closeManagement}>
           <section
             className="management-modal"
             role="dialog"
@@ -2543,12 +2569,7 @@ export default function Home() {
                     aria-label="Ajouter"
                   >+</button>
                 )}
-                <button onClick={() => {
-                  setManagementModal(null);
-                  setResourceEditor(null);
-                  setProviderEditor(null);
-                  closeCronEditor();
-                }}
+                <button onClick={closeManagement}
                   disabled={Boolean(
                     cronEditor && (cronWorkflowMutationBusy || savingResource || testingCron)
                   )}
@@ -3058,6 +3079,12 @@ export default function Home() {
 
             {managementModal === "crons" && cronEditor && (
               <div className="resource-editor cron-editor">
+                <button
+                  type="button"
+                  className="editor-back"
+                  onClick={closeCronEditor}
+                  disabled={cronWorkflowMutationBusy || savingResource || testingCron}
+                >← Retour aux routines</button>
                 <fieldset
                   className="resource-fields"
                   disabled={cronWorkflowMutationBusy || savingResource || testingCron}
@@ -3172,7 +3199,7 @@ export default function Home() {
                     </select>
                   </label>
                   <label>
-                    Niveau de permission
+                    Permission de la routine
                     <select value={cronEditor.security_mode} onChange={(event) => {
                       invalidateCronWorkflowProposal();
                       setCronEditor((current) => current && ({
@@ -3184,6 +3211,11 @@ export default function Home() {
                       <option value="limited">Limité</option>
                       <option value="power">Étendu</option>
                     </select>
+                    <small>
+                      {cronEditor.creating
+                        ? `Initialisée depuis la conversation active (${securityMode}). Tu peux la modifier ici.`
+                        : `Réglage enregistré pour cette routine. La conversation active est en ${securityMode}.`}
+                    </small>
                   </label>
                   <fieldset className="field-wide checkbox-field cron-skills-field">
                     <legend>Skills de la routine</legend>
@@ -3241,7 +3273,7 @@ export default function Home() {
                       {sessions.map((session) => (
                         <option value={session.session_id} key={session.session_id}>
                           {session.trigger === "routine_inbox"
-                            ? "Routines (par défaut)"
+                            ? "Boîte de réception des routines (par défaut)"
                             : session.prompt || "Session sans titre"}
                         </option>
                       ))}
@@ -3452,8 +3484,16 @@ export default function Home() {
         <header className="topbar">
           <div>
             <p className="eyebrow">Conversation active</p>
-            <h1>{activeAgent?.id || "main"}</h1>
-            {activeWorkspace && <small className="active-cwd" title={activeWorkspace}>{activeWorkspace}</small>}
+            <h1>{isRoutineInbox ? "Routines" : activeAgent?.id || "main"}</h1>
+            {isRoutineInbox ? (
+              <small className="active-cwd">Boîte globale · aucun workspace associé</small>
+            ) : conversationWorkspace ? (
+              <small className="active-cwd" title={conversationWorkspace}>
+                {conversationWorkspace}
+              </small>
+            ) : (
+              <small className="active-cwd">Aucun workspace associé</small>
+            )}
           </div>
           <div className="topbar-actions">
             <button
