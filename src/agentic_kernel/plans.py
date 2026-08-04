@@ -406,6 +406,22 @@ class PlanService:
             db.execute("DELETE FROM plans WHERE plan_id = ?", (plan_id,))
         return plan
 
+    def delete_for_session(self, session_id: UUID | str) -> int:
+        with self._db() as db:
+            plan_ids = [
+                row["plan_id"]
+                for row in db.execute(
+                    "SELECT plan_id FROM plans WHERE session_id = ?", (str(session_id),)
+                )
+            ]
+            if plan_ids:
+                placeholders = ",".join("?" for _ in plan_ids)
+                db.execute(
+                    f"DELETE FROM plan_steps WHERE plan_id IN ({placeholders})", plan_ids
+                )
+            cursor = db.execute("DELETE FROM plans WHERE session_id = ?", (str(session_id),))
+        return cursor.rowcount
+
     @staticmethod
     def _replace_steps(
         db: sqlite3.Connection,

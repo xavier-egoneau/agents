@@ -2,18 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from .auth import SPECS, OAuthManager
+from .bootstrap import ensure_content_root, missing_configuration
 from .config import ProjectConfig
+from .doctor import diagnose
 from .errors import KernelError
 from .kernel import Kernel
+from .managed_tools import ManagedToolInstaller
 from .models import RunRequest, RunStatus, SecurityMode
 from .modules import ModuleRegistry
+from .paths import application_root, runtime_layout
 from .providers import ProviderFactory
+from .scheduler import CronService
 from .web_launcher import run_web
 
 app = typer.Typer(help="Agentic Markdown Kernel")
@@ -23,16 +30,89 @@ agents_app = typer.Typer(help="Inspect agent definitions")
 modules_app = typer.Typer(help="Manage modular capabilities")
 skills_app = typer.Typer(help="Inspect OpenAI/Claude Agent Skills")
 approvals_app = typer.Typer(help="Inspect and resolve guardian approvals")
+crons_app = typer.Typer(help="Inspect scheduled routines")
 app.add_typer(auth_app, name="auth")
 app.add_typer(providers_app, name="providers")
 app.add_typer(agents_app, name="agents")
 app.add_typer(modules_app, name="modules")
 app.add_typer(skills_app, name="skills")
 app.add_typer(approvals_app, name="approvals")
+app.add_typer(crons_app, name="crons")
 
 
 def _root() -> Path:
-    return Path.cwd()
+    return application_root(Path.cwd())
+
+
+@app.command("init")
+def init_workspace() -> None:
+    """Install the reference content into content-agents/ without overwriting."""
+    content_root = ProjectConfig(_root()).content_root
+    report = ensure_content_root(content_root)
+    typer.echo(report.render())
+    # `amk init` est explicite : on y détaille aussi la configuration optionnelle.
+    pending = missing_configuration(content_root, include_optional=True)
+    if pending:
+        typer.echo("")
+        typer.echo("Configuration à compléter :")
+        for name in pending:
+            example = name.replace(".json", ".example.json")
+            typer.echo(f"  cp content-agents/{example} content-agents/{name}")
+        typer.echo("")
+        typer.echo("Puis renseigner la clé du provider, ou définir DEEPSEEK_API_KEY.")
+
+
+@app.command("setup")
+def setup(
+    full: Annotated[
+        bool,
+        typer.Option("--full", help="Also install llama.cpp and download the vision model"),
+    ] = False,
+    no_downloads: Annotated[
+        bool,
+        typer.Option("--no-downloads", help="Only create/update AMK user content"),
+    ] = False,
+) -> None:
+    """Prepare a usable local AMK installation."""
+    layout = runtime_layout()
+    report = ensure_content_root(layout.content_root)
+    typer.echo(report.render())
+    if no_downloads:
+        return
+    installer = ManagedToolInstaller()
+    typer.echo("Installation de Ketch…")
+    typer.echo(f"  {installer.install('ketch')}")
+    web_root = layout.application_root / "surfaces" / "web"
+    if not (web_root / "node_modules").is_dir():
+        npm = shutil.which("npm")
+        if npm is None:
+            raise KernelError("npm est requis pour préparer la surface web de développement")
+        typer.echo("Installation des dépendances de la surface web…")
+        subprocess.run([npm, "ci", "--prefix", str(web_root)], check=True)
+    if not full:
+        typer.echo("Vision locale optionnelle : amk setup --full")
+        return
+    typer.echo("Installation de llama.cpp…")
+    typer.echo(f"  {installer.install('llama')}")
+    typer.echo("Téléchargement et préparation du modèle vision…")
+    from .vision import LocalVisionService
+
+    service = LocalVisionService(layout.content_root)
+    try:
+        asyncio.run(service.prepare())
+    finally:
+        service.close()
+    typer.echo("Vision locale prête.")
+
+
+@app.command("doctor")
+def doctor() -> None:
+    """Inspect installation, security and optional local capabilities."""
+    checks = diagnose(runtime_layout())
+    for check in checks:
+        typer.echo(f"{check.status:10} {check.name:24} {check.detail}")
+    if any(check.required and check.status in {"missing", "error"} for check in checks):
+        raise typer.Exit(1)
 
 
 @app.command("run")
@@ -213,6 +293,7 @@ def serve(
     """Serve the kernel HTTP API for local surfaces."""
     import uvicorn
 
+    _bootstrap_on_start()
     uvicorn.run(create_api(_root()), host=host, port=port)
 
 
@@ -223,6 +304,7 @@ def web(
     web_port: int = typer.Option(3000, help="Web surface port"),
 ) -> None:
     """Restart and run the AMK API and web surface together."""
+    _bootstrap_on_start()
     try:
         status = run_web(_root(), host, api_port, web_port)
     except KernelError as exc:
@@ -230,6 +312,55 @@ def web(
         raise typer.Exit(2) from exc
     if status:
         raise typer.Exit(status)
+
+
+def _cron_service() -> CronService:
+    return CronService(ProjectConfig(_root()).content_root / "state.db")
+
+
+@crons_app.command("list")
+def crons_list() -> None:
+    """List routines, flagging those whose workspace is missing here."""
+    for job in _cron_service().list():
+        state = "active" if job.enabled else "inactive"
+        typer.echo(f"{job.id}  {state:8}  {job.schedule:16}  {job.name}")
+        if job.workspace and not job.workspace.is_dir():
+            typer.echo(f"    workspace absent sur cette machine : {job.workspace}")
+
+
+def _bootstrap_on_start() -> None:
+    """Installe le socle avant de démarrer, et ne parle que s'il a agi.
+
+    Appelé depuis les commandes qui lancent réellement l'application, pas
+    depuis `create_app` : instancier le kernel dans un test ne doit pas écrire
+    dans le système de fichiers.
+    """
+    content_root = ProjectConfig(_root()).content_root
+    report = ensure_content_root(content_root)
+    if report.initialized:
+        typer.echo(report.render(), err=True)
+    for name in missing_configuration(content_root):
+        example = name.replace(".json", ".example.json")
+        typer.echo(
+            f"note: content-agents/{name} est absent. "
+            f"Copier content-agents/{example} et le renseigner.",
+            err=True,
+        )
+    # Une routine dont le dossier a disparu reste visible et modifiable : c'est
+    # à l'exécution qu'elle échouera, avec un message qui nomme le chemin.
+    try:
+        stale = [
+            job
+            for job in CronService(content_root / "state.db").list()
+            if job.workspace and not job.workspace.is_dir()
+        ]
+    except Exception:  # noqa: BLE001 - un état illisible ne doit pas bloquer le démarrage
+        return
+    for job in stale:
+        typer.echo(
+            f"note: routine « {job.name} » — workspace absent : {job.workspace}",
+            err=True,
+        )
 
 
 def create_api(root: Path):

@@ -149,6 +149,14 @@ class CronService:
                 connection.execute("ALTER TABLE cron_jobs ADD COLUMN workflow_basis_hash TEXT")
             if "workflow_updated_at" not in columns:
                 connection.execute("ALTER TABLE cron_jobs ADD COLUMN workflow_updated_at TEXT")
+            if "install_id" not in columns:
+                # Colonne d'une quarantaine par machine, retiree depuis : elle
+                # masquait des routines sans le dire, pour un melange de bases
+                # que `amk init` rend improbable. Conservee pour ne pas casser
+                # une base existante; plus rien ne la lit ni ne l'ecrit.
+                connection.execute(
+                    "ALTER TABLE cron_jobs ADD COLUMN install_id TEXT NOT NULL DEFAULT ''"
+                )
             # A previous process may have added the nullable column and stopped
             # before backfilling every row. Keep this repair idempotent instead
             # of tying it only to the ALTER TABLE branch.
@@ -456,6 +464,9 @@ class CronService:
         return self.get(job_id)
 
     def delete(self, job_id: str) -> None:
+        # Volontairement sans filtre d'installation, contrairement aux autres
+        # opérations : c'est le seul moyen d'effacer une routine héritée d'un
+        # autre poste sans devoir l'adopter au préalable.
         with self._connect() as connection:
             cursor = connection.execute("DELETE FROM cron_jobs WHERE id=?", (job_id,))
         if cursor.rowcount == 0:

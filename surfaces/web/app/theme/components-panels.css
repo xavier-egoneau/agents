@@ -367,7 +367,7 @@
   cursor: pointer;
 }
 .file-node:hover { background: var(--ctx-hover); color: var(--ctx-text); }
-.file-node[aria-current="true"] { background: var(--ctx-active); color: var(--ctx-text); }
+.file-node[aria-selected="true"] { background: var(--ctx-active); color: var(--ctx-text); }
 .file-node > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); }
 .file-node em { font: normal var(--text-3xs) var(--font-mono); opacity: 0.7; }
 .file-node .twist { transition: transform var(--dur-fast) var(--ease); }

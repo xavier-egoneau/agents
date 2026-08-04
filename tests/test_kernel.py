@@ -236,6 +236,41 @@ async def test_non_vision_provider_uses_local_vision_transparently(
     assert "image_url" not in serialized
 
 
+async def test_vision_provider_archives_input_image_for_session_reload(
+    project: Path, monkeypatch
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    providers_path = project / "content-agents" / "providers.json"
+    providers = json.loads(providers_path.read_text(encoding="utf-8"))
+    providers["providers"][0]["vision"] = True
+    providers_path.write_text(json.dumps(providers), encoding="utf-8")
+    kernel = Kernel(project)
+
+    async def should_not_run(*args, **kwargs):
+        raise AssertionError("local vision must not run for a vision provider")
+
+    monkeypatch.setattr(kernel.vision, "analyze_bytes", should_not_run)
+    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: TestModel(call_tools=[]))
+    result = await kernel.run(
+        RunRequest(
+            prompt="Inspect this image",
+            images=[
+                ImageAttachment(
+                    name="screen.png",
+                    media_type="image/png",
+                    data_base64="eA==",
+                )
+            ],
+        )
+    )
+
+    assert result.status == RunStatus.SUCCESS
+    messages = kernel.events.projection.messages(result.session_id)
+    user = next(message for message in messages if message["role"] == "user")
+    assert user["artifacts"][0]["kind"] == "input_image"
+    assert user["artifacts"][0]["name"] == "screen.png"
+
+
 async def test_missing_local_vision_degrades_without_failing_the_run(
     project: Path, monkeypatch
 ) -> None:
@@ -296,15 +331,58 @@ def test_image_history_is_sanitized_for_text_only_models() -> None:
 
 async def test_compact_command_forces_manual_compaction(project: Path, monkeypatch) -> None:
     ModuleRegistry(project / "tools").build_index()
-    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: TestModel(call_tools=[]))
+    monkeypatch.setattr(
+        ProviderFactory,
+        "build",
+        lambda *args, **kwargs: TestModel(custom_output_text="incorrect model reply"),
+    )
     kernel = Kernel(project)
     first = await kernel.run(RunRequest(prompt="Keep this decision: alpha."))
     compacted = await kernel.run(RunRequest(prompt="/compact", session_id=first.session_id))
     assert compacted.status == RunStatus.SUCCESS
+    assert compacted.output.startswith("Compaction manuelle terminée :")
+    assert "incorrect model reply" not in compacted.output
     events = kernel.events.read(first.session_id)
     compact_event = next(event for event in events if event.type == "context.compacted")
     assert compact_event.payload["manual"] is True
     assert any(event.type == "context.pre_compaction_snapshot" for event in events)
+    snapshot_event = next(event for event in reversed(events) if event.type == "messages.snapshot")
+    snapshot = kernel.snapshots.load(first.session_id, snapshot_event.payload)
+    assert any(
+        part.get("part_kind") == "text"
+        and str(part.get("content", "")).startswith("Compaction manuelle terminée :")
+        for message in snapshot
+        for part in message.get("parts", [])
+    )
+
+
+async def test_compact_command_reduces_a_long_history(project: Path, monkeypatch) -> None:
+    ModuleRegistry(project / "tools").build_index()
+
+    def respond(_messages, _info):
+        return ModelResponse(parts=[TextPart("Résumé conservé.")])
+
+    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(respond))
+    kernel = Kernel(project)
+    session_id = None
+    for index in range(12):
+        result = await kernel.run(
+            RunRequest(
+                prompt=f"Décision {index}: " + (chr(65 + index) * 6_000),
+                session_id=session_id or uuid4(),
+            )
+        )
+        session_id = result.session_id
+
+    compacted = await kernel.run(RunRequest(prompt="/compact", session_id=session_id))
+
+    event = next(
+        item
+        for item in reversed(kernel.events.read(session_id))
+        if item.type == "context.compacted"
+    )
+    assert event.payload["estimated_tokens_after"] < event.payload["estimated_tokens_before"]
+    assert "contexte actif réduit" in compacted.output
 
 
 async def test_session_reuses_complete_message_history(project: Path, monkeypatch) -> None:

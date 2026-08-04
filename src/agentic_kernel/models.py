@@ -124,6 +124,8 @@ class ToolDescriptor(BaseModel):
     description: str
     category: str = "general"
     risk_tags: list[ToolRisk] = Field(default_factory=list)
+    path_parameters: list[str] = Field(default_factory=list)
+    url_parameters: list[str] = Field(default_factory=list)
     input_schema: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: float | None = Field(default=None, gt=0)

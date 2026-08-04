@@ -49,11 +49,18 @@ export function usePanels() {
   useEffect(() => {
     const stored = readStored();
     if (stored.left) {
-      const width = clamp(stored.left.width, BOUNDS.left);
-      setLeft({ open: stored.left.open, width });
+      // Persisted browser state is intentionally restored after SSR hydration.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLeft({
+        open: typeof stored.left.open === "boolean" ? stored.left.open : true,
+        width: clamp(stored.left.width ?? BOUNDS.left.initial, BOUNDS.left),
+      });
     }
     if (stored.right) {
-      setRight((current) => ({ ...current, width: clamp(stored.right!.width, BOUNDS.right) }));
+      setRight((current) => ({
+        ...current,
+        width: clamp(stored.right!.width ?? BOUNDS.right.initial, BOUNDS.right),
+      }));
     }
   }, []);
 

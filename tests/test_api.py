@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from agentic_kernel.api import create_app
 from agentic_kernel.approvals import ApprovalStore
+from agentic_kernel.events import JsonlEventStore
 from agentic_kernel.kernel import Kernel
 from agentic_kernel.models import ApprovalRequest, Event, RunRequest
 from agentic_kernel.modules import ModuleRegistry
@@ -916,6 +917,56 @@ def test_routine_inbox_keeps_its_stable_name_after_a_user_reply(project: Path) -
     assert inbox["prompt"] == "Routines"
     assert inbox["trigger"] == "routine_inbox"
     assert inbox["workspace"] is None
+
+
+def test_routine_inbox_can_be_cleared_without_deleting_its_stable_session(
+    project: Path,
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    app = create_app(project)
+    store = JsonlEventStore(project / "content-agents" / "sessions")
+    run_id = uuid4()
+    store.append(
+        Event(
+            session_id=ROUTINE_INBOX_SESSION_ID,
+            run_id=run_id,
+            agent_id="main",
+            type="session.started",
+            payload={"prompt": "ancien message", "trigger": "user"},
+        )
+    )
+    store.append(
+        Event(
+            session_id=ROUTINE_INBOX_SESSION_ID,
+            run_id=run_id,
+            agent_id="main",
+            type="session.completed",
+            payload={"status": "success", "output": "ancienne réponse"},
+        )
+    )
+    snapshots = (
+        project / "content-agents" / "sessions" / "blobs" / str(ROUTINE_INBOX_SESSION_ID)
+    )
+    snapshots.mkdir(parents=True)
+    (snapshots / "obsolete.json.gz").write_bytes(b"obsolete")
+    artifacts = (
+        project / "content-agents" / "sessions" / "artifacts" / str(ROUTINE_INBOX_SESSION_ID)
+    )
+    artifacts.mkdir(parents=True)
+    (artifacts / "obsolete.png").write_bytes(b"obsolete")
+
+    client = TestClient(app)
+    response = client.post(f"/api/sessions/{ROUTINE_INBOX_SESSION_ID}/clear")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cleared"
+    detail = client.get(f"/api/sessions/{ROUTINE_INBOX_SESSION_ID}").json()
+    assert detail["trigger"] == "routine_inbox"
+    assert detail["prompt"] == "Routines"
+    assert detail["messages"] == []
+    assert [event["type"] for event in detail["events"]] == ["routine.inbox.created"]
+    assert not snapshots.exists()
+    assert not artifacts.exists()
 
 
 def test_markdown_agent_and_skill_crud(project: Path) -> None:

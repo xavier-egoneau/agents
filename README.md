@@ -44,9 +44,44 @@ Le kernel nécessite Python 3.12 mais ne modifie pas le Python système. `uv` in
 
 ```bash
 uv sync --extra dev --python 3.12
+uv run amk setup
+cp content-agents/providers.example.json content-agents/providers.json
 uv run amk modules check
 uv run amk agents validate
 uv run amk run --agent main "Quelle heure est-il ?"
+```
+
+`amk setup` installe l’espace utilisateur, Ketch et les dépendances web. Le
+profil `amk setup --full` ajoute llama.cpp puis télécharge et prépare le modèle
+vision. `amk setup --no-downloads` ne matérialise que le socle. `amk doctor`
+diagnostique ensuite les chemins, providers, outils, catalogue et capacités du
+sandbox.
+
+`amk init` matérialise seulement `content-agents/` : prompt système, agent
+`main`, skills de base et gabarits de configuration. Cet espace n’est pas
+versionné — il contient des données et des secrets propres à chaque poste — mais
+son contenu de référence est livré avec l’application, dans
+`src/agentic_kernel/defaults/`. Ne jamais copier `content-agents/` d’une machine
+à l’autre : le dossier transporte aussi l’état local, c’est-à-dire des routines
+pointant vers des dossiers inexistants et des clés API.
+
+L’application et le workspace sont distincts : AMK retrouve ses assets depuis
+son installation, tandis que le CWD reste seulement le workspace par défaut.
+Un checkout existant conserve son `content-agents/`; une installation neuve
+utilise le répertoire de données de la plateforme. `AMK_APP_ROOT` et `AMK_HOME`
+permettent de surcharger explicitement ces deux racines.
+
+L’initialisation est également déclenchée au démarrage de `amk serve` et
+`amk web`. Un manifeste d’empreintes met à jour les fichiers du socle restés
+inchangés, restaure ceux qui manquent et ne remplace jamais une variante
+personnalisée.
+
+Si un `content-agents/` a déjà été copié depuis un autre poste, ses routines
+pointent vers des dossiers qui n’existent pas ici. Elles restent utilisables,
+et le démarrage comme `amk crons list` signalent le chemin manquant :
+
+```bash
+uv run amk crons list
 ```
 
 L’agent principal utilise DeepSeek par défaut. La clé peut être placée dans l’entrée `deepseek` de `content-agents/providers.json` :
@@ -66,7 +101,9 @@ uv run amk providers check --provider deepseek
 
 La surface web vit dans `surfaces/web/` et communique avec le kernel par HTTP. La clé provider reste exclusivement dans l’environnement du processus Python.
 
-Après le premier `npm install` dans `surfaces/web`, une seule commande lance les deux services :
+`amk setup` exécute `npm ci` lorsque les dépendances de développement sont
+absentes. Une seule commande lance ensuite les deux services, même depuis un
+autre dossier :
 
 ```bash
 uv run amk web
@@ -136,6 +173,11 @@ gestion structurée des processus et de leur arbre, mais ne déclarent pas encor
 d’isolation filesystem native. Sans backend d’isolation forte, `safe` et
 `limited` refusent l’exécution; `power` exige une approbation explicite. Les
 capacités sont interrogées par le Guardian plutôt que déduites du nom de l’OS.
+Les manifestes déclarent en plus quels arguments sont des chemins ou des URL :
+le Guardian ne dépend donc plus uniquement de noms conventionnels comme
+`path` ou `url`. Les modules Python restent privilégiés tant qu’ils s’exécutent
+dans le processus du kernel; une isolation forte de tous les tools demandera
+un hôte de modules séparé.
 
 Les groupes de processus POSIX sont utilisés sur macOS et Linux. Windows utilise
 un groupe de processus natif et une terminaison récursive contrôlée. Les fichiers
@@ -238,10 +280,9 @@ Le module `web` expose une interface unique pour cinq surfaces de recherche : `s
 `code`, `docs` et `crawl`. Il utilise le binaire stateless Ketch, force les sorties JSON, borne les
 résultats et traduit ses codes d'erreur en catégories stables. Installation opérateur :
 
-```bash
-brew install 1broseidon/tap/ketch
-ketch config
-```
+`amk setup` télécharge le binaire Ketch précompilé correspondant à la plateforme,
+vérifie son SHA-256 et le conserve dans le répertoire de données AMK sans modifier
+le `PATH` système. `ketch config` reste disponible pour choisir les backends.
 
 La recherche web utilise DuckDuckGo par défaut sans clé. Les autres backends et Context7 peuvent
 être configurés directement dans Ketch. Les pages récupérées sont considérées comme des données non

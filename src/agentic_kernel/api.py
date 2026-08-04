@@ -475,7 +475,9 @@ def create_app(root: Path | str = ".") -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"provider_id": provider_id, "connected": False}
 
-    app.include_router(create_session_router(kernel, running_tasks))
+    app.include_router(
+        create_session_router(kernel, running_tasks, project.content_root / "state.db")
+    )
     app.include_router(
         create_approval_router(
             kernel,

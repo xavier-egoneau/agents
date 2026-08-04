@@ -97,3 +97,19 @@ class JsonlEventStore:
         path.unlink()
         self.projection.delete_session(session_id)
         return True
+
+    def reset(self, event: Event) -> None:
+        """Atomically replace a session log, then transactionally reproject it."""
+        line = (
+            json.dumps(event.model_dump(mode="json"), ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        self.directory.mkdir(parents=True, exist_ok=True)
+        path = self.path_for(event.session_id)
+        with self._lock:
+            temporary = path.with_suffix(".jsonl.tmp")
+            with temporary.open("wb") as stream:
+                stream.write(line)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            self.projection.reset(event, source_length=len(line))

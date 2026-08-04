@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill Creator"
+  short_description: "Créer et améliorer les skills de l’agent"
+  default_prompt: "Utilise $skill-creator pour créer une skill réutilisable à partir de ce besoin."

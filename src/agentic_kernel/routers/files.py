@@ -103,7 +103,10 @@ def create_files_router() -> APIRouter:
 
         size = _safe_size(target) or 0
         if target.suffix.lower() not in TEXT_SUFFIXES and size > 64_000:
-            raise HTTPException(status_code=415, detail="Apercu texte indisponible pour ce fichier.")
+            raise HTTPException(
+                status_code=415,
+                detail="Apercu texte indisponible pour ce fichier.",
+            )
 
         raw = target.read_bytes()[:MAX_PREVIEW_BYTES]
         try:

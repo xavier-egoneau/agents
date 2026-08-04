@@ -20,6 +20,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -134,6 +136,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -228,6 +232,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -326,6 +332,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -431,6 +439,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -539,6 +549,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -651,6 +663,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -750,6 +764,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -857,6 +873,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -956,6 +974,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -1066,6 +1086,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -1159,6 +1181,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -1258,6 +1282,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -1357,6 +1383,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -1456,6 +1484,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -1560,6 +1590,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -1647,6 +1679,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -1752,6 +1786,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -1855,6 +1891,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -1990,6 +2028,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -2105,6 +2145,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -2228,6 +2270,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -2329,6 +2373,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -2433,6 +2479,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -2530,6 +2578,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -2627,6 +2677,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -2732,6 +2784,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -2829,6 +2883,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -2926,6 +2982,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -3023,6 +3081,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -3116,6 +3176,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -3219,6 +3281,8 @@
           "risk_tags": [
             "destructive"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -3327,6 +3391,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -3526,6 +3592,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -3615,6 +3683,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -3744,6 +3814,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -3855,6 +3927,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -3953,6 +4027,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -4054,53 +4130,56 @@
     {
       "schema_version": 2,
       "id": "memory",
-      "name": "Memory",
-      "description": "Mémoire explicite SQLite et RAG hybride local avec chunks, FTS5 et embeddings.",
-      "version": "1.0.0",
+      "name": "Knowledge",
+      "description": "Bibliothèque de documents en markdown et recherche hybride sur le projet ou la bibliothèque.",
+      "version": "3.0.0",
       "entrypoint": "module.py:module",
       "capabilities": [
         "tools"
       ],
       "tools": [
         {
-          "name": "memory_store",
-          "description": "Enregistrer explicitement une mémoire vérifiée.",
-          "category": "memory",
+          "name": "knowledge_ingest",
+          "description": "Convertir une URL ou un document local en markdown et le classer dans la bibliothèque.",
+          "category": "knowledge",
           "risk_tags": [
+            "read",
+            "network",
             "write"
           ],
+          "path_parameters": [
+            "source"
+          ],
+          "url_parameters": [
+            "source"
+          ],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
+              "source": {
+                "type": "string"
+              },
+              "tags": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "summary": {
+                "default": "",
+                "type": "string"
+              },
               "title": {
+                "default": "",
                 "type": "string"
-              },
-              "content": {
-                "type": "string"
-              },
-              "scope": {
-                "default": "project",
-                "enum": [
-                  "session",
-                  "project",
-                  "agent"
-                ],
-                "type": "string"
-              },
-              "agent_id": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "verified": {
-                "default": false,
-                "type": "boolean"
               },
               "justification": {
                 "default": "",
@@ -4108,8 +4187,7 @@
               }
             },
             "required": [
-              "title",
-              "content"
+              "source"
             ],
             "type": "object"
           },
@@ -4179,247 +4257,29 @@
             "title": "ToolResult",
             "type": "object"
           },
-          "timeout_seconds": 15.0,
-          "cancellable": false,
+          "timeout_seconds": 180.0,
+          "cancellable": true,
           "persistent": false
         },
         {
-          "name": "memory_search",
-          "description": "Rechercher des mémoires dans une portée.",
-          "category": "memory",
+          "name": "knowledge_sync",
+          "description": "Convertir les documents déposés dans incoming/, puis réindexer la bibliothèque.",
+          "category": "knowledge",
           "risk_tags": [
-            "read"
-          ],
-          "input_schema": {
-            "additionalProperties": false,
-            "properties": {
-              "query": {
-                "type": "string"
-              },
-              "scope": {
-                "default": "project",
-                "enum": [
-                  "session",
-                  "project",
-                  "agent"
-                ],
-                "type": "string"
-              },
-              "agent_id": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "limit": {
-                "default": 10,
-                "maximum": 50,
-                "minimum": 1,
-                "type": "integer"
-              },
-              "verified_only": {
-                "default": false,
-                "type": "boolean"
-              },
-              "justification": {
-                "default": "",
-                "type": "string"
-              }
-            },
-            "required": [
-              "query"
-            ],
-            "type": "object"
-          },
-          "output_schema": {
-            "$defs": {
-              "ToolError": {
-                "additionalProperties": false,
-                "properties": {
-                  "type": {
-                    "title": "Type",
-                    "type": "string"
-                  },
-                  "message": {
-                    "title": "Message",
-                    "type": "string"
-                  },
-                  "retryable": {
-                    "default": false,
-                    "title": "Retryable",
-                    "type": "boolean"
-                  },
-                  "details": {
-                    "additionalProperties": true,
-                    "title": "Details",
-                    "type": "object"
-                  }
-                },
-                "required": [
-                  "type",
-                  "message"
-                ],
-                "title": "ToolError",
-                "type": "object"
-              }
-            },
-            "additionalProperties": false,
-            "description": "Framework-independent result contract shared by every executable tool.",
-            "properties": {
-              "ok": {
-                "title": "Ok",
-                "type": "boolean"
-              },
-              "data": {
-                "default": null,
-                "title": "Data"
-              },
-              "error": {
-                "anyOf": [
-                  {
-                    "$ref": "#/$defs/ToolError"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "metadata": {
-                "additionalProperties": true,
-                "title": "Metadata",
-                "type": "object"
-              }
-            },
-            "required": [
-              "ok"
-            ],
-            "title": "ToolResult",
-            "type": "object"
-          },
-          "timeout_seconds": 15.0,
-          "cancellable": false,
-          "persistent": false
-        },
-        {
-          "name": "memory_get",
-          "description": "Lire une mémoire par identifiant.",
-          "category": "memory",
-          "risk_tags": [
-            "read"
-          ],
-          "input_schema": {
-            "additionalProperties": false,
-            "properties": {
-              "memory_id": {
-                "type": "string"
-              },
-              "justification": {
-                "default": "",
-                "type": "string"
-              }
-            },
-            "required": [
-              "memory_id"
-            ],
-            "type": "object"
-          },
-          "output_schema": {
-            "$defs": {
-              "ToolError": {
-                "additionalProperties": false,
-                "properties": {
-                  "type": {
-                    "title": "Type",
-                    "type": "string"
-                  },
-                  "message": {
-                    "title": "Message",
-                    "type": "string"
-                  },
-                  "retryable": {
-                    "default": false,
-                    "title": "Retryable",
-                    "type": "boolean"
-                  },
-                  "details": {
-                    "additionalProperties": true,
-                    "title": "Details",
-                    "type": "object"
-                  }
-                },
-                "required": [
-                  "type",
-                  "message"
-                ],
-                "title": "ToolError",
-                "type": "object"
-              }
-            },
-            "additionalProperties": false,
-            "description": "Framework-independent result contract shared by every executable tool.",
-            "properties": {
-              "ok": {
-                "title": "Ok",
-                "type": "boolean"
-              },
-              "data": {
-                "default": null,
-                "title": "Data"
-              },
-              "error": {
-                "anyOf": [
-                  {
-                    "$ref": "#/$defs/ToolError"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "metadata": {
-                "additionalProperties": true,
-                "title": "Metadata",
-                "type": "object"
-              }
-            },
-            "required": [
-              "ok"
-            ],
-            "title": "ToolResult",
-            "type": "object"
-          },
-          "timeout_seconds": 15.0,
-          "cancellable": false,
-          "persistent": false
-        },
-        {
-          "name": "memory_forget",
-          "description": "Supprimer explicitement une mémoire.",
-          "category": "memory",
-          "risk_tags": [
+            "read",
+            "write",
             "destructive"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
-              "memory_id": {
-                "type": "string"
-              },
               "justification": {
                 "default": "",
                 "type": "string"
               }
             },
-            "required": [
-              "memory_id"
-            ],
             "type": "object"
           },
           "output_schema": {
@@ -4488,21 +4348,31 @@
             "title": "ToolResult",
             "type": "object"
           },
-          "timeout_seconds": 15.0,
-          "cancellable": false,
-          "persistent": false
+          "timeout_seconds": 300.0,
+          "cancellable": true,
+          "persistent": true
         },
         {
           "name": "knowledge_index",
-          "description": "Découper et indexer incrémentalement les fichiers avec FTS5 et embeddings.",
+          "description": "Découper et indexer incrémentalement les fichiers d'une portée avec FTS5 et embeddings.",
           "category": "knowledge",
           "risk_tags": [
             "read",
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
+              "scope": {
+                "default": "project",
+                "enum": [
+                  "project",
+                  "library"
+                ],
+                "type": "string"
+              },
               "path": {
                 "default": ".",
                 "type": "string"
@@ -4600,15 +4470,25 @@
         },
         {
           "name": "knowledge_search",
-          "description": "Recherche hybride lexicale/vectorielle avec reranking et citations de lignes.",
+          "description": "Recherche hybride lexicale/vectorielle avec citations de lignes, sur le projet ou la bibliothèque.",
           "category": "knowledge",
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
               "query": {
+                "type": "string"
+              },
+              "scope": {
+                "default": "project",
+                "enum": [
+                  "project",
+                  "library"
+                ],
                 "type": "string"
               },
               "limit": {
@@ -4718,6 +4598,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -4805,6 +4687,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -4918,6 +4802,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "$defs": {
               "PlanStepInput": {
@@ -5061,6 +4947,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -5182,6 +5070,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -5280,6 +5170,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -5373,6 +5265,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -5480,6 +5374,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -5599,6 +5495,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -5719,6 +5617,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -5806,6 +5706,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -5903,6 +5805,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -6007,6 +5911,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -6094,6 +6000,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -6181,6 +6089,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -6294,6 +6204,8 @@
           "risk_tags": [
             "write"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -6391,6 +6303,8 @@
           "risk_tags": [
             "destructive"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -6498,6 +6412,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -6608,6 +6524,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -6705,6 +6623,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -6807,6 +6727,8 @@
           "risk_tags": [
             "screen"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -6912,6 +6834,8 @@
           "risk_tags": [
             "execute"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -7029,6 +6953,8 @@
           "risk_tags": [
             "execute"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -7140,6 +7066,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -7233,6 +7161,8 @@
           "risk_tags": [
             "read"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -7337,6 +7267,8 @@
           "risk_tags": [
             "execute"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -7451,6 +7383,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -7566,6 +7500,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -7666,6 +7602,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -7783,6 +7721,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -7894,6 +7834,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {
@@ -7994,6 +7936,8 @@
             "network",
             "external"
           ],
+          "path_parameters": [],
+          "url_parameters": [],
           "input_schema": {
             "additionalProperties": false,
             "properties": {

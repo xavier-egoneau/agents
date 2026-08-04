@@ -74,6 +74,8 @@ def review_tool_call(
     mode: SecurityMode,
     workspace: Path,
     trusted_read_roots: tuple[Path, ...] = (),
+    path_parameters: tuple[str, ...] = (),
+    url_parameters: tuple[str, ...] = (),
 ) -> GuardianDecision:
     justification = arguments.get("justification")
     if not isinstance(justification, str) or not justification.strip():
@@ -87,15 +89,23 @@ def review_tool_call(
             justification="",
             security_mode=mode,
         )
+    path_keys = tuple(dict.fromkeys(("path", "cwd", "destination", *path_parameters)))
+    url_keys = tuple(dict.fromkeys(("url", "seed", *url_parameters)))
+    # A parameter may deliberately accept either a path or an URL (for example
+    # knowledge_ingest.source). Once it is a valid network target it must not
+    # also be interpreted as a local filesystem path.
     raw_paths = [
-        arguments[key] for key in ("path", "cwd", "destination") if arguments.get(key) is not None
+        arguments[key]
+        for key in path_keys
+        if arguments.get(key) is not None
+        and not (key in url_keys and network_scope(arguments.get(key)) is not None)
     ]
     paths = [canonical_path(raw, workspace) for raw in raw_paths]
     path = paths[0] if paths else None
     network_path = next(
         (
             network_scope(value)
-            for key in ("url", "seed")
+            for key in url_keys
             if isinstance((value := arguments.get(key)), str) and network_scope(value) is not None
         ),
         None,
@@ -115,7 +125,7 @@ def review_tool_call(
         verdict, reason = GuardianVerdict.DENY, "Protected or secret paths are denied."
     elif ToolRisk.SECRET in risks or ToolRisk.SYSTEM in risks:
         verdict, reason = GuardianVerdict.DENY, "Secret and system actions are denied."
-    elif _targets_private_network(arguments):
+    elif _targets_private_network(arguments, url_keys):
         verdict, reason = GuardianVerdict.ASK, "Private or local network targets require approval."
     elif (
         paths
@@ -182,8 +192,8 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def _targets_private_network(arguments: dict[str, Any]) -> bool:
-    for key in ("url", "seed"):
+def _targets_private_network(arguments: dict[str, Any], url_keys: tuple[str, ...]) -> bool:
+    for key in url_keys:
         value = arguments.get(key)
         if not isinstance(value, str):
             continue
@@ -362,6 +372,8 @@ class GuardianToolset(WrapperToolset[Any]):
     agent_id: str
     risks: dict[str, list[ToolRisk]]
     timeouts: dict[str, float | None]
+    path_parameters: dict[str, list[str]]
+    url_parameters: dict[str, list[str]]
 
     async def get_tools(self, ctx: RunContext[Any]) -> dict[str, ToolsetTool[Any]]:
         tools = await super().get_tools(ctx)
@@ -410,6 +422,8 @@ class GuardianToolset(WrapperToolset[Any]):
             )
             if deps.state_db is not None
             else (),
+            path_parameters=tuple(self.path_parameters.get(name, ())),
+            url_parameters=tuple(self.url_parameters.get(name, ())),
         )
         deps.events.append(
             Event(

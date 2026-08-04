@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "default_provider": "deepseek",
+  "providers": [
+    {
+      "id": "deepseek",
+      "kind": "deepseek",
+      "connection_type": "api_key",
+      "base_url": "https://api.deepseek.com",
+      "api_key": "",
+      "model": "deepseek-v4-flash",
+      "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
+      "timeout_seconds": 120,
+      "vision": false,
+      "num_predict": 8192,
+      "notes": "API compatible OpenAI. Renseigner api_key ici, ou definir DEEPSEEK_API_KEY dans l'environnement. Le raisonnement se regle via le champ Reasoning de l'agent."
+    },
+    {
+      "id": "codex",
+      "kind": "openai-codex",
+      "connection_type": "auth",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "model": null,
+      "models": [],
+      "vision": true,
+      "auth_help_url": "https://learn.chatgpt.com/docs/auth?surface=cli",
+      "notes": "Connexion OAuth via `amk auth login --provider codex`. Aucune cle a stocker."
+    }
+  ]
+}

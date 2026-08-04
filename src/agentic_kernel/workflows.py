@@ -98,10 +98,18 @@ class WorkflowParameter(_StrictModel):
 
     @model_validator(mode="after")
     def validate_default(self) -> WorkflowParameter:
-        if "default" in self.model_fields_set and not _matches_parameter_type(
-            self.default, self.type
+        # `default: null` signifie « pas de valeur par defaut », ce qui est deja
+        # l'etat du champ absent : refuser l'ecriture explicite creait une
+        # distinction sans portee, et rejetait des propositions correctes.
+        if (
+            "default" in self.model_fields_set
+            and self.default is not None
+            and not _matches_parameter_type(self.default, self.type)
         ):
-            raise ValueError(f"default does not match parameter type {self.type}")
+            raise ValueError(
+                f"default doit être de type {self.type}, reçu "
+                f"{type(self.default).__name__} ({self.default!r})"
+            )
         return self
 
 

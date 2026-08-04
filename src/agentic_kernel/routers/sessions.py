@@ -2,22 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ..kernel import Kernel
+from ..models import Event
+from ..plans import PlanService
 from ..scheduler import ROUTINE_INBOX_SESSION_ID
 
 
 def create_session_router(
     kernel: Kernel,
     running_tasks: dict[UUID, asyncio.Task[Any]],
+    state_database: Path,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+    plans = PlanService(state_database)
 
     def read_event_page(
         session_id: UUID,
@@ -140,6 +145,36 @@ def create_session_router(
             raise HTTPException(status_code=404, detail="Session introuvable")
         kernel.approvals.remove_for_session(session_id)
         return {"session_id": str(session_id), "status": "deleted"}
+
+    @router.post("/{session_id}/clear")
+    async def clear_session(session_id: UUID) -> dict[str, str]:
+        session = kernel.events.projection.session(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session introuvable")
+        if session.get("trigger") != "routine_inbox":
+            raise HTTPException(
+                status_code=409,
+                detail="La commande /clear est réservée à la session Routines.",
+            )
+        if session_id in running_tasks:
+            raise HTTPException(status_code=409, detail="Un run est encore en cours")
+        kernel.events.reset(
+            Event(
+                session_id=session_id,
+                run_id=uuid4(),
+                agent_id=str(session.get("agent_id", "main")),
+                type="routine.inbox.created",
+                payload={"prompt": "Routines"},
+            )
+        )
+        kernel.approvals.remove_for_session(session_id)
+        kernel.snapshots.clear(session_id)
+        artifact_root = (kernel.events.directory / "artifacts").resolve()
+        artifact_directory = (artifact_root / str(session_id)).resolve()
+        artifact_directory.relative_to(artifact_root)
+        shutil.rmtree(artifact_directory, ignore_errors=True)
+        plans.delete_for_session(session_id)
+        return {"session_id": str(session_id), "status": "cleared"}
 
     @router.get("/{session_id}/events")
     async def stream_session_events(session_id: UUID, request: Request) -> StreamingResponse:

@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 from pydantic import Field
 from pydantic_ai import FunctionToolset, RunContext
 
+from agentic_kernel.managed_tools import managed_executable
+
 Action = Literal["search", "scrape", "code", "docs", "crawl"]
 MAX_OUTPUT_BYTES = 200_000
 EXIT_TYPES = {
@@ -169,7 +171,7 @@ def _resolve_binary() -> str | None:
     configured = os.getenv("AMK_KETCH_BIN")
     if configured:
         return configured if os.path.isfile(configured) and os.access(configured, os.X_OK) else None
-    return shutil.which("ketch")
+    return shutil.which("ketch") or managed_executable("ketch")
 
 
 def _build_command(

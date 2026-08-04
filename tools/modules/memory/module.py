@@ -1,186 +1,193 @@
+"""Bibliothèque de connaissance et recherche documentaire.
+
+Deux corpus distincts, d'où le paramètre `scope` :
+
+- `project` — les fichiers du workspace courant, dont `DECISION.md` et
+  `MEMORY.md`. Cette connaissance appartient au dépôt et voyage avec lui.
+- `library` — `content-agents/knowledge/library/`, la bibliothèque transverse
+  du poste, alimentée par ingestion de documents.
+
+Sans ce paramètre, ni l'agent ni le lecteur de ses citations ne saurait lequel
+des deux a répondu.
+"""
+
 from __future__ import annotations
 
-import sqlite3
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from uuid import uuid4
 
 from pydantic import Field
 from pydantic_ai import FunctionToolset, RunContext
 
+from agentic_kernel.converters import ConversionError, convert_file
+from agentic_kernel.knowledge import Document, KnowledgeLibrary
 from agentic_kernel.rag import RagService, load_rag_config
+from agentic_kernel.web_capture import is_url, scrape_to_markdown
 
-Scope = Literal["session", "project", "agent"]
+Scope = Literal["project", "library"]
 
-
-def _db(ctx: RunContext[Any]) -> sqlite3.Connection:
-    path = ctx.deps.state_db or (ctx.deps.events.directory.parent / "state.db")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path)
-    db.row_factory = sqlite3.Row
-    db.execute(
-        """CREATE TABLE IF NOT EXISTS memories (
-            memory_id TEXT PRIMARY KEY, scope TEXT NOT NULL, scope_id TEXT NOT NULL,
-            title TEXT NOT NULL, content TEXT NOT NULL, verified INTEGER NOT NULL,
-            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-        )"""
-    )
-    return db
+DEFAULT_EXTENSIONS = [
+    ".md", ".txt", ".py", ".js", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml",
+]
 
 
-def _rag(ctx: RunContext[Any]) -> RagService:
+def _library(ctx: RunContext[Any]) -> KnowledgeLibrary:
     state_db = Path(ctx.deps.state_db or (ctx.deps.events.directory.parent / "state.db"))
+    return KnowledgeLibrary(state_db.parent / "knowledge")
+
+
+def _rag(ctx: RunContext[Any], scope: Scope) -> RagService:
+    """Un service par corpus : `project` dans RagService vaut la racine indexée."""
+    state_db = Path(ctx.deps.state_db or (ctx.deps.events.directory.parent / "state.db"))
+    root = Path(ctx.deps.workspace) if scope == "project" else _library(ctx).library
     return RagService(
         state_db,
-        Path(ctx.deps.workspace),
+        root,
         load_rag_config(state_db.parent),
         secret_resolver=getattr(ctx.deps, "secret_resolver", None),
     )
 
 
-def _scope_id(ctx: RunContext[Any], scope: Scope, agent_id: str | None) -> str:
-    if scope == "session":
-        return str(ctx.deps.session_id)
-    if scope == "project":
-        return str(ctx.deps.workspace)
-    if not agent_id:
-        raise ValueError("agent_id is required for agent scope")
-    return agent_id
+def _failure(message: str, kind: str = "validation") -> dict[str, Any]:
+    return {"ok": False, "data": None, "error": {"type": kind, "message": message}, "metadata": {}}
 
 
-async def memory_store(
+async def knowledge_ingest(
     ctx: RunContext[Any],
-    title: str,
-    content: str,
-    scope: Scope = "project",
-    agent_id: str | None = None,
-    verified: bool = False,
+    source: str,
+    tags: list[str] | None = None,
+    summary: str = "",
+    title: str = "",
     justification: str = "",
 ) -> dict[str, Any]:
-    """Store an explicit memory; unverified memories are never auto-injected."""
-    if not title.strip() or not content.strip():
-        raise ValueError("title and content are required")
-    memory_id, now = str(uuid4()), datetime.now(UTC).isoformat()
-    with _db(ctx) as db:
-        db.execute(
-            "INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                memory_id,
-                scope,
-                _scope_id(ctx, scope, agent_id),
-                title.strip(),
-                content.strip(),
-                int(verified),
-                now,
-                now,
-            ),
-        )
+    """Convert a URL or local document to markdown and file it in the library.
+
+    Accepts an http(s) URL, or a path to a PDF, HTML, markdown or text file.
+    Use tags from the library vocabulary listed in library/_tags.md.
+    """
+    library = _library(ctx)
+    library.ensure()
+    try:
+        if is_url(source):
+            converted = await scrape_to_markdown(source)
+        else:
+            candidate = Path(source)
+            if not candidate.is_absolute():
+                candidate = (library.incoming / source).resolve()
+            converted = await convert_file(candidate)
+    except ConversionError as exc:
+        return _failure(str(exc), "precondition")
+
+    known = library.known_tags()
+    requested = [tag.strip() for tag in (tags or []) if tag.strip()]
+    unknown = sorted(set(requested) - known)
+    document = Document(
+        title=title.strip() or converted.title or "Sans titre",
+        body=converted.body,
+        source=source,
+        source_type=converted.source_type,
+        tags=tuple(tag for tag in requested if tag in known),
+        summary=summary.strip(),
+    )
+    written = library.write(document)
+    indexed = await _rag(ctx, "library").index(library.library, {".md"})
     return {
         "ok": True,
-        "data": {"memory_id": memory_id, "scope": scope, "verified": verified},
+        "data": {
+            "path": str(written),
+            "title": document.title,
+            "tags": list(document.tags),
+            "chunks_written": indexed.get("chunks_written"),
+        },
         "error": None,
-        "metadata": {},
+        # Un tag inconnu est écarté plutôt qu'accepté en silence : c'est ce qui
+        # empêche la taxonomie de dériver au fil des ingestions.
+        "metadata": {
+            "rejected_tags": unknown,
+            "known_tags": sorted(known),
+        },
     }
 
 
-async def memory_search(
-    ctx: RunContext[Any],
-    query: str,
-    scope: Scope = "project",
-    agent_id: str | None = None,
-    limit: Annotated[int, Field(ge=1, le=50)] = 10,
-    verified_only: bool = False,
-    justification: str = "",
-) -> dict[str, Any]:
-    """Search explicit memories using deterministic lexical matching."""
-    with _db(ctx) as db:
-        rows = db.execute(
-            """SELECT memory_id, title, content, verified, updated_at FROM memories
-               WHERE scope = ? AND scope_id = ?
-               AND (? = 0 OR verified = 1)
-               AND (lower(title) LIKE ? OR lower(content) LIKE ?)
-               ORDER BY updated_at DESC LIMIT ?""",
-            (
-                scope,
-                _scope_id(ctx, scope, agent_id),
-                int(verified_only),
-                f"%{query.casefold()}%",
-                f"%{query.casefold()}%",
-                limit,
-            ),
-        ).fetchall()
-    data = [{**dict(row), "content": row["content"][:2000]} for row in rows]
-    return {"ok": True, "data": data, "error": None, "metadata": {"count": len(data)}}
-
-
-async def memory_get(
-    ctx: RunContext[Any], memory_id: str, justification: str = ""
-) -> dict[str, Any]:
-    """Read one explicit memory by identifier."""
-    with _db(ctx) as db:
-        row = db.execute("SELECT * FROM memories WHERE memory_id = ?", (memory_id,)).fetchone()
-    if not row:
+async def knowledge_sync(ctx: RunContext[Any], justification: str = "") -> dict[str, Any]:
+    """Convert every document waiting in the library incoming/ folder, then index."""
+    library = _library(ctx)
+    library.ensure()
+    pending = library.pending()
+    if not pending:
         return {
-            "ok": False,
-            "data": None,
-            "error": {"type": "not_found", "message": "memory not found"},
-            "metadata": {},
+            "ok": True,
+            "data": {"ingested": [], "skipped": []},
+            "error": None,
+            "metadata": {"incoming": str(library.incoming)},
         }
-    return {"ok": True, "data": dict(row), "error": None, "metadata": {}}
-
-
-async def memory_forget(
-    ctx: RunContext[Any], memory_id: str, justification: str = ""
-) -> dict[str, Any]:
-    """Delete one explicit memory."""
-    with _db(ctx) as db:
-        deleted = db.execute("DELETE FROM memories WHERE memory_id = ?", (memory_id,)).rowcount
+    ingested: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    for path in pending:
+        try:
+            converted = await convert_file(path)
+        except ConversionError as exc:
+            skipped.append({"file": path.name, "reason": str(exc)})
+            continue
+        written = library.write(
+            Document(
+                title=converted.title or path.stem,
+                body=converted.body,
+                source=path.name,
+                source_type=converted.source_type,
+            )
+        )
+        # Le fichier d'origine n'est retiré qu'après écriture réussie : une
+        # conversion interrompue laisse le document déposé intact.
+        path.unlink(missing_ok=True)
+        ingested.append({"file": path.name, "path": str(written)})
+    indexed = await _rag(ctx, "library").index(library.library, {".md"})
     return {
-        "ok": bool(deleted),
-        "data": {"memory_id": memory_id, "deleted": bool(deleted)},
-        "error": None if deleted else {"type": "not_found", "message": "memory not found"},
-        "metadata": {},
+        "ok": True,
+        "data": {"ingested": ingested, "skipped": skipped},
+        "error": None,
+        "metadata": {"chunks_written": indexed.get("chunks_written")},
     }
 
 
 async def knowledge_index(
     ctx: RunContext[Any],
+    scope: Scope = "project",
     path: str = ".",
     extensions: list[str] | None = None,
     justification: str = "",
 ) -> dict[str, Any]:
-    """Incrementally chunk and embed bounded UTF-8 project files in local SQLite."""
-    root = (ctx.deps.workspace / path).resolve()
-    allowed = set(
-        extensions
-        or [".md", ".txt", ".py", ".js", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml"]
-    )
-    data = await _rag(ctx).index(root, allowed)
+    """Incrementally chunk and embed bounded UTF-8 files for the given scope."""
+    if scope == "library":
+        library = _library(ctx)
+        library.ensure()
+        data = await _rag(ctx, scope).index(library.library, {".md"})
+    else:
+        root = (ctx.deps.workspace / path).resolve()
+        data = await _rag(ctx, scope).index(root, set(extensions or DEFAULT_EXTENSIONS))
     return {
         "ok": True,
         "data": data,
         "error": None,
-        "metadata": {
-            "backend": "hybrid_fts5_vector",
-            "incremental": True,
-        },
+        "metadata": {"scope": scope, "backend": "hybrid_fts5_vector", "incremental": True},
     }
 
 
 async def knowledge_search(
     ctx: RunContext[Any],
     query: str,
+    scope: Scope = "project",
     limit: Annotated[int, Field(ge=1, le=50)] = 10,
     justification: str = "",
 ) -> dict[str, Any]:
-    """Run hybrid lexical/vector retrieval with bounded, line-addressable evidence."""
-    data = await _rag(ctx).search(query, limit)
+    """Run hybrid retrieval with line-addressable citations, in one scope."""
+    data = await _rag(ctx, scope).search(query, limit)
     return {
         "ok": True,
         "data": data["results"],
         "error": None,
         "metadata": {
+            "scope": scope,
             "count": len(data["results"]),
             "backend": data["backend"],
             "embedding_backend": data["embedding_backend"],
@@ -194,22 +201,21 @@ class MemoryModule:
     def toolsets(self):
         return [
             FunctionToolset(
-                tools=[
-                    memory_store,
-                    memory_search,
-                    memory_get,
-                    memory_forget,
-                    knowledge_index,
-                    knowledge_search,
-                ]
+                tools=[knowledge_ingest, knowledge_sync, knowledge_index, knowledge_search]
             )
         ]
 
     def instructions(self):
         return [
-            "Memory is explicit: store only useful durable facts and mark verified facts. "
-            "Never treat an unverified memory as authoritative. Run knowledge_index after "
-            "material workspace changes, then use knowledge_search for cited hybrid retrieval."
+            "Durable project knowledge lives in versioned markdown at the workspace root: "
+            "DECISION.md for the decision log, MEMORY.md for the current state. Read them "
+            "before exploring unfamiliar code, and update them in the same change that makes "
+            "them stale.\n"
+            "The library is a separate, machine-local corpus of ingested documents. Use "
+            "knowledge_ingest to file a URL or document into it, knowledge_sync to process "
+            "what the user dropped in content-agents/knowledge/incoming/, and knowledge_search "
+            "with scope='library' to query it. Search scope='project' for workspace files. "
+            "Only use tags already listed in library/_tags.md; add one there before using it."
         ]
 
     def capabilities(self):

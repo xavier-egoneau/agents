@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -65,3 +66,8 @@ class SnapshotStore:
         if not isinstance(value, list):
             raise ConfigurationError(f"invalid snapshot payload: {candidate}")
         return value
+
+    def clear(self, session_id: UUID) -> None:
+        directory = (self.root / str(session_id)).resolve()
+        directory.relative_to(self.root.resolve())
+        shutil.rmtree(directory, ignore_errors=True)

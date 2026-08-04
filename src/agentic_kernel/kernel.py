@@ -200,8 +200,11 @@ class Kernel:
         )
         git_baseline = self._capture_git_baseline(request, run_id, workspace)
         try:
+            archived_images = self._archive_input_images(request, run_id)
             if request.images and not supports_vision:
-                request = await self._prepare_images_with_local_vision(request, run_id)
+                request = await self._prepare_images_with_local_vision(
+                    request, run_id, archived_images
+                )
             root_agent = self._build_agent(
                 request.agent_id,
                 agents,
@@ -248,6 +251,10 @@ class Kernel:
                 return response
             usage = asdict(result.usage)
             messages = json.loads(result.all_messages_json())
+            output = str(result.output)
+            if command and command["command"] == "/compact":
+                output = self._manual_compaction_output(request.session_id, run_id)
+                self._replace_latest_model_text(messages, output)
             snapshot_payload = self.snapshots.save(request.session_id, messages)
             self.events.append(
                 Event(
@@ -263,7 +270,7 @@ class Kernel:
                 run_id=run_id,
                 agent_id=request.agent_id,
                 status=RunStatus.SUCCESS,
-                output=str(result.output),
+                output=output,
                 usage=usage,
                 artifacts=self._run_artifacts(request.session_id, run_id),
             )
@@ -291,6 +298,38 @@ class Kernel:
         self.executor.terminal(response)
         self.active_runs.pop(request.session_id, None)
         return response
+
+    def _manual_compaction_output(self, session_id, run_id) -> str:
+        event = next(
+            (
+                item
+                for item in reversed(self.events.read(session_id))
+                if item.run_id == run_id and item.type == "context.compacted"
+            ),
+            None,
+        )
+        if event is None:
+            return "La compaction manuelle n’a pas pu être confirmée."
+        before = int(event.payload.get("estimated_tokens_before", 0))
+        after = int(event.payload.get("estimated_tokens_after", before))
+        if after < before:
+            result = f"contexte actif réduit de {before:,} à {after:,} tokens estimés"
+        else:
+            result = f"aucun contenu supplémentaire à réduire ({after:,} tokens estimés)"
+        return (
+            f"Compaction manuelle terminée : {result}. "
+            "L’historique complet reste conservé dans l’audit."
+        )
+
+    @staticmethod
+    def _replace_latest_model_text(messages: list[dict[str, Any]], output: str) -> None:
+        for message in reversed(messages):
+            if message.get("kind") != "response":
+                continue
+            for part in reversed(message.get("parts", [])):
+                if part.get("part_kind") == "text":
+                    part["content"] = output
+                    return
 
     def _capture_git_baseline(
         self, request: RunRequest, run_id: UUID, workspace: Path
@@ -360,38 +399,50 @@ class Kernel:
             # an otherwise successful agent response into a failed run.
             pass
 
-    async def _prepare_images_with_local_vision(self, request: RunRequest, run_id) -> RunRequest:
-        observations: list[str] = []
+    def _archive_input_images(self, request: RunRequest, run_id) -> list[tuple[Any, bytes, Path]]:
+        archived: list[tuple[Any, bytes, Path]] = []
         artifact_root = self.events.directory / "artifacts" / str(request.session_id)
         for index, image in enumerate(request.images, 1):
+            try:
+                raw = base64.b64decode(image.data_base64, validate=True)
+            except ValueError as exc:
+                raise VisionUnavailable("image encodée invalide") from exc
             artifact_id = uuid4().hex
             directory = artifact_root / artifact_id
             directory.mkdir(parents=True, exist_ok=True)
             safe_name = Path(image.name).name or f"image-{index}.png"
             target = directory / safe_name
-            try:
-                raw = base64.b64decode(image.data_base64, validate=True)
-            except ValueError as exc:
-                raise VisionUnavailable("image encodée invalide") from exc
             target.write_bytes(raw)
-            payload = {
-                "artifact_id": artifact_id,
-                "name": safe_name,
-                "media_type": image.media_type,
-                "kind": "image",
-                "bytes": len(raw),
-                "path": str(target),
-                "sha256": hashlib.sha256(raw).hexdigest(),
-            }
             self.events.append(
                 Event(
                     session_id=request.session_id,
                     run_id=run_id,
                     agent_id="kernel",
                     type="artifact.created",
-                    payload=payload,
+                    payload={
+                        "artifact_id": artifact_id,
+                        "name": safe_name,
+                        "media_type": image.media_type,
+                        "kind": "input_image",
+                        "bytes": len(raw),
+                        "path": str(target),
+                        "sha256": hashlib.sha256(raw).hexdigest(),
+                    },
                 )
             )
+            archived.append((image, raw, target))
+        return archived
+
+    async def _prepare_images_with_local_vision(
+        self,
+        request: RunRequest,
+        run_id,
+        archived: list[tuple[Any, bytes, Path]],
+    ) -> RunRequest:
+        observations: list[str] = []
+        for index, (image, raw, target) in enumerate(archived, 1):
+            artifact_id = target.parent.name
+            safe_name = target.name
             self.events.append(
                 Event(
                     session_id=request.session_id,

@@ -127,6 +127,8 @@ class AgentFactory:
             instructions.extend(module.instructions())
             risks = {tool.name: tool.risk_tags for tool in manifest.tools}
             timeouts = {tool.name: tool.timeout_seconds for tool in manifest.tools}
+            path_parameters = {tool.name: tool.path_parameters for tool in manifest.tools}
+            url_parameters = {tool.name: tool.url_parameters for tool in manifest.tools}
             module_toolsets = module.toolsets()
             self._append_toolsets(
                 toolsets,
@@ -137,6 +139,8 @@ class AgentFactory:
                 agent_id,
                 risks,
                 timeouts,
+                path_parameters,
+                url_parameters,
             )
             self._append_toolsets(
                 neutral_toolsets,
@@ -147,6 +151,8 @@ class AgentFactory:
                 "subagent",
                 risks,
                 timeouts,
+                path_parameters,
+                url_parameters,
             )
             capabilities.extend(module.capabilities())
         catalog = skill_catalog_instruction(skills)
@@ -250,6 +256,8 @@ class AgentFactory:
         agent_id: str,
         risks,
         timeouts,
+        path_parameters,
+        url_parameters,
     ) -> None:
         for toolset in source:
             target.append(
@@ -263,6 +271,8 @@ class AgentFactory:
                     agent_id=agent_id,
                     risks=risks,
                     timeouts=timeouts,
+                    path_parameters=path_parameters,
+                    url_parameters=url_parameters,
                 )
             )
 

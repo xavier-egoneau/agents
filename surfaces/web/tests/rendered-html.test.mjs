@@ -21,14 +21,15 @@ test("server-renders the AMK surface", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>AMK — Agentic Markdown Kernel<\/title>/i);
-  assert.match(html, /Agentic kernel/);
-  assert.match(html, /Projet actif/);
-  assert.match(html, /Conversation active/);
+  assert.match(html, /<main class="shell"/);
   assert.doesNotMatch(html, /Your site is taking shape|Starter Project/);
 });
 
 test("routine workflow cards keep their natural height and wrap readable step details", async () => {
-  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const styles = await Promise.all([
+    "../app/theme/components-modal.css",
+    "../app/theme/components-workflow.css",
+  ].map((path) => readFile(new URL(path, import.meta.url), "utf8"))).then((files) => files.join("\n"));
   const ruleFor = (selector) => {
     const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const match = styles.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));

@@ -1,18 +1,16 @@
 {
   "schema_version": 2,
   "id": "memory",
-  "name": "Memory",
-  "description": "Mémoire explicite SQLite et RAG hybride local avec chunks, FTS5 et embeddings.",
-  "version": "1.0.0",
+  "name": "Knowledge",
+  "description": "Bibliothèque de documents en markdown et recherche hybride sur le projet ou la bibliothèque.",
+  "version": "3.0.0",
   "entrypoint": "module.py:module",
   "capabilities": ["tools"],
   "tools": [
-    {"name": "memory_store", "description": "Enregistrer explicitement une mémoire vérifiée.", "category": "memory", "risk_tags": ["write"], "timeout_seconds": 15},
-    {"name": "memory_search", "description": "Rechercher des mémoires dans une portée.", "category": "memory", "risk_tags": ["read"], "timeout_seconds": 15},
-    {"name": "memory_get", "description": "Lire une mémoire par identifiant.", "category": "memory", "risk_tags": ["read"], "timeout_seconds": 15},
-    {"name": "memory_forget", "description": "Supprimer explicitement une mémoire.", "category": "memory", "risk_tags": ["destructive"], "timeout_seconds": 15},
-    {"name": "knowledge_index", "description": "Découper et indexer incrémentalement les fichiers avec FTS5 et embeddings.", "category": "knowledge", "risk_tags": ["read", "write"], "timeout_seconds": 120, "cancellable": true, "persistent": true},
-    {"name": "knowledge_search", "description": "Recherche hybride lexicale/vectorielle avec reranking et citations de lignes.", "category": "knowledge", "risk_tags": ["read"], "timeout_seconds": 30}
+    {"name": "knowledge_ingest", "description": "Convertir une URL ou un document local en markdown et le classer dans la bibliothèque.", "category": "knowledge", "risk_tags": ["read", "network", "write"], "path_parameters": ["source"], "url_parameters": ["source"], "timeout_seconds": 180, "cancellable": true},
+    {"name": "knowledge_sync", "description": "Convertir les documents déposés dans incoming/, puis réindexer la bibliothèque.", "category": "knowledge", "risk_tags": ["read", "write", "destructive"], "timeout_seconds": 300, "cancellable": true, "persistent": true},
+    {"name": "knowledge_index", "description": "Découper et indexer incrémentalement les fichiers d'une portée avec FTS5 et embeddings.", "category": "knowledge", "risk_tags": ["read", "write"], "timeout_seconds": 120, "cancellable": true, "persistent": true},
+    {"name": "knowledge_search", "description": "Recherche hybride lexicale/vectorielle avec citations de lignes, sur le projet ou la bibliothèque.", "category": "knowledge", "risk_tags": ["read"], "timeout_seconds": 30}
   ],
   "enabled": true
 }

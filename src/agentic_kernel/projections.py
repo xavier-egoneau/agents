@@ -656,28 +656,55 @@ class SessionProjection:
         return int(row["source_offset"]) if row else 0
 
     def delete_session(self, session_id: UUID) -> None:
-        value = str(session_id)
         with self._db() as db:
-            run_ids = [
-                row["run_id"]
-                for row in db.execute(
-                    "SELECT run_id FROM projected_runs WHERE session_id=?",
-                    (value,),
-                )
-            ]
-            if run_ids:
-                placeholders = ",".join("?" for _ in run_ids)
-                db.execute(
-                    f"DELETE FROM projected_run_transitions WHERE run_id IN ({placeholders})",
-                    run_ids,
-                )
-            for table in (
-                "projected_events",
-                "projected_runs",
-                "projected_context",
-                "projected_messages",
-                "projected_artifacts",
-                "projection_offsets",
-                "projected_sessions",
-            ):
-                db.execute(f"DELETE FROM {table} WHERE session_id=?", (value,))
+            self._delete_session(db, session_id)
+
+    def reset(self, event: Event, *, source_length: int) -> None:
+        """Replace one session projection with its seed in one transaction."""
+        session_id = str(event.session_id)
+        with self._db() as db:
+            self._delete_session(db, event.session_id)
+            cursor = db.execute(
+                """INSERT INTO projected_events
+                   (session_id, run_id, event_type, source_offset, source_length, timestamp)
+                   VALUES (?, ?, ?, 0, ?, ?)""",
+                (
+                    session_id,
+                    str(event.run_id),
+                    event.type,
+                    source_length,
+                    event.timestamp.isoformat(),
+                ),
+            )
+            self._project_event(db, event, int(cursor.lastrowid))
+            db.execute(
+                "INSERT INTO projection_offsets(session_id, source_offset) VALUES (?, ?)",
+                (session_id, source_length),
+            )
+
+    @staticmethod
+    def _delete_session(db: sqlite3.Connection, session_id: UUID) -> None:
+        value = str(session_id)
+        run_ids = [
+            row["run_id"]
+            for row in db.execute(
+                "SELECT run_id FROM projected_runs WHERE session_id=?",
+                (value,),
+            )
+        ]
+        if run_ids:
+            placeholders = ",".join("?" for _ in run_ids)
+            db.execute(
+                f"DELETE FROM projected_run_transitions WHERE run_id IN ({placeholders})",
+                run_ids,
+            )
+        for table in (
+            "projected_events",
+            "projected_runs",
+            "projected_context",
+            "projected_messages",
+            "projected_artifacts",
+            "projection_offsets",
+            "projected_sessions",
+        ):
+            db.execute(f"DELETE FROM {table} WHERE session_id=?", (value,))

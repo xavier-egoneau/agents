@@ -5,6 +5,8 @@ export type ContextStatus = {
   model: string | null;
   context_window_tokens: number | null;
   estimated_history_tokens: number;
+  estimated_request_tokens?: number;
+  observed_input_tokens?: number | null;
   estimated_ratio: number | null;
   compaction_threshold_ratio: number;
   compaction_count: number;
@@ -19,6 +21,10 @@ function compactTokens(value: number): string {
 export function ContextMeter({ status }: { status: ContextStatus | null }) {
   const ratio = status?.estimated_ratio;
   const windowTokens = status?.context_window_tokens;
+  const displayedTokens = status?.observed_input_tokens
+    ?? status?.estimated_request_tokens
+    ?? status?.estimated_history_tokens
+    ?? 0;
   return (
     <div
       className={[
@@ -28,7 +34,7 @@ export function ContextMeter({ status }: { status: ContextStatus | null }) {
       ].filter(Boolean).join(" ")}
       title={
         windowTokens
-          ? `${status.estimated_history_tokens.toLocaleString("fr-FR")} tokens estimés sur ${windowTokens.toLocaleString("fr-FR")}`
+          ? `${displayedTokens.toLocaleString("fr-FR")} tokens sur ${windowTokens.toLocaleString("fr-FR")}`
           : "Fenêtre de contexte inconnue — utilise /model-context"
       }
     >
@@ -38,7 +44,7 @@ export function ContextMeter({ status }: { status: ContextStatus | null }) {
           <strong>
             {Math.min(100, Math.round(ratio * 100))} %
             <small>
-              {compactTokens(status.estimated_history_tokens)} / {compactTokens(windowTokens)}
+              {compactTokens(displayedTokens)} / {compactTokens(windowTokens)}
             </small>
           </strong>
         ) : (

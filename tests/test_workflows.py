@@ -221,6 +221,27 @@ def test_unknown_and_invalid_tool_arguments_are_rejected(tmp_path: Path) -> None
     assert any("args.limit" in error for error in caught.value.errors)
 
 
+def test_explicit_null_default_is_accepted() -> None:
+    """`default: null` dit « pas de valeur par défaut ».
+
+    C'est déjà l'état du champ absent : refuser l'écriture explicite créait une
+    distinction sans portée fonctionnelle, et rejetait des propositions valides.
+    """
+    from agentic_kernel.workflows import WorkflowParameter
+
+    assert WorkflowParameter.model_validate({"type": "string", "default": None}).default is None
+    assert WorkflowParameter.model_validate({"type": "string"}).default is None
+
+
+def test_mismatched_default_reports_what_was_received() -> None:
+    from pydantic import ValidationError
+
+    from agentic_kernel.workflows import WorkflowParameter
+
+    with pytest.raises(ValidationError, match=r"reçu int \(42\)"):
+        WorkflowParameter.model_validate({"type": "string", "default": 42})
+
+
 def test_double_brace_reference_names_the_syntax_error(tmp_path: Path) -> None:
     """`${{...}}` est l'erreur de syntaxe la plus fréquente des modèles.
 

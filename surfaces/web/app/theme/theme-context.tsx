@@ -15,7 +15,7 @@ import {
   isThemeId,
   type ThemeId,
 } from "./registry";
-import { resolveIcon, type IconName } from "./icons";
+import { baseIcons, themeIconSets, type IconName } from "./icons";
 
 type ThemeContextValue = {
   theme: ThemeId;
@@ -28,11 +28,15 @@ const ThemeContext = createContext<ThemeContextValue>({
 });
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
+  // The server and the first client render must agree. The bootstrap script
+  // already applies colors before paint; React synchronizes its icon registry
+  // only after hydration.
   const [theme, setThemeState] = useState<ThemeId>(DEFAULT_THEME);
 
-  // Recupere le theme applique par le script de bootstrap (evite le flash).
   useEffect(() => {
     const applied = document.documentElement.dataset.theme;
+    // Hydration must start with the server default; synchronize only after it.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (isThemeId(applied)) setThemeState(applied);
   }, []);
 
@@ -74,7 +78,11 @@ export function Icon({
   "aria-hidden": ariaHidden = true,
 }: IconProps) {
   const { theme } = useTheme();
-  const Glyph = resolveIcon(name, theme);
+  // Accès direct au registre plutôt qu'appel de fonction : `resolveIcon()`
+  // renvoie un composant existant, mais un appel dans le corps du rendu est
+  // indiscernable d'une création de composant — laquelle réinitialiserait
+  // l'état du sous-arbre à chaque rendu.
+  const Glyph = themeIconSets[theme]?.[name] ?? baseIcons[name];
   return (
     <Glyph
       className={className}

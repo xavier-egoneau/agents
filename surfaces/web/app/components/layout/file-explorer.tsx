@@ -168,7 +168,9 @@ export function FileExplorer({
               className="file-node"
               style={{ "--depth": depth } as CSSProperties}
               aria-expanded={node.kind === "dir" ? isOpen : undefined}
-              aria-current={selectedPath === node.path ? "true" : undefined}
+              // `aria-selected` est requis par le rôle treeitem, et remplace
+              // `aria-current` qui n'a pas de sens dans une arborescence.
+              aria-selected={selectedPath === node.path}
               data-status={changedPaths?.get(node.path)}
               onClick={() => toggle(node)}
               title={node.path}

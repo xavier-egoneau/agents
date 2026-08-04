@@ -85,6 +85,13 @@ type SlashCommand = {
   skill: string;
   source: string;
 };
+const routineClearCommand: SlashCommand = {
+  command: "/clear",
+  description: "Vider définitivement le fil de la session Routines.",
+  kind: "native",
+  skill: "",
+  source: "interface",
+};
 type Catalog = {
   default_provider: string;
   agents: Agent[];
@@ -103,6 +110,7 @@ type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  images?: ComposerImage[];
   meta?: string;
   error?: boolean;
   runId?: string;
@@ -129,6 +137,11 @@ type ComposerImage = {
   name: string;
   mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
   dataUrl: string;
+};
+
+type ImagePreview = {
+  source: string;
+  name: string;
 };
 
 type ManagedResource = {
@@ -429,22 +442,8 @@ class WorkflowProposalDisplayError extends Error {}
  * (502) se réduit à « vérifie le fournisseur » alors que le backend explique
  * précisément ce qui a échoué — le diagnostic était jeté avec le corps.
  */
-async function apiErrorDetail(response: Response): Promise<string> {
-  try {
-    const payload: unknown = await response.clone().json();
-    if (isRecord(payload) && typeof payload.detail === "string") return payload.detail.trim();
-  } catch {
-    /* réponse vide ou non JSON */
-  }
-  return "";
-}
-
 async function workflowProposalError(response: Response): Promise<WorkflowProposalDisplayError> {
-  const guidance = workflowProposalErrorForStatus(response.status);
-  const detail = await apiErrorDetail(response);
-  return detail
-    ? new WorkflowProposalDisplayError(`${guidance.message}\n\nDétail : ${detail}`)
-    : guidance;
+  return workflowProposalErrorForStatus(response.status);
 }
 
 function workflowProposalErrorForStatus(status: number): WorkflowProposalDisplayError {
@@ -762,23 +761,30 @@ function MarkdownMessage({ content }: { content: string }) {
 }
 
 function MessageArtifacts({
-  sessionId, artifacts,
+  sessionId, artifacts, onImageOpen,
 }: {
   sessionId: string | null;
   artifacts?: RunArtifact[];
+  onImageOpen: (image: ImagePreview) => void;
 }) {
-  if (!sessionId || !artifacts?.length) return null;
+  const visibleArtifacts = artifacts?.filter((artifact) => artifact.kind !== "input_image");
+  if (!sessionId || !visibleArtifacts?.length) return null;
   return (
     <div className="message-artifacts">
-      {artifacts.map((artifact) => {
+      {visibleArtifacts.map((artifact) => {
         const source = `/api/kernel/artifacts/${encodeURIComponent(sessionId)}/${encodeURIComponent(artifact.artifact_id)}`;
         return artifact.kind === "image" || artifact.media_type.startsWith("image/") ? (
           <figure key={artifact.artifact_id}>
-            <a href={source} target="_blank" rel="noreferrer">
+            <button
+              type="button"
+              className="message-image-button"
+              aria-label={`Agrandir ${artifact.name}`}
+              onClick={() => onImageOpen({ source, name: artifact.name })}
+            >
               {/* Runtime artifact URLs are not statically optimizable by Next Image. */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={source} alt={artifact.name} loading="lazy" />
-            </a>
+            </button>
             <figcaption>{artifact.name}</figcaption>
           </figure>
         ) : (
@@ -787,6 +793,34 @@ function MessageArtifacts({
           </a>
         );
       })}
+    </div>
+  );
+}
+
+function UserMessageImages({
+  images, onImageOpen,
+}: {
+  images?: ComposerImage[];
+  onImageOpen: (image: ImagePreview) => void;
+}) {
+  if (!images?.length) return null;
+  return (
+    <div className="user-message-images" aria-label="Images envoyées">
+      {images.map((image) => (
+        <figure key={image.id}>
+          <button
+            type="button"
+            className="message-image-button"
+            aria-label={`Agrandir ${image.name}`}
+            onClick={() => onImageOpen({ source: image.dataUrl, name: image.name })}
+          >
+            {/* User-provided data URLs cannot be handled by Next Image. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={image.dataUrl} alt={image.name} />
+          </button>
+          <figcaption>{image.name}</figcaption>
+        </figure>
+      ))}
     </div>
   );
 }
@@ -852,6 +886,7 @@ export default function Home() {
     dispatchConversation({ type: "set", field: "activeRunId", value });
   }, []);
   const [running, setRunning] = useState(false);
+  const [clearingSession, setClearingSession] = useState(false);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState("");
   const [workspaceInput, setWorkspaceInput] = useState("");
@@ -869,6 +904,7 @@ export default function Home() {
   const [attachmentError, setAttachmentError] = useState("");
   const [stopRequested, setStopRequested] = useState(false);
   const [managementModal, setManagementModal] = useState<ResourceSection | null>(null);
+  const [imagePreview, setImagePreview] = useState<ImagePreview | null>(null);
   const [managedResources, setManagedResources] = useState<ManagedResource[]>([]);
   const [resourceEditor, setResourceEditor] = useState<ResourceEditor | null>(null);
   const [managementError, setManagementError] = useState("");
@@ -1059,8 +1095,11 @@ export default function Home() {
     const value = prompt.trimStart();
     if (!value.startsWith("/") || value.includes(" ")) return [];
     const query = value.toLowerCase();
-    return slashCommands.filter((item) => item.command.startsWith(query));
-  }, [prompt, slashCommands]);
+    const availableCommands = isRoutineInbox
+      ? [routineClearCommand, ...slashCommands]
+      : slashCommands;
+    return availableCommands.filter((item) => item.command.startsWith(query));
+  }, [prompt, slashCommands, isRoutineInbox]);
 
   useEffect(() => {
     if (!activeWorkspace) return;
@@ -1331,6 +1370,15 @@ export default function Home() {
   // closeManagement deliberately reads the current editor/busy state.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [managementModal]);
+
+  useEffect(() => {
+    if (!imagePreview) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setImagePreview(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [imagePreview]);
 
   const refreshCrons = useCallback(async () => {
     const [jobsResponse, runsResponse] = await Promise.all([
@@ -1675,6 +1723,37 @@ export default function Home() {
       setActiveSessionId(null);
       setMessages([]);
       setTraceEvents([]);
+    }
+  }
+
+  async function clearRoutineSession() {
+    if (!activeSessionId || !isRoutineInbox || clearingSession) return;
+    if (!window.confirm(
+      "Vider définitivement tous les messages et toutes les traces de la session Routines ?",
+    )) return;
+    setClearingSession(true);
+    setAttachmentError("");
+    try {
+      const response = await fetch(
+        `/api/kernel/sessions/${encodeURIComponent(activeSessionId)}/clear`,
+        { method: "POST" },
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Impossible de vider la session");
+      setMessages([]);
+      setTraceEvents([]);
+      setApprovals([]);
+      setActiveRunId(null);
+      setCurrentPlan(null);
+      setPrompt("");
+      await refreshSessions();
+      await refreshContextStatus();
+    } catch (error) {
+      setAttachmentError(
+        error instanceof Error ? error.message : "Impossible de vider la session",
+      );
+    } finally {
+      setClearingSession(false);
     }
   }
 
@@ -2248,6 +2327,16 @@ export default function Home() {
           error: message.error,
           runId: message.run_id,
           artifacts: message.artifacts,
+          images: message.role === "user"
+            ? message.artifacts
+              ?.filter((artifact) => artifact.kind === "input_image")
+              .map((artifact) => ({
+                id: artifact.artifact_id,
+                name: artifact.name,
+                mediaType: artifact.media_type,
+                dataUrl: `/api/kernel/artifacts/${encodeURIComponent(sessionId)}/${encodeURIComponent(artifact.artifact_id)}`,
+              }))
+            : undefined,
         }))
       : [{
           id: `${sessionId}-prompt`,
@@ -2355,7 +2444,12 @@ export default function Home() {
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const content = prompt.trim();
-    if (!content || running) return;
+    if (!content || running || clearingSession) return;
+    if (content.toLowerCase() === "/clear") {
+      await clearRoutineSession();
+      return;
+    }
+    const submittedImages = composerImages;
     const secretCommand = content.match(/^\/secret\s+(\S+)\s+[\s\S]+$/i);
     const displayedContent = secretCommand
       ? `/secret ${secretCommand[1]} ••••••••`
@@ -2364,6 +2458,7 @@ export default function Home() {
       id: crypto.randomUUID(),
       role: "user",
       content: displayedContent,
+      images: submittedImages,
       meta: `${agentId}${selectedSkills.length ? ` · ${selectedSkills.length} skill${selectedSkills.length > 1 ? "s" : ""}` : ""}`,
     };
     const sessionId = activeSessionId || crypto.randomUUID();
@@ -2375,6 +2470,8 @@ export default function Home() {
     setActiveRunId(null);
     setMessages((current) => continuingSession ? [...current, userMessage] : [userMessage]);
     setPrompt("");
+    setComposerImages([]);
+    setAttachmentError("");
     setRunning(true);
     const eventSource = startEventStream(sessionId);
     try {
@@ -2393,7 +2490,7 @@ export default function Home() {
           provider_id: providerId || undefined,
           model: selectedModel || undefined,
           reasoning,
-          images: composerImages.map((image) => ({
+          images: submittedImages.map((image) => ({
             name: image.name,
             media_type: image.mediaType,
             data_base64: image.dataUrl.split(",", 2)[1],
@@ -2882,6 +2979,31 @@ export default function Home() {
           </SidePanelSection>
         </div>
       </SidePanel>
+
+      {imagePreview && (
+        <div className="image-lightbox-backdrop" onMouseDown={() => setImagePreview(null)}>
+          <section
+            className="image-lightbox"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="image-preview-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <h2 id="image-preview-title">{imagePreview.name}</h2>
+              <button
+                type="button"
+                aria-label="Fermer l’image"
+                onClick={() => setImagePreview(null)}
+                autoFocus
+              ><Icon name="close" size="sm" /></button>
+            </header>
+            {/* Preview sources are runtime artifact URLs or user-provided data URLs. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={imagePreview.source} alt={imagePreview.name} />
+          </section>
+        </div>
+      )}
 
       {managementModal && (
         <div className="management-backdrop" onMouseDown={closeManagement}>
@@ -3974,6 +4096,7 @@ export default function Home() {
                           <MessageArtifacts
                             sessionId={activeSessionId}
                             artifacts={message.artifacts}
+                            onImageOpen={setImagePreview}
                           />
                           {gitSnapshotForRun(traceEvents, message.runId) && (
                             <GitChangeCard
@@ -3985,7 +4108,13 @@ export default function Home() {
                           )}
                         </>
                       ) : (
-                        <p>{message.content}</p>
+                        <>
+                          <UserMessageImages
+                            images={message.images}
+                            onImageOpen={setImagePreview}
+                          />
+                          <p>{message.content}</p>
+                        </>
                       )}
                     </div>
                   </article>
@@ -4138,7 +4267,7 @@ export default function Home() {
             running={running}
             stopRequested={stopRequested}
             canAttach={!running && composerImages.length < 4}
-            canSend={Boolean(prompt.trim()) && !running}
+            canSend={Boolean(prompt.trim()) && !running && !clearingSession}
             vision={Boolean(activeProvider?.vision)}
             onAttach={() => imageInput.current?.click()}
             onSecurityModeChange={(mode) => void changeSecurityMode(mode)}

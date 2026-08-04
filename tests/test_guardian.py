@@ -133,3 +133,39 @@ def test_private_web_target_always_requires_approval(tmp_path: Path) -> None:
     )
     assert decision.verdict == GuardianVerdict.ASK
     assert decision.path == "http://127.0.0.1:8080"
+
+
+def test_declared_path_parameter_is_checked_outside_workspace(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside.md"
+    decision = review_tool_call(
+        tool_name="knowledge_ingest",
+        tool_call_id="call-ingest",
+        agent_id="main",
+        arguments={"source": str(outside), "justification": "Archive this document."},
+        risks=[ToolRisk.READ, ToolRisk.WRITE],
+        mode=SecurityMode.POWER,
+        workspace=tmp_path,
+        path_parameters=("source",),
+        url_parameters=("source",),
+    )
+    assert decision.verdict == GuardianVerdict.ASK
+    assert decision.path == str(outside.resolve())
+
+
+def test_declared_url_parameter_catches_private_target(tmp_path: Path) -> None:
+    decision = review_tool_call(
+        tool_name="knowledge_ingest",
+        tool_call_id="call-ingest",
+        agent_id="main",
+        arguments={
+            "source": "http://127.0.0.1:9000/private",
+            "justification": "Archive this page.",
+        },
+        risks=[ToolRisk.READ, ToolRisk.NETWORK, ToolRisk.WRITE],
+        mode=SecurityMode.POWER,
+        workspace=tmp_path,
+        path_parameters=("source",),
+        url_parameters=("source",),
+    )
+    assert decision.verdict == GuardianVerdict.ASK
+    assert decision.path == "http://127.0.0.1:9000"

@@ -12,14 +12,16 @@ from pydantic import ValidationError
 
 from .errors import ConfigurationError
 from .models import AgentConfig, ProviderRegistry, SkillConfig
+from .paths import content_root
 from .platform.secure_files import secure_file
 
 NATIVE_RPPL_COMMANDS: dict[str, dict[str, str]] = {
     "/compact": {
         "description": "Compacter manuellement le contexte de la session.",
         "prompt": (
-            "Effectue maintenant la compaction manuelle du contexte, puis réponds "
-            "uniquement avec un bref bilan indiquant ce qui a été préservé."
+            "Le kernel effectue la compaction manuelle avant cette réponse. "
+            "Ne tente pas de compacter ou résumer l’historique toi-même et ne prétends "
+            "pas que cette opération est indisponible."
         ),
     },
     "/context": {
@@ -67,7 +69,7 @@ def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
 class ProjectConfig:
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root).resolve()
-        self.content_root = self.root / "content-agents"
+        self.content_root = content_root(self.root)
         self.tools_root = self.root / "tools"
         for sensitive in ("providers.json", "secrets.json"):
             path = self.content_root / sensitive

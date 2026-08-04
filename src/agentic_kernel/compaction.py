@@ -121,14 +121,17 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
         if not self.force and trigger is not None and before < trigger:
             return request_context
 
-        target = max(
-            1,
-            (
+        if self.force:
+            # A manual request must reduce the current live history even when it
+            # is already below the automatic 50%-of-window target.
+            target = math.floor(max(1, before - self.overhead_tokens) * self.target_ratio)
+        else:
+            target = (
                 math.floor(context_window * self.target_ratio) - self.overhead_tokens
                 if context_window is not None
                 else math.floor(before * self.target_ratio)
-            ),
-        )
+            )
+        target = max(1, target)
         per_part_limit = max(
             4_000,
             math.floor((context_window or before) * 0.20),

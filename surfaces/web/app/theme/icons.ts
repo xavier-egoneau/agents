@@ -18,7 +18,6 @@ import {
   Bot,
   Braces,
   CalendarClock,
-  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -169,6 +168,14 @@ export const themeIconSets: Record<string, IconSet> = {
   },
 };
 
+/**
+ * Résolution hors rendu React — génération statique, tests, scripts.
+ *
+ * Ne pas appeler dans le corps d'un composant : un appel de fonction renvoyant
+ * un composant y est indiscernable d'une création de composant, ce qui
+ * réinitialiserait l'état du sous-arbre à chaque rendu. Le composant `Icon`
+ * accède au registre directement pour cette raison.
+ */
 export function resolveIcon(name: IconName, theme?: string): LucideIcon {
   const override = theme ? themeIconSets[theme]?.[name] : undefined;
   return override ?? baseIcons[name];

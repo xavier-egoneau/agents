@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .errors import KernelError
+from .managed_tools import managed_executable
 
 
 class VisionUnavailable(KernelError):
@@ -26,6 +27,22 @@ class LocalVisionService:
         self.config_path = content_root / "vision.json"
         self._lock = asyncio.Lock()
         self._process: subprocess.Popen[bytes] | None = None
+
+    async def prepare(self) -> None:
+        """Install/download and load the configured model once."""
+        await self._ensure_server(self._config())
+
+    def close(self) -> None:
+        """Stop only the llama-server process started by this service."""
+        if self._process is None or self._process.poll() is not None:
+            return
+        self._process.terminate()
+        try:
+            self._process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            self._process.wait(timeout=5)
+        (self.content_root / "vision" / "llama-server.pid").unlink(missing_ok=True)
 
     async def analyze_path(self, path: Path, question: str, detail: str = "balanced") -> str:
         try:
@@ -149,7 +166,11 @@ class LocalVisionService:
             if await self._wait_for_existing_server(config):
                 return
             binary_name = str(config.get("server_binary") or "llama-server")
-            binary = binary_name if Path(binary_name).is_file() else shutil.which(binary_name)
+            binary = (
+                binary_name
+                if Path(binary_name).is_file()
+                else shutil.which(binary_name) or managed_executable("llama")
+            )
             if not binary:
                 raise VisionUnavailable(
                     "`llama-server` est absent. Installe llama.cpp ou configure "

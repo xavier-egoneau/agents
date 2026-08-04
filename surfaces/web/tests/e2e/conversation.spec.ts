@@ -65,9 +65,8 @@ test.beforeEach(async ({ page }) => {
 
 test("composer exposes durable permission, model and reasoning controls", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByText("Agentic kernel")).toBeVisible();
-  await expect(page.getByText("Projet actif")).toBeVisible();
-  await expect(page.getByText("Conversation active")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "main" })).toBeVisible();
+  await expect(page.getByText("/tmp/project")).toBeVisible();
   await expect(page.locator("textarea")).toBeVisible();
   await expect(page.locator("select").filter({ has: page.locator('option[value="limited"]') }).first())
     .toHaveValue("limited");
@@ -75,10 +74,11 @@ test("composer exposes durable permission, model and reasoning controls", async 
 
 test("management cards and history remain directly accessible", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByText("Agent actif")).toBeVisible();
-  await expect(page.getByText("Skills", { exact: true })).toBeVisible();
-  await expect(page.getByText("Providers", { exact: true })).toBeVisible();
-  await expect(page.getByText("Automatisations", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Projets/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Agents/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Skills/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Providers/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Routines/ })).toBeVisible();
   await expect(page.getByText("Historique", { exact: true })).toBeVisible();
 });
 
@@ -125,12 +125,12 @@ test("automations always opens the list and routine details provide a back link"
 
   await page.goto("/");
   await waitForHydration(page);
-  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await page.locator(".context-card").filter({ hasText: "Routines" }).click();
   await page.getByText("Bonjour", { exact: true }).click();
   await expect(page.getByRole("button", { name: "← Retour aux routines" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Fermer" }).click();
-  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await page.getByRole("button", { name: "Fermer", exact: true }).click();
+  await page.locator(".context-card").filter({ hasText: "Routines" }).click();
   await expect(page.getByText("Bonjour", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "← Retour aux routines" })).not.toBeVisible();
 
@@ -229,7 +229,7 @@ test("a new routine previews and saves a workflow only after explicit acceptance
 
   await page.goto("/");
   await waitForHydration(page);
-  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await page.locator(".context-card").filter({ hasText: "Routines" }).click();
   await page.getByRole("button", { name: "Ajouter", exact: true }).click();
 
   await expect(page.getByRole("group", { name: "Skills de la routine" })).toBeVisible();
@@ -237,19 +237,19 @@ test("a new routine previews and saves a workflow only after explicit acceptance
   await page.getByRole("checkbox", { name: /daily-review/ }).check();
   const routinePrompt = page.getByLabel("Demande exécutée");
   await routinePrompt.fill("Fais la veille du matin. Résume les choses importantes.");
-  await expect(page.getByText("Mode libre — sans workflow", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Préparer un workflow guidé" }).click();
+  await expect(page.getByRole("region", { name: "Mode libre" })).toBeVisible();
+  await page.getByRole("button", { name: "Préparer un workflow" }).click();
 
-  await expect(page.getByRole("button", { name: "Proposition en cours…" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Préparation…" })).toBeDisabled();
   await expect(page.locator(".routine-workflow-panel")).toHaveAttribute("aria-busy", "true");
   await expect(page.getByText("Analyse du prompt, des skills et des outils disponibles…")).toHaveRole("status");
   await routinePrompt.fill("Fais une veille tech du matin avec des sources.");
   await expect(page.getByText(/génération a été annulée.*base de la routine a changé/i)).toBeVisible();
   releaseFirstProposal?.();
 
-  await expect(page.getByText("Proposition non enregistrée")).not.toBeVisible();
-  await page.getByRole("button", { name: "Préparer un workflow guidé" }).click();
-  await expect(page.getByText("Proposition non enregistrée")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Workflow proposé — à valider" })).not.toBeVisible();
+  await page.getByRole("button", { name: "Préparer un workflow" }).click();
+  await expect(page.getByRole("region", { name: "Workflow proposé — à valider" })).toBeVisible();
   const workflowPanel = page.locator(".routine-workflow-panel");
   await expect(workflowPanel.getByText("Déroulé proposé", { exact: true })).toBeVisible();
   await expect(workflowPanel.getByText("2 étapes", { exact: true })).toBeVisible();
@@ -272,11 +272,11 @@ test("a new routine previews and saves a workflow only after explicit acceptance
   await expect(page.getByText(/Faible.*écart non prévu/)).toBeVisible();
   expect(createdBodies).toHaveLength(0);
 
-  await expect(workflowPanel.getByRole("button", { name: "Continuer sans workflow" })).toBeVisible();
-  await expect(workflowPanel.getByRole("button", { name: "Accepter ce workflow" })).toBeEnabled();
+  await expect(workflowPanel.getByRole("button", { name: "Rester en mode libre" })).toBeVisible();
+  await expect(workflowPanel.getByRole("button", { name: "Appliquer ce workflow" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Créer avec ce workflow" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Ignorer" })).toHaveCount(0);
-  await workflowPanel.getByRole("button", { name: "Accepter ce workflow" }).click();
+  await workflowPanel.getByRole("button", { name: "Appliquer ce workflow" }).click();
 
   await expect(page.getByText("Routine et workflow enregistrés. Le prompt et les skills sont conservés.")).toBeVisible();
   expect(createdBodies).toHaveLength(1);
@@ -319,7 +319,7 @@ test("a routine can be created with skills and no workflow", async ({ page }) =>
 
   await page.goto("/");
   await waitForHydration(page);
-  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await page.locator(".context-card").filter({ hasText: "Routines" }).click();
   await page.getByRole("button", { name: "Ajouter", exact: true }).click();
   await page.getByRole("checkbox", { name: /daily-review/ }).check();
   await page.getByLabel("Demande exécutée").fill("Résume les éléments importants.");
@@ -459,7 +459,7 @@ test("a ready workflow proposal replaces a pending free-mode prevalidation only 
 
   await page.goto("/");
   await waitForHydration(page);
-  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await page.locator(".context-card").filter({ hasText: "Routines" }).click();
   await page.getByText("Veille libre à optimiser", { exact: true }).click();
 
   const testPanel = page.locator(".cron-test-panel");
@@ -467,14 +467,14 @@ test("a ready workflow proposal replaces a pending free-mode prevalidation only 
   await expect(testPanel.getByText("1 autorisation pour 1 action attend ta décision.")).toBeVisible();
 
   const workflowPanel = page.locator(".routine-workflow-panel");
-  await workflowPanel.getByRole("button", { name: "Préparer un workflow guidé" }).click();
+  await workflowPanel.getByRole("button", { name: "Passer en workflow guidé…" }).click();
 
-  await expect(workflowPanel.getByText("Proposition non enregistrée", { exact: true })).toBeVisible();
+  await expect(workflowPanel).toHaveAccessibleName("Workflow proposé — à valider");
   await expect(workflowPanel.getByText("Rechercher les actualités du matin", { exact: true })).toBeVisible();
   await expect(workflowPanel.getByText("Préparer la synthèse finale", { exact: true })).toBeVisible();
   await expect(page.locator(".cron-test-panel")).toHaveCount(0);
-  await expect(workflowPanel.getByRole("button", { name: "Continuer sans workflow" })).toBeEnabled();
-  const acceptWorkflow = workflowPanel.getByRole("button", { name: "Accepter ce workflow" });
+  await expect(workflowPanel.getByRole("button", { name: "Rester en mode libre" })).toBeEnabled();
+  const acceptWorkflow = workflowPanel.getByRole("button", { name: "Appliquer ce workflow" });
   await expect(acceptWorkflow).toBeEnabled();
   await expect(page.getByRole("button", { name: "Créer avec ce workflow" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Ignorer" })).toHaveCount(0);
@@ -483,7 +483,7 @@ test("a ready workflow proposal replaces a pending free-mode prevalidation only 
 
   await expect.poll(() => putBodies.length).toBe(1);
   expect(putBodies[0].accepted_workflow).toEqual(proposal);
-  await expect(page.getByText("Workflow actif · v1", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Workflow guidé · v1" })).toBeVisible();
 });
 
 test("a blocked free-mode routine can still prepare a workflow and explains a legacy 404", async ({ page }) => {
@@ -559,14 +559,14 @@ test("a blocked free-mode routine can still prepare a workflow and explains a le
 
   await page.goto("/");
   await waitForHydration(page);
-  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await page.locator(".context-card").filter({ hasText: "Routines" }).click();
   await page.getByText("Veille libre", { exact: true }).click();
 
-  await expect(page.getByText("Mode libre — sans workflow", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Mode libre" })).toBeVisible();
   await expect(page.getByText("1 autorisation pour 1 action attend ta décision.")).toBeVisible();
   expect(workflowReadRequests).toBe(0);
   await expect(page.getByText("Not Found", { exact: true })).toHaveCount(0);
-  const prepareWorkflow = page.getByRole("button", { name: "Préparer un workflow guidé" });
+  const prepareWorkflow = page.getByRole("button", { name: "Passer en workflow guidé…" });
   await expect(prepareWorkflow).toBeEnabled();
   await prepareWorkflow.click();
 
@@ -628,15 +628,15 @@ test("workflow proposal provider errors are actionable and never expose technica
 
   await page.goto("/");
   await waitForHydration(page);
-  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await page.locator(".context-card").filter({ hasText: "Routines" }).click();
   await page.getByText("Veille du matin", { exact: true }).click();
 
   const workflowPanel = page.locator(".routine-workflow-panel");
-  await workflowPanel.getByRole("button", { name: "Préparer un workflow guidé" }).click();
+  await workflowPanel.getByRole("button", { name: "Passer en workflow guidé…" }).click();
 
   await expect.poll(() => proposalRequests).toBe(1);
   await expect(workflowPanel.getByText(
-    "Le modèle n’a pas pu préparer le workflow. Vérifie le fournisseur et le modèle configurés, puis réessaie.",
+    "Le modèle a répondu, mais sa réponse n’a pas pu être transformée en workflow.",
   )).toHaveRole("alert");
   await expect(workflowPanel).not.toContainText("UnexpectedModelBehavior");
   await expect(workflowPanel).not.toContainText("status=401");
@@ -696,22 +696,22 @@ test("a saved routine workflow can be removed without changing prompt or skills"
 
   await page.goto("/");
   await waitForHydration(page);
-  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await page.locator(".context-card").filter({ hasText: "Routines" }).click();
   await page.getByText("Veille", { exact: true }).click();
-  await expect(page.getByText("Workflow actif · v2")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Workflow guidé · v2" })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: /daily-review/ })).toBeChecked();
 
   page.once("dialog", async (dialog) => {
     expect(dialog.message()).toContain("conservera son prompt et ses skills");
     await dialog.dismiss();
   });
-  await page.getByRole("button", { name: "Supprimer le workflow…" }).click();
+  await page.getByRole("button", { name: "Repasser en mode libre" }).click();
   expect(deleteRequests).toBe(0);
 
   page.once("dialog", async (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Supprimer le workflow…" }).click();
+  await page.getByRole("button", { name: "Repasser en mode libre" }).click();
   await expect(page.getByText("Workflow supprimé · la routine continuera avec son prompt et ses skills.")).toBeVisible();
-  await expect(page.getByText("Mode libre — sans workflow", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Mode libre" })).toBeVisible();
   await expect(page.getByLabel("Demande exécutée")).toHaveValue("Cherche les nouvelles");
   await expect(page.getByRole("checkbox", { name: /daily-review/ })).toBeChecked();
   expect(deleteRequests).toBe(1);
@@ -775,7 +775,7 @@ test("a completed cron is flagged unread without rendering its result in managem
 
   await page.goto("/");
   await expect(page.getByText("1 nouveau résultat")).toBeVisible();
-  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await page.locator(".context-card").filter({ hasText: "Routines" }).click();
   await expect(page.getByText("Bonjour", { exact: true })).toBeVisible();
   await expect(page.getByText("Nouveaux résultats")).not.toBeVisible();
   await expect(page.getByText("Bonjour depuis la routine")).not.toBeVisible();
@@ -818,6 +818,132 @@ test("several messages continue in the same session", async ({ page }) => {
   expect(requests).toHaveLength(2);
   expect(requests[0].session_id).toBeTruthy();
   expect(requests[1].session_id).toBe(requests[0].session_id);
+});
+
+test("sending a message consumes its attached images", async ({ page }) => {
+  let submittedImages: unknown[] = [];
+  await page.unroute("**/api/kernel/**");
+  await installKernelMock(page, async (route, url) => {
+    if (url.pathname.endsWith("/artifacts/agent-image")) {
+      await route.fulfill({ contentType: "image/png", body: Buffer.from("agent-image") });
+      return true;
+    }
+    if (!url.pathname.endsWith("/runs") || route.request().method() !== "POST") return false;
+    const body = route.request().postDataJSON() as { session_id: string; images: unknown[] };
+    submittedImages = body.images;
+    await route.fulfill({
+      json: {
+        session_id: body.session_id,
+        run_id: "run-with-image",
+        agent_id: "main",
+        status: "success",
+        output: "Image reçue",
+        errors: [],
+        artifacts: [{
+          artifact_id: "agent-image",
+          name: "resultat.png",
+          media_type: "image/png",
+          kind: "image",
+        }],
+      },
+    });
+    return true;
+  });
+  await page.goto("/");
+  await waitForHydration(page);
+
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "capture.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("image-content"),
+  });
+  await expect(page.getByText("capture.png")).toBeVisible();
+
+  await page.getByLabel("Message au kernel").fill("Que vois-tu ?");
+  await page.getByLabel("Envoyer").click();
+
+  await expect(page.getByText("Image reçue")).toBeVisible();
+  await expect(page.locator(".image-previews")).not.toBeVisible();
+  await expect(page.getByLabel("Images envoyées").getByAltText("capture.png")).toBeVisible();
+  await expect(page.getByLabel("Images envoyées").getByText("capture.png")).toBeVisible();
+  await page.getByLabel("Agrandir capture.png").click();
+  await expect(page.getByRole("dialog", { name: "capture.png" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "capture.png" })).not.toBeVisible();
+  await page.getByLabel("Agrandir resultat.png").click();
+  await expect(page.getByRole("dialog", { name: "resultat.png" })).toBeVisible();
+  await page.getByLabel("Fermer l’image").click();
+  await expect(page.getByRole("dialog", { name: "resultat.png" })).not.toBeVisible();
+  expect(submittedImages).toEqual([{
+    name: "capture.png",
+    media_type: "image/png",
+    data_base64: Buffer.from("image-content").toString("base64"),
+  }]);
+});
+
+test("clear empties the routine inbox without leaving its stable session", async ({ page }) => {
+  const sessionId = "33333333-3333-4333-8333-333333333333";
+  let cleared = false;
+  await page.unroute("**/api/kernel/**");
+  await installKernelMock(page, async (route, url) => {
+    if (url.pathname.endsWith(`/sessions/${sessionId}/clear`)) {
+      cleared = true;
+      await route.fulfill({ json: { session_id: sessionId, status: "cleared" } });
+      return true;
+    }
+    if (url.pathname.endsWith(`/sessions/${sessionId}`)) {
+      await route.fulfill({ json: {
+        session_id: sessionId,
+        agent_id: "main",
+        prompt: "Routines",
+        workspace: null,
+        created_at: "2026-08-02T08:00:00Z",
+        updated_at: "2026-08-02T08:00:00Z",
+        status: "success",
+        output: null,
+        errors: [],
+        event_count: 2,
+        trigger: "routine_inbox",
+        messages: [
+          { role: "user", content: "Ancien message" },
+          { role: "assistant", content: "Ancienne réponse" },
+        ],
+        events: [],
+      } });
+      return true;
+    }
+    if (url.pathname.endsWith("/sessions")) {
+      await route.fulfill({ json: [{
+        session_id: sessionId,
+        agent_id: "main",
+        prompt: "Routines",
+        workspace: null,
+        created_at: "2026-08-02T08:00:00Z",
+        updated_at: "2026-08-02T08:00:00Z",
+        status: "success",
+        output: null,
+        errors: [],
+        event_count: cleared ? 1 : 2,
+        trigger: "routine_inbox",
+      }] });
+      return true;
+    }
+    return false;
+  });
+  await page.goto("/");
+  await waitForHydration(page);
+  await page.locator(".session-open").filter({ hasText: "Routines" }).click();
+  await expect(page.getByText("Ancienne réponse")).toBeVisible();
+
+  await page.getByLabel("Message au kernel").fill("/clear ");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByLabel("Envoyer").click();
+
+  await expect.poll(() => cleared).toBe(true);
+  await expect(page.getByText("Ancien message")).not.toBeVisible();
+  await expect(page.getByText("Ancienne réponse")).not.toBeVisible();
+  await expect(page.getByRole("heading", { name: "Routines" })).toBeVisible();
+  await expect(page.getByLabel("Message au kernel")).toHaveValue("");
 });
 
 test("an ASK remains actionable and resumes the suspended run", async ({ page }) => {
@@ -940,7 +1066,7 @@ test("routine pre-validation groups one scope into one consent and acknowledges 
 
   await page.goto("/");
   await waitForHydration(page);
-  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await page.locator(".context-card").filter({ hasText: "Routines" }).click();
   await page.getByText("Veille", { exact: true }).click();
   await expect(page.getByText("1 autorisation pour 2 actions attend ta décision.")).toBeVisible();
   await expect(page.locator(".cron-test-panel li")).toHaveCount(1);
@@ -956,7 +1082,7 @@ test("routine pre-validation groups one scope into one consent and acknowledges 
 
   releaseResolution?.();
   await expect(page.getByText(/Confirmé · 1 autorisation.*2 action/)).toBeVisible();
-  await expect(page.getByText("Prévalidation active")).toBeVisible();
+  await expect(page.getByText("Routine prévalidée")).toBeVisible();
   await expect(page.locator(".cron-test-panel")).toHaveAttribute("aria-busy", "false");
   expect(resolveRequests).toBe(1);
 });
@@ -999,7 +1125,7 @@ test("a management error keeps its own row above the routine name", async ({ pag
 
   await page.goto("/");
   await waitForHydration(page);
-  await page.getByRole("button", { name: /Automatisations/ }).click();
+  await page.locator(".context-card").filter({ hasText: "Routines" }).click();
   await page.getByText("Routine avec erreur", { exact: true }).click();
   await expect(page.getByLabel("Nom")).toBeVisible();
   await page.getByRole("button", { name: "Enregistrer", exact: true }).click();
@@ -1131,7 +1257,8 @@ test("git changes open in a resizable review panel for the session workspace", a
   await page.getByText("Modifie le projet", { exact: true }).first().click();
   await expect(page.getByText("1 fichier modifié")).toBeVisible();
   await page.getByRole("button", { name: "src/app.ts" }).click();
-  await expect(page.locator(".git-review-panel")).toBeVisible();
-  await expect(page.locator(".git-review-body pre")).toContainText("+new");
-  await expect(page.getByRole("button", { name: "Valider (1)" })).toBeVisible();
+  const reviewPanel = page.getByRole("complementary", { name: "Panneau lateral droit" });
+  await expect(reviewPanel).toBeVisible();
+  await expect(reviewPanel.getByText(/\+new/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Valider les modifications" })).toBeVisible();
 });
