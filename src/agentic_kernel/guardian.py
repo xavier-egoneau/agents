@@ -453,9 +453,11 @@ class GuardianToolset(WrapperToolset[Any]):
                     agent_id=self.agent_id,
                     tool_call_id=call_id,
                     tool_name=name,
+                    tool_description=tool.tool_def.description or "",
                     action_family=action_family(risks),
                     path=decision.path,
                     justification=decision.justification,
+                    arguments=proposed_arguments,
                     risks=risks,
                     reason=decision.reason,
                 )

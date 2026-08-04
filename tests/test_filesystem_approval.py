@@ -49,6 +49,12 @@ async def test_overwrite_suspends_resumes_once_and_traces(project: Path, monkeyp
     assert first.status is RunStatus.APPROVAL_PENDING
     assert target.read_text() == "old"
     approval = kernel.list_approvals()[0]
+    assert approval.arguments == {
+        "path": "note.txt",
+        "content": "new",
+        "justification": "Update requested.",
+    }
+    assert approval.tool_description
 
     repeated = await kernel.run(
         RunRequest(prompt="/reprise", workspace=project, session_id=first.session_id)

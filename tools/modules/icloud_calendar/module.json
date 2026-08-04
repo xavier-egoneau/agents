@@ -5,7 +5,30 @@
   "description": "Lecture bornée des calendriers et événements iCloud via CalDAV.",
   "version": "1.0.0",
   "entrypoint": "module.py:module",
-  "capabilities": ["tools"],
+  "capabilities": ["tools", "config"],
+  "config": {
+    "title": "Agenda iCloud",
+    "description": "Identifiants CalDAV utilisés par les outils de calendrier. Les valeurs restent dans le coffre local.",
+    "applies_to": ["icloud_list_calendars", "icloud_list_events"],
+    "fields": [
+      {
+        "name": "username",
+        "label": "Identifiant Apple",
+        "type": "secret",
+        "secret_name": "ICLOUD_CALDAV_USERNAME",
+        "required": true,
+        "description": "Adresse du compte iCloud."
+      },
+      {
+        "name": "password",
+        "label": "Mot de passe d’application",
+        "type": "secret",
+        "secret_name": "ICLOUD_CALDAV_PASSWORD",
+        "required": true,
+        "description": "Mot de passe d’application généré dans le compte Apple."
+      }
+    ]
+  },
   "tools": [
     {
       "name": "icloud_list_calendars",

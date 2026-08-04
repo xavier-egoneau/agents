@@ -190,6 +190,23 @@
 .approval-card code { display: block; max-width: 620px; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-sm); }
 .approval-card p:not(.eyebrow) { margin: 8px 0 2px; }
 .approval-card small { opacity: 0.85; }
+.approval-disclosure { display: grid; gap: 6px; min-width: 0; }
+.approval-disclosure p { margin: 0; }
+.approval-disclosure details { margin-top: 2px; }
+.approval-disclosure summary { cursor: pointer; color: var(--text-muted); }
+.approval-disclosure pre {
+  max-width: 620px;
+  max-height: 220px;
+  margin: 7px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+}
 .approval-batch ul { margin: 10px 0; padding-left: 20px; display: grid; gap: 5px; }
 .approval-batch li { line-height: var(--leading-snug); }
 .approval-actions { display: flex; gap: 8px; flex: 0 0 auto; }

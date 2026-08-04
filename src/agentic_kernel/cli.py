@@ -240,8 +240,12 @@ def providers_list() -> None:
 
 @providers_app.command("check")
 def providers_check(provider: str | None = None) -> None:
-    registry = ProjectConfig(_root()).providers()
-    factory = ProviderFactory(registry)
+    project = ProjectConfig(_root())
+    registry = project.providers()
+    factory = ProviderFactory(
+        registry,
+        runtime_dir=project.content_root / "runtime" / "providers",
+    )
     ids = [provider] if provider else [item.id for item in registry.providers]
 
     async def check_all():
@@ -254,6 +258,70 @@ def providers_check(provider: str | None = None) -> None:
         failed = failed or not ok
     if failed:
         raise typer.Exit(1)
+
+
+def _provider_factory() -> ProviderFactory:
+    project = ProjectConfig(_root())
+    return ProviderFactory(
+        project.providers(),
+        runtime_dir=project.content_root / "runtime" / "providers",
+    )
+
+
+@providers_app.command("status")
+def providers_status(provider: str | None = None) -> None:
+    """Show managed llama.cpp processes without starting them."""
+    factory = _provider_factory()
+    ids = [provider] if provider else [item.id for item in factory.registry.providers]
+    found = False
+    for provider_id in ids:
+        manager = factory.managed_llama(provider_id)
+        if manager is None:
+            if provider:
+                typer.echo(f"{provider_id}: not a managed llama.cpp provider")
+            continue
+        found = True
+        state = manager.status()
+        if state is None:
+            typer.echo(f"{provider_id}: stopped (log: {manager.log_path()})")
+        else:
+            health = "healthy" if manager.health_ok() else "unhealthy"
+            typer.echo(
+                f"{provider_id}: {health} model={state.model} pid={state.pid} port={state.port}"
+            )
+    if provider and not found:
+        raise typer.Exit(1)
+
+
+@providers_app.command("start")
+def providers_start(provider: str, model: str | None = None) -> None:
+    """Start or switch a managed llama.cpp provider."""
+    factory = _provider_factory()
+    config = factory.get_config(provider)
+    manager = factory.managed_llama(provider)
+    if manager is None:
+        typer.echo(f"error: {provider} is not a managed llama.cpp provider", err=True)
+        raise typer.Exit(2)
+    selected = model or config.model
+    if not selected:
+        typer.echo("error: select a model", err=True)
+        raise typer.Exit(2)
+    try:
+        state = manager.ensure_running(selected)
+    except Exception as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    typer.echo(f"{provider}: ready model={state.model} pid={state.pid} port={state.port}")
+
+
+@providers_app.command("stop")
+def providers_stop(provider: str) -> None:
+    """Stop a managed llama.cpp provider."""
+    manager = _provider_factory().managed_llama(provider)
+    if manager is None:
+        typer.echo(f"error: {provider} is not a managed llama.cpp provider", err=True)
+        raise typer.Exit(2)
+    typer.echo(f"{provider}: {'stopped' if manager.stop() else 'already stopped'}")
 
 
 @agents_app.command("list")

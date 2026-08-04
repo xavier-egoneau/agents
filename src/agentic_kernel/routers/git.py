@@ -67,7 +67,10 @@ def create_git_router(project: ProjectConfig, service: GitService) -> APIRouter:
             registry = project.providers()
             provider_id = payload.provider_id or registry.default_provider
             configured = next(item for item in registry.providers if item.id == provider_id)
-            model = ProviderFactory(registry).build(provider_id, payload.model or configured.model)
+            model = ProviderFactory(
+                registry,
+                runtime_dir=project.content_root / "runtime" / "providers",
+            ).build(provider_id, payload.model or configured.model)
             summary = "\n\n".join(
                 (
                     f"FICHIER: {item.path} "

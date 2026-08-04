@@ -75,7 +75,22 @@ complétude des scopes de contexte.
   livrée comme un artefact runtime autonome dans le wheel Python.
 - La distribution n'embarque pas encore son propre helper sandbox. Sans Codex
   CLI compatible (ou Seatbelt sur macOS), les modes safe/limited refusent
-  l'exécution native.
+  l’exécution native.
+- Un provider `llama-cpp` doté de `models_dir` est géré par AMK : démarrage au
+  premier usage, réutilisation persistante, changement de GGUF par redémarrage,
+  état et logs sous `content-agents/runtime/providers/`. Sans `models_dir`, il
+  reste un simple endpoint OpenAI-compatible externe.
+- La page Paramètres est générée depuis les modules déclarant la capacité
+  `config`. Les valeurs ordinaires sont regroupées dans `tool-settings.json`;
+  les secrets restent write-only dans `secrets.json`. CalDAV et la vision locale
+  utilisent ce contrat, avec lecture rétrocompatible de `vision.json`.
+- Un agent peut exposer un canal Telegram configuré depuis son formulaire. Le
+  token et l’unique id utilisateur autorisé sont write-only; tout autre
+  `message.from.id` est ignoré, y compris en groupe. Les sessions sont durables
+  par agent/chat et peuvent être exclues de la liste sans modifier leur
+  workspace effectif, celui de l’agent lorsque la valeur logique reste `null`.
+  Les approvals sont résolus par boutons inline avec reprise du run et contrôle
+  strict du même utilisateur; `/clear` purge nativement la session Telegram.
 - `page.tsx` dépasse 4 000 lignes.
 - `rag.py` utilise le chemin absolu du workspace comme identifiant de projet.
 - `api.py` construit un `Kernel` à l'import, ce qui rend les tests sensibles au

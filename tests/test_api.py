@@ -880,6 +880,80 @@ def test_session_history_api(project: Path) -> None:
     assert client.get(f"/api/sessions/{session_id}").status_code == 404
 
 
+def test_hidden_telegram_session_is_excluded_from_history(project: Path) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    app = create_app(project)
+    from agentic_kernel.events import JsonlEventStore
+
+    session_id = uuid4()
+    JsonlEventStore(project / "content-agents" / "sessions").append(
+        Event(
+            session_id=session_id,
+            run_id=uuid4(),
+            agent_id="main",
+            type="session.started",
+            payload={
+                "prompt": "telegram privé",
+                "workspace": None,
+                "trigger": "telegram",
+                "hidden": True,
+            },
+        )
+    )
+    client = TestClient(app)
+    assert all(
+        item["session_id"] != str(session_id)
+        for item in client.get(
+            "/api/sessions",
+            params={"workspace": str(project), "include_channels": True},
+        ).json()
+    )
+    assert client.get(f"/api/sessions/{session_id}").json()["hidden"] == 1
+
+
+def test_visible_telegram_session_can_be_aggregated_into_app_catalog(project: Path) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    app = create_app(project)
+    from agentic_kernel.events import JsonlEventStore
+
+    session_id = uuid4()
+    JsonlEventStore(project / "content-agents" / "sessions").append(
+        Event(
+            session_id=session_id,
+            run_id=uuid4(),
+            agent_id="main",
+            type="session.started",
+            payload={
+                "prompt": "telegram visible",
+                "workspace": None,
+                "trigger": "telegram",
+                "hidden": False,
+            },
+        )
+    )
+    client = TestClient(app)
+    unfiltered = client.get("/api/sessions").json()
+    filtered = client.get("/api/sessions", params={"workspace": str(project)}).json()
+    app_catalog = client.get(
+        "/api/sessions",
+        params={"workspace": str(project), "include_channels": True},
+    ).json()
+    default_workspace = project / "content-agents" / "workspaces" / "main"
+    default_filtered = client.get(
+        "/api/sessions", params={"workspace": str(default_workspace)}
+    ).json()
+    assert any(item["session_id"] == str(session_id) for item in unfiltered)
+    assert all(item["session_id"] != str(session_id) for item in filtered)
+    assert any(item["session_id"] == str(session_id) for item in app_catalog)
+    assert any(item["session_id"] == str(session_id) for item in default_filtered)
+    detail = client.get(f"/api/sessions/{session_id}").json()
+    assert detail["workspace"] is None
+    assert detail["workspace_kind"] == "agent_default"
+    assert detail["effective_workspace"] == str(
+        default_workspace.resolve()
+    )
+
+
 def test_session_history_has_global_routine_inbox_and_hides_execution_sessions(
     project: Path,
 ) -> None:
@@ -999,11 +1073,35 @@ delegates: []
 ---
 Help carefully.
 """
-    created = client.post("/api/admin/agents", json={"id": "helper", "content": agent_markdown})
+    created = client.post(
+        "/api/admin/agents",
+        json={
+            "id": "helper",
+            "content": agent_markdown,
+            "telegram": {
+                "enabled": True,
+                "hide_session": True,
+                "user_id": "123456",
+                "bot_token": "123456:abcdefghijklmnopqrstuvwxyz_ABCD",
+            },
+        },
+    )
     assert created.status_code == 200
-    assert any(item["id"] == "helper" for item in client.get("/api/admin/agents").json())
+    helper = next(
+        item for item in client.get("/api/admin/agents").json() if item["id"] == "helper"
+    )
+    assert helper["telegram"]["enabled"] is True
+    assert helper["telegram"]["hide_session"] is True
+    assert helper["telegram"]["user_id_configured"] is True
+    assert helper["telegram"]["bot_token_configured"] is True
+    assert "123456:abcdefghijklmnopqrstuvwxyz_ABCD" not in json.dumps(helper)
     assert client.delete("/api/admin/agents/main").status_code == 403
     assert client.delete("/api/admin/agents/helper").status_code == 200
+    secret_names = json.loads(
+        (project / "content-agents" / "secrets.json").read_text(encoding="utf-8")
+    )
+    assert "TELEGRAM_HELPER_USER_ID" not in secret_names
+    assert "TELEGRAM_HELPER_BOT_TOKEN" not in secret_names
 
     skill_markdown = """---
 name: review
@@ -1050,3 +1148,57 @@ def test_provider_crud_masks_keys_and_protects_default(project: Path) -> None:
     assert secondary["api_key_configured"] is True
     assert client.delete("/api/admin/providers/test").status_code == 409
     assert client.delete("/api/admin/providers/secondary").status_code == 200
+
+
+def test_module_settings_are_schema_driven_and_secrets_are_write_only(
+    project: Path,
+) -> None:
+    manifest_path = project / "tools" / "modules" / "clock" / "module.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["capabilities"] = ["tools", "config"]
+    manifest["config"] = {
+        "title": "Clock settings",
+        "fields": [
+            {
+                "name": "timezone",
+                "label": "Timezone",
+                "type": "text",
+                "required": True,
+                "default": "UTC",
+            },
+            {
+                "name": "token",
+                "label": "Token",
+                "type": "secret",
+                "secret_name": "CLOCK_TOKEN",
+                "required": True,
+            },
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    ModuleRegistry(project / "tools").build_index()
+    client = TestClient(create_app(project))
+
+    initial = client.get("/api/admin/module-settings").json()
+    assert [item["id"] for item in initial] == ["clock"]
+    assert initial[0]["state"] == "required"
+    secret_field = next(item for item in initial[0]["fields"] if item["name"] == "token")
+    assert secret_field["configured"] is False
+    assert "value" not in secret_field
+
+    updated = client.put(
+        "/api/admin/module-settings/clock",
+        json={"values": {"timezone": "Europe/Paris", "token": "very-secret"}},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["state"] == "configured"
+    assert "very-secret" not in updated.text
+    assert "very-secret" not in (
+        project / "content-agents" / "tool-settings.json"
+    ).read_text(encoding="utf-8")
+    assert json.loads(
+        (project / "content-agents" / "secrets.json").read_text(encoding="utf-8")
+    )["CLOCK_TOKEN"] == "very-secret"
+    assert client.put(
+        "/api/admin/module-settings/clock", json={"values": {"unknown": True}}
+    ).status_code == 422

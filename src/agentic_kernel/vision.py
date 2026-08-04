@@ -12,6 +12,7 @@ import httpx
 
 from .errors import KernelError
 from .managed_tools import discovered_executable
+from .module_settings import stored_module_settings
 
 
 class VisionUnavailable(KernelError):
@@ -161,6 +162,10 @@ class LocalVisionService:
             if not isinstance(raw, dict):
                 raise VisionUnavailable("la configuration vision doit être un objet")
             defaults.update(raw)
+        try:
+            defaults.update(stored_module_settings(self.content_root, "perception"))
+        except KernelError as exc:
+            raise VisionUnavailable(str(exc)) from exc
         parsed = urlparse(str(defaults["base_url"]))
         if parsed.scheme != "http" or parsed.hostname not in {
             "127.0.0.1",

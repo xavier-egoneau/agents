@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -12,8 +11,8 @@ from fastapi.responses import StreamingResponse
 
 from ..kernel import Kernel
 from ..models import Event
-from ..plans import PlanService
 from ..scheduler import ROUTINE_INBOX_SESSION_ID
+from ..session_lifecycle import SessionLifecycle
 
 
 def create_session_router(
@@ -22,7 +21,7 @@ def create_session_router(
     state_database: Path,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/sessions", tags=["sessions"])
-    plans = PlanService(state_database)
+    lifecycle = SessionLifecycle(kernel, state_database)
 
     def public_session(row: dict[str, object]) -> dict[str, object]:
         logical_workspace = row.get("workspace")
@@ -70,13 +69,24 @@ def create_session_router(
         limit: int = 100,
         offset: int = 0,
         include_automations: bool = False,
+        include_channels: bool = False,
     ) -> list[dict[str, object]]:
         resolved_workspace = str(Path(workspace).expanduser().resolve()) if workspace else None
+        default_workspace_agent: str | None = None
+        if resolved_workspace:
+            default_root = (kernel.config.content_root / "workspaces").resolve()
+            candidate = Path(resolved_workspace)
+            if candidate.parent == default_root:
+                agent_id = candidate.name
+                if agent_id in kernel.config.agents():
+                    default_workspace_agent = agent_id
         rows = kernel.events.projection.list_sessions(
             resolved_workspace,
             limit=max(1, min(limit, 500)),
             offset=max(0, offset),
             include_automations=include_automations,
+            include_channels=include_channels,
+            default_workspace_agent=default_workspace_agent,
         )
         return [public_session(row) for row in rows]
 
@@ -144,9 +154,8 @@ def create_session_router(
             raise HTTPException(status_code=409, detail="La session Routines est permanente")
         if session_id in running_tasks:
             raise HTTPException(status_code=409, detail="Impossible de supprimer un run actif")
-        if not kernel.events.delete(session_id):
+        if not lifecycle.delete(session_id):
             raise HTTPException(status_code=404, detail="Session introuvable")
-        kernel.approvals.remove_for_session(session_id)
         return {"session_id": str(session_id), "status": "deleted"}
 
     @router.post("/{session_id}/clear")
@@ -161,7 +170,7 @@ def create_session_router(
             )
         if session_id in running_tasks:
             raise HTTPException(status_code=409, detail="Un run est encore en cours")
-        kernel.events.reset(
+        lifecycle.reset(
             Event(
                 session_id=session_id,
                 run_id=uuid4(),
@@ -170,13 +179,6 @@ def create_session_router(
                 payload={"prompt": "Routines"},
             )
         )
-        kernel.approvals.remove_for_session(session_id)
-        kernel.snapshots.clear(session_id)
-        artifact_root = (kernel.events.directory / "artifacts").resolve()
-        artifact_directory = (artifact_root / str(session_id)).resolve()
-        artifact_directory.relative_to(artifact_root)
-        shutil.rmtree(artifact_directory, ignore_errors=True)
-        plans.delete_for_session(session_id)
         return {"session_id": str(session_id), "status": "cleared"}
 
     @router.get("/{session_id}/events")

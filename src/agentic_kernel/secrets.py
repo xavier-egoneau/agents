@@ -38,6 +38,16 @@ class SecretStore:
         with self._lock:
             return sorted(self._read())
 
+    def delete(self, name: str) -> bool:
+        """Delete one named secret without ever returning its value."""
+        with self._lock:
+            document = self._read()
+            if name not in document:
+                return False
+            del document[name]
+            self._write(document)
+            return True
+
     def resolve(self, name: str) -> str | None:
         """Resolve a value for trusted kernel/tool code; never expose this to a model."""
         with self._lock:

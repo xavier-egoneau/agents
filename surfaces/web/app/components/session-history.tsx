@@ -7,7 +7,7 @@ export type SessionHistoryItem = {
   prompt: string;
   updated_at: string;
   status: string;
-  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test" | "routine_inbox";
+  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test" | "routine_inbox" | "telegram";
 };
 
 type SessionHistoryProps = {
@@ -50,7 +50,11 @@ export function SessionHistory({
                 <span className={`session-state ${session.status}`} />
                 <span>
                   <strong>
-                    {session.trigger === "routine_inbox" ? "Routines" : session.prompt || "Session sans titre"}
+                    {session.trigger === "routine_inbox"
+                      ? "Routines"
+                      : session.trigger === "telegram"
+                        ? `Telegram · ${session.prompt || "Conversation"}`
+                        : session.prompt || "Session sans titre"}
                     {session.trigger?.startsWith("cron") && (
                       <em className="automation-chip">Routine</em>
                     )}

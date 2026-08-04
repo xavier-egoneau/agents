@@ -5,7 +5,26 @@
   "description": "Extraction bornée de PDF/OCR et perception d'images.",
   "version": "1.0.0",
   "entrypoint": "module.py:module",
-  "capabilities": ["tools"],
+  "capabilities": ["tools", "config"],
+  "config": {
+    "title": "Vision locale",
+    "description": "Modèle multimodal et serveur llama.cpp utilisés par image_inspect.",
+    "applies_to": ["image_inspect"],
+    "legacy_file": "vision.json",
+    "fields": [
+      {"name": "base_url", "label": "URL locale", "type": "text", "default": "http://127.0.0.1:8081/v1", "required": true},
+      {"name": "model", "label": "Nom du modèle", "type": "text", "default": "gemma-4-E2B-it", "required": true},
+      {"name": "model_path", "label": "Fichier GGUF", "type": "file", "description": "Facultatif si un dépôt Hugging Face est renseigné."},
+      {"name": "hf_repo", "label": "Modèle Hugging Face", "type": "text", "default": "ggml-org/gemma-4-E2B-it-GGUF:Q4_0"},
+      {"name": "mmproj_path", "label": "Projection multimodale", "type": "file"},
+      {"name": "server_binary", "label": "Exécutable llama-server", "type": "file", "default": "llama-server", "required": true},
+      {"name": "port", "label": "Port local", "type": "integer", "default": 8081, "minimum": 1, "maximum": 65535, "required": true},
+      {"name": "timeout_seconds", "label": "Timeout des requêtes", "type": "number", "default": 180, "minimum": 1},
+      {"name": "startup_timeout_seconds", "label": "Timeout de démarrage", "type": "number", "default": 1800, "minimum": 1},
+      {"name": "max_tokens", "label": "Tokens maximum", "type": "integer", "default": 2048, "minimum": 1},
+      {"name": "llama_args", "label": "Arguments llama-server", "type": "string_list", "default": [], "description": "Un argument par ligne."}
+    ]
+  },
   "tools": [
     {"name": "pdf_extract", "description": "Extraire du texte paginé d'un PDF.", "category": "document", "risk_tags": ["read"], "timeout_seconds": 60, "cancellable": true},
     {"name": "ocr_extract", "description": "Extraire le texte d'une image avec OCR local.", "category": "document", "risk_tags": ["read"], "timeout_seconds": 60, "cancellable": true},

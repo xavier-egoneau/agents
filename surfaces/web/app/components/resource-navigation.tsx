@@ -3,7 +3,7 @@
 import { Icon } from "../theme/theme-context";
 import type { IconName } from "../theme/icons";
 
-export type ResourceSection = "projects" | "agents" | "skills" | "providers" | "crons";
+export type ResourceSection = "projects" | "agents" | "skills" | "providers" | "settings" | "crons";
 
 type ResourceNavigationProps = {
   projectName?: string;
@@ -14,6 +14,7 @@ type ResourceNavigationProps = {
   availableSkillCount: number;
   providerCount: number;
   defaultProvider?: string;
+  settingsCount: number;
   cronCount: number;
   activeCronCount: number;
   unreadCronCount: number;
@@ -35,6 +36,7 @@ export function ResourceNavigation({
   availableSkillCount,
   providerCount,
   defaultProvider,
+  settingsCount,
   cronCount,
   activeCronCount,
   unreadCronCount,
@@ -80,6 +82,15 @@ export function ResourceNavigation({
       title: "Providers",
       active: defaultProvider || "Aucun provider par défaut",
       count: providerCount,
+    },
+    {
+      section: "settings",
+      icon: "settings",
+      title: "Paramètres",
+      active: settingsCount
+        ? `${settingsCount} intégration${settingsCount > 1 ? "s" : ""}`
+        : "Aucun paramètre requis",
+      count: settingsCount,
     },
     {
       section: "crons",

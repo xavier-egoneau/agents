@@ -28,6 +28,15 @@ def test_llama_cpp_legacy_port_builds_local_model() -> None:
     assert str(model.base_url) == "http://127.0.0.1:8123/v1/"
 
 
+def test_local_sampling_settings_are_applied() -> None:
+    model = ProviderFactory(
+        registry("local", port=8123, temperature=0, top_k=1, num_predict=2048)
+    ).build("provider")
+    assert model.settings["temperature"] == 0
+    assert model.settings["top_k"] == 1
+    assert model.settings["max_tokens"] == 2048
+
+
 def test_api_key_is_read_from_environment(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "secret-from-environment")
     model = ProviderFactory(registry("api_key")).build("provider")
@@ -130,6 +139,19 @@ async def test_local_model_discovery_scans_gguf_directory(tmp_path) -> None:
         registry("local", models_dir=str(tmp_path), port=8123)
     ).list_models("provider")
     assert models == ["a-model", "b-model"]
+    assert source == "directory"
+    assert error is None
+
+
+@pytest.mark.asyncio
+async def test_local_model_discovery_collapses_shards(tmp_path) -> None:
+    (tmp_path / "model-00001-of-00002.gguf").write_bytes(b"")
+    (tmp_path / "model-00002-of-00002.gguf").write_bytes(b"")
+    models, source, error = await ProviderFactory(
+        registry("local", models_dir=str(tmp_path), port=8123),
+        runtime_dir=tmp_path / "runtime",
+    ).list_models("provider")
+    assert models == ["model"]
     assert source == "directory"
     assert error is None
 

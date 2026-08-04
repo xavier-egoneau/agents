@@ -238,6 +238,74 @@ Enfin, un outil calendrier peut recevoir `days_ahead` sans bornes ISO
 pré-calculées. Un workflow n’a donc plus besoin d’inventer une commande shell
 Unix pour exprimer « aujourd’hui et les sept jours suivants ».
 
+### 31. Un provider llama.cpp peut être externe ou géré par AMK
+
+Un provider `llama-cpp` qui déclare seulement une URL reste un endpoint local
+externe. La présence de `models_dir` active au contraire un cycle de vie géré :
+AMK valide le binaire et les GGUF, démarre `llama-server` à la première requête,
+le conserve entre les runs et le redémarre si le modèle ou les arguments
+changent. Un verrou par port sérialise les démarrages concurrents.
+
+Les processus ne sont pas attachés au dépôt courant. Leur état et leurs logs
+résident dans la racine utilisateur `content-agents/runtime/providers/`, tandis
+que les chemins des modèles restent explicites dans `providers.json`. Chaque
+provider possède son port et ne peut reprendre un port occupé par un processus
+étranger. Le serveur est forcé sur `127.0.0.1` : être local ne signifie pas
+l’exposer au réseau.
+
+### 32. Les paramètres sont déclarés par module, pas par tool
+
+Une configuration concerne généralement une intégration partagée par plusieurs
+tools : les deux opérations CalDAV utilisent le même compte, tandis que seule
+la fonction `image_inspect` du module Perception dépend du modèle Gemma. Le
+manifest d’un module portant la capacité `config` décrit donc ses champs et les
+tools concernés. La surface construit la page Paramètres en parcourant ces
+manifests; les modules sans configuration n’y créent aucune fiche vide.
+
+Le rendu générique accepte un ensemble fermé de types et le backend revalide
+chaque valeur. Les paramètres ordinaires vivent dans
+`content-agents/tool-settings.json`, par namespace de module. Les secrets ne
+passent jamais par ce document : un champ `secret` référence un nom fixe dans
+le coffre et l’API ne révèle que son état. `vision.json` reste une source
+historique de moindre priorité afin que la migration ne casse pas les postes
+déjà configurés.
+
+### 33. Telegram est un canal d’agent avec une identité unique autorisée
+
+Telegram n’est pas un tool appelé par le modèle : c’est une source de messages
+qui déclenche le même kernel que la surface Web. Sa configuration appartient à
+l’agent, tandis que le token du bot et l’identifiant utilisateur restent dans
+le coffre sous des noms dérivés de l’id de l’agent. Le document `telegram.json`
+ne contient que l’activation, la visibilité et l’offset de polling.
+
+Une session est déterminée par le couple agent/chat, ce qui conserve le contexte
+sans mélanger un échange privé et un groupe. Le contrôle d’accès vérifie
+strictement `message.from.id` avant de créer un run : connaître le bot, appartenir
+au même groupe ou envoyer depuis un autre bot ne donne aucun accès. L’option de
+masquage devient une propriété projetée de la session et agit uniquement sur sa
+présence dans les listes. Elle ne change pas son workspace : `null` continue de
+désigner l’espace personnel par défaut de l’agent. Le catalogue de l’application
+demande explicitement l’agrégation des canaux visibles avec les sessions du
+projet courant; le filtre de workspace brut de l’API conserve sa sémantique.
+
+Le long polling démarre avec l’API, sauvegarde son offset après chaque update et
+ignore le backlog lors de la première activation. Les erreurs réseau sont
+réessayées sans journaliser l’URL contenant le token.
+
+Les approvals utilisent les primitives natives du Bot API : clavier inline,
+`callback_query`, acquittement obligatoire par `answerCallbackQuery`, puis reprise
+du batch durable du kernel. Le callback contient l’identité du run et une
+empreinte du batch, reste sous la limite Telegram de 64 octets et devient caduc
+dès que le batch change. `/clear` est une commande native qui purge toutes les
+données de la session sans passer par le modèle.
+
+Un consentement doit décrire ce qu’il accorde. `ApprovalRequest` conserve donc
+la description de l’outil et les arguments expurgés examinés par le Guardian.
+Telegram et le Web présentent l’action, la cible, les paramètres, le motif de
+blocage, les risques et surtout la portée durable exacte
+`(tool_name, action_family, path)`, valable jusqu’à la remise à zéro de la
+conversation.
+
 ### 23. Mémoire indexée, jamais devinée *(remplacée par 24)*
 Les mémoires explicites étaient indexées en FTS5 avec le tokenizer du RAG et
 classées par bm25. Cette table n’existe plus : voir la décision 24.

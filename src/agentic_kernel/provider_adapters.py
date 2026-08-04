@@ -60,9 +60,21 @@ class LocalOpenAIAdapter:
         base_url = local_base_url(config)
         if not base_url.endswith("/v1"):
             base_url += "/v1"
+        settings = {
+            key: value
+            for key, value in {
+                "temperature": config.temperature,
+                "top_k": config.top_k,
+                "top_p": config.top_p,
+                "max_tokens": config.num_predict,
+                "timeout": config.timeout_seconds,
+            }.items()
+            if value is not None
+        }
         return OpenAIChatModel(
             model_name,
             provider=OpenAIProvider(base_url=base_url, api_key="local"),
+            settings=settings,
         )
 
 

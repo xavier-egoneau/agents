@@ -49,6 +49,7 @@ class SessionProjection:
                     prompt TEXT NOT NULL DEFAULT '',
                     workspace TEXT,
                     trigger TEXT NOT NULL DEFAULT 'user',
+                    hidden INTEGER NOT NULL DEFAULT 0,
                     cron_job_id TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -121,6 +122,14 @@ class SessionProjection:
                     "ALTER TABLE projected_context "
                     "ADD COLUMN calibration_samples INTEGER NOT NULL DEFAULT 0"
                 )
+            session_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(projected_sessions)")
+            }
+            if "hidden" not in session_columns:
+                db.execute(
+                    "ALTER TABLE projected_sessions "
+                    "ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"
+                )
 
     def apply(
         self,
@@ -177,10 +186,10 @@ class SessionProjection:
             payload = event.payload
             db.execute(
                 """INSERT INTO projected_sessions
-                   (session_id, agent_id, prompt, workspace, trigger, cron_job_id,
+                   (session_id, agent_id, prompt, workspace, trigger, hidden, cron_job_id,
                     created_at, updated_at, status, output, errors_json,
                     event_count, last_sequence)
-                   VALUES (?, ?, ?, NULL, 'routine_inbox', NULL, ?, ?, 'success',
+                   VALUES (?, ?, ?, NULL, 'routine_inbox', 0, NULL, ?, ?, 'success',
                            '', '[]', 1, ?)
                    ON CONFLICT(session_id) DO UPDATE SET
                      prompt='Routines', workspace=NULL, trigger='routine_inbox',
@@ -193,9 +202,9 @@ class SessionProjection:
             payload = event.payload
             db.execute(
                 """INSERT INTO projected_sessions
-                   (session_id, agent_id, prompt, workspace, trigger, cron_job_id,
+                   (session_id, agent_id, prompt, workspace, trigger, hidden, cron_job_id,
                     created_at, updated_at, status, event_count, last_sequence)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', 1, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 1, ?)
                    ON CONFLICT(session_id) DO UPDATE SET
                      agent_id=excluded.agent_id,
                      prompt=CASE WHEN projected_sessions.trigger='routine_inbox'
@@ -204,6 +213,8 @@ class SessionProjection:
                        THEN NULL ELSE excluded.workspace END,
                      trigger=CASE WHEN projected_sessions.trigger='routine_inbox'
                        THEN 'routine_inbox' ELSE excluded.trigger END,
+                     hidden=CASE WHEN projected_sessions.trigger='routine_inbox'
+                       THEN 0 ELSE excluded.hidden END,
                      cron_job_id=CASE WHEN projected_sessions.trigger='routine_inbox'
                        THEN NULL ELSE excluded.cron_job_id END,
                      updated_at=excluded.updated_at,
@@ -215,6 +226,7 @@ class SessionProjection:
                     str(payload.get("prompt", "")),
                     payload.get("workspace"),
                     str(payload.get("trigger", "user")),
+                    int(bool(payload.get("hidden", False))),
                     payload.get("cron_job_id"),
                     timestamp,
                     timestamp,
@@ -449,15 +461,24 @@ class SessionProjection:
         limit: int = 100,
         offset: int = 0,
         include_automations: bool = False,
+        include_channels: bool = False,
+        default_workspace_agent: str | None = None,
     ) -> list[dict[str, Any]]:
         query = "SELECT * FROM projected_sessions"
         params: list[Any] = []
         clauses: list[str] = []
         if workspace is not None:
-            clauses.append("(workspace = ? OR trigger = 'routine_inbox')")
+            workspace_clauses = ["workspace = ?", "trigger = 'routine_inbox'"]
             params.append(workspace)
+            if default_workspace_agent:
+                workspace_clauses.append("(workspace IS NULL AND agent_id = ?)")
+                params.append(default_workspace_agent)
+            if include_channels:
+                workspace_clauses.append("trigger = 'telegram'")
+            clauses.append("(" + " OR ".join(workspace_clauses) + ")")
         if not include_automations:
             clauses.append("trigger NOT IN ('cron', 'cron_resume', 'cron_test')")
+        clauses.append("hidden = 0")
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"

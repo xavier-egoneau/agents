@@ -113,7 +113,10 @@ class Kernel:
             )
         elif command and command["skill"] not in request.skills:
             request = request.model_copy(update={"skills": [*request.skills, command["skill"]]})
-        provider_factory = ProviderFactory(self.config.providers())
+        provider_factory = ProviderFactory(
+            self.config.providers(),
+            runtime_dir=self.config.content_root / "runtime" / "providers",
+        )
         agent_config = agents[request.agent_id]
         active_provider_id = request.provider_id or agent_config.provider
         provider_config = provider_factory.get_config(active_provider_id)
@@ -189,6 +192,7 @@ class Kernel:
                     "model": active_model,
                     "reasoning": request.reasoning,
                     "trigger": request.trigger,
+                    "hidden": request.hidden,
                     "cron_job_id": request.cron_job_id,
                     "workflow": request.workflow,
                     "tool_allowlist": request.tool_allowlist,
@@ -603,7 +607,10 @@ class Kernel:
         approval = prepared.approval
         state = prepared.state
         agents = self.config.agents()
-        provider_factory = ProviderFactory(self.config.providers())
+        provider_factory = ProviderFactory(
+            self.config.providers(),
+            runtime_dir=self.config.content_root / "runtime" / "providers",
+        )
         active_provider_id = request.provider_id or agents[request.agent_id].provider
         provider_config = provider_factory.get_config(active_provider_id)
         active_model = request.model or agents[request.agent_id].model or provider_config.model

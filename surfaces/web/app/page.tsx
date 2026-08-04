@@ -104,7 +104,202 @@ type Catalog = {
     vision: boolean;
   }[];
   tools: { name: string; description: string; module: string; risks: string[] }[];
+  configurable_modules: { id: string; name: string }[];
 };
+
+type ModuleSettingField = {
+  name: string;
+  label: string;
+  type: "text" | "secret" | "file" | "directory" | "integer" | "number" | "boolean" | "select" | "string_list";
+  description?: string | null;
+  required: boolean;
+  default?: unknown;
+  options: string[];
+  minimum?: number | null;
+  maximum?: number | null;
+  configured?: boolean;
+  value?: unknown;
+};
+
+type ConfigurableModule = {
+  id: string;
+  name: string;
+  title: string;
+  description: string;
+  applies_to: string[];
+  state: "configured" | "defaults" | "required";
+  fields: ModuleSettingField[];
+};
+
+function apiErrorDetail(payload: unknown, fallback: string): string {
+  if (!isRecord(payload)) return fallback;
+  if (typeof payload.detail === "string" && payload.detail.trim()) {
+    return payload.detail;
+  }
+  if (Array.isArray(payload.detail)) {
+    const messages = payload.detail.flatMap((entry) => {
+      if (!isRecord(entry)) return [];
+      const location = Array.isArray(entry.loc)
+        ? entry.loc.filter((item) => item !== "body").join(" → ")
+        : "";
+      const message = typeof entry.msg === "string" ? entry.msg : "valeur invalide";
+      return [`${location ? `${location} : ` : ""}${message}`];
+    });
+    if (messages.length) return messages.join(" · ");
+  }
+  return fallback;
+}
+
+function normalizeResourceId(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[^a-z0-9]+|[^a-z0-9._-]+$/g, "");
+}
+
+function ModuleSettingsPanel({
+  modules,
+  saving,
+  onChange,
+  onSave,
+}: {
+  modules: ConfigurableModule[];
+  saving: boolean;
+  onChange: (moduleId: string, fieldName: string, value: unknown) => void;
+  onSave: (module: ConfigurableModule) => void;
+}) {
+  const stateLabel = {
+    configured: "Configuré",
+    defaults: "Prêt avec les valeurs par défaut",
+    required: "Configuration requise",
+  };
+  return (
+    <div className="management-body module-settings-list">
+      {modules.map((module) => (
+        <section className="module-settings-card" key={module.id}>
+          <header>
+            <div>
+              <strong>{module.title}</strong>
+              <small>{module.description}</small>
+            </div>
+            <span className="module-settings-state" data-state={module.state}>
+              {stateLabel[module.state]}
+            </span>
+          </header>
+          {module.applies_to.length > 0 && (
+            <p className="module-settings-tools">
+              Tools : {module.applies_to.join(", ")}
+            </p>
+          )}
+          <div className="resource-fields">
+            {module.fields.map((field) => {
+              const fieldId = `${module.id}-${field.name}`;
+              const description = field.description && <small>{field.description}</small>;
+              if (field.type === "boolean") {
+                return (
+                  <label className="provider-vision" key={field.name} htmlFor={fieldId}>
+                    <input
+                      id={fieldId}
+                      type="checkbox"
+                      checked={Boolean(field.value)}
+                      onChange={(event) => onChange(module.id, field.name, event.target.checked)}
+                    />
+                    {field.label}
+                    {description}
+                  </label>
+                );
+              }
+              if (field.type === "select") {
+                return (
+                  <label key={field.name} htmlFor={fieldId}>
+                    {field.label}{field.required && " *"}
+                    <select
+                      id={fieldId}
+                      value={String(field.value ?? "")}
+                      onChange={(event) => onChange(module.id, field.name, event.target.value)}
+                    >
+                      {!field.required && <option value="">Valeur par défaut</option>}
+                      {field.options.map((option) => <option key={option}>{option}</option>)}
+                    </select>
+                    {description}
+                  </label>
+                );
+              }
+              if (field.type === "string_list") {
+                return (
+                  <label className="field-wide" key={field.name} htmlFor={fieldId}>
+                    {field.label}{field.required && " *"}
+                    <textarea
+                      id={fieldId}
+                      className="module-settings-list-input"
+                      value={Array.isArray(field.value) ? field.value.join("\n") : ""}
+                      onChange={(event) => onChange(
+                        module.id,
+                        field.name,
+                        event.target.value.split(/\r?\n/).filter(Boolean),
+                      )}
+                    />
+                    {description}
+                  </label>
+                );
+              }
+              const numeric = field.type === "integer" || field.type === "number";
+              return (
+                <label
+                  className={field.type === "secret" || field.type === "file" || field.type === "directory" ? "field-wide" : ""}
+                  key={field.name}
+                  htmlFor={fieldId}
+                >
+                  {field.label}{field.required && " *"}
+                  <input
+                    id={fieldId}
+                    type={field.type === "secret" ? "password" : numeric ? "number" : "text"}
+                    min={field.minimum ?? undefined}
+                    max={field.maximum ?? undefined}
+                    step={field.type === "number" ? "any" : undefined}
+                    value={String(field.value ?? "")}
+                    placeholder={field.type === "secret" && field.configured
+                      ? "Valeur configurée — laisser vide pour la conserver"
+                      : field.type === "file" || field.type === "directory"
+                        ? "Chemin absolu"
+                        : undefined}
+                    onChange={(event) => onChange(
+                      module.id,
+                      field.name,
+                      numeric && event.target.value !== ""
+                        ? Number(event.target.value)
+                        : event.target.value,
+                    )}
+                  />
+                  {description}
+                </label>
+              );
+            })}
+          </div>
+          <footer>
+            <button
+              className="primary"
+              disabled={saving}
+              onClick={() => onSave(module)}
+            >
+              {saving ? "Enregistrement…" : "Enregistrer"}
+            </button>
+          </footer>
+        </section>
+      ))}
+      {modules.length === 0 && (
+        <div className="management-empty">
+          <strong>Aucun module configurable</strong>
+          <p>Les tools sans paramètres restent disponibles dans le catalogue.</p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 type Message = {
   id: string;
@@ -148,6 +343,16 @@ type ManagedResource = {
   id: string;
   description: string;
   content: string;
+  telegram?: TelegramAgentConfig;
+};
+
+type TelegramAgentConfig = {
+  enabled: boolean;
+  hide_session: boolean;
+  user_id: string;
+  bot_token: string;
+  user_id_configured?: boolean;
+  bot_token_configured?: boolean;
 };
 
 type ResourceEditor = {
@@ -156,6 +361,7 @@ type ResourceEditor = {
   frontmatter: Record<string, unknown>;
   body: string;
   creating: boolean;
+  telegram?: TelegramAgentConfig;
 };
 
 type ManagedProvider = {
@@ -170,6 +376,18 @@ type ManagedProvider = {
   vision?: boolean;
   timeout_seconds?: number;
   auth_help_url?: string;
+  models_dir?: string | null;
+  server_binary?: string | null;
+  port?: number;
+  n_gpu_layers?: number;
+  num_ctx?: number;
+  flash_attn?: boolean;
+  startup_timeout_seconds?: number;
+  llama_args?: string[];
+  temperature?: number;
+  top_k?: number;
+  top_p?: number;
+  num_predict?: number;
 };
 
 type CronJob = {
@@ -608,7 +826,7 @@ type SessionSummary = {
   output: string | null;
   errors: { message: string }[];
   event_count: number;
-  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test" | "routine_inbox";
+  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test" | "routine_inbox" | "telegram";
   cron_job_id?: string | null;
   messages?: {
     role: "user" | "assistant";
@@ -928,6 +1146,7 @@ export default function Home() {
   const [managedProviders, setManagedProviders] = useState<ManagedProvider[]>([]);
   const [defaultProvider, setDefaultProvider] = useState("");
   const [providerEditor, setProviderEditor] = useState<(ManagedProvider & { creating: boolean }) | null>(null);
+  const [moduleSettings, setModuleSettings] = useState<ConfigurableModule[]>([]);
   const [codexConnected, setCodexConnected] = useState(false);
   const [codexAuthLoading, setCodexAuthLoading] = useState(false);
   const [composerPreferencesReady, setComposerPreferencesReady] = useState(false);
@@ -1305,7 +1524,9 @@ export default function Home() {
 
   const refreshSessions = useCallback(async (workspace = activeWorkspace) => {
     if (!workspace) return;
-    const response = await fetch(`/api/kernel/sessions?workspace=${encodeURIComponent(workspace)}`);
+    const response = await fetch(
+      `/api/kernel/sessions?workspace=${encodeURIComponent(workspace)}&include_channels=true`,
+    );
     if (!response.ok) return;
     const nextSessions: SessionSummary[] = await response.json();
     const previous = sessionSnapshots.current.get(workspace);
@@ -1450,6 +1671,18 @@ export default function Home() {
   }, [managementModal]);
 
   useEffect(() => {
+    if (managementModal !== "settings") return;
+    setManagementError("");
+    fetch("/api/kernel/admin/module-settings")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Impossible de charger les paramètres");
+        return response.json();
+      })
+      .then((data: ConfigurableModule[]) => setModuleSettings(data))
+      .catch((error) => setManagementError(error instanceof Error ? error.message : "Erreur"));
+  }, [managementModal]);
+
+  useEffect(() => {
     if (providerEditor?.kind !== "openai-codex") {
       setCodexConnected(false);
       return;
@@ -1521,27 +1754,69 @@ export default function Home() {
         ? "Instructions de l’agent."
         : "# Instructions\n\nDécris ici le comportement de la skill.",
       creating: true,
+      telegram: kind === "agents" ? {
+        enabled: false,
+        hide_session: false,
+        user_id: "",
+        bot_token: "",
+      } : undefined,
     });
     setManagementError("");
   }
 
   async function saveResource() {
     if (!resourceEditor) return;
+    const normalizedId = resourceEditor.creating
+      ? normalizeResourceId(resourceEditor.id)
+      : resourceEditor.id;
+    if (!normalizedId) {
+      setManagementError("L’identifiant doit contenir au moins une lettre ou un chiffre.");
+      return;
+    }
+    const editor = normalizedId === resourceEditor.id ? resourceEditor : {
+      ...resourceEditor,
+      id: normalizedId,
+      frontmatter: {
+        ...resourceEditor.frontmatter,
+        [resourceEditor.kind === "agents" ? "id" : "name"]: normalizedId,
+      },
+    };
+    if (normalizedId !== resourceEditor.id) setResourceEditor(editor);
+    if (editor.kind === "agents" && editor.telegram?.enabled) {
+      const telegram = editor.telegram;
+      const hasUser = Boolean(telegram.user_id.trim() || telegram.user_id_configured);
+      const hasToken = Boolean(telegram.bot_token.trim() || telegram.bot_token_configured);
+      if (!hasUser || !hasToken) {
+        setManagementError(
+          "Telegram nécessite l’identifiant numérique de l’utilisateur et le token du bot.",
+        );
+        return;
+      }
+      if (telegram.user_id.trim() && !/^[1-9]\d*$/.test(telegram.user_id.trim())) {
+        setManagementError("L’identifiant utilisateur Telegram doit être un entier positif.");
+        return;
+      }
+      if (telegram.bot_token.trim() && !/^\d+:[A-Za-z0-9_-]{20,}$/.test(telegram.bot_token.trim())) {
+        setManagementError("Le token du bot Telegram n’a pas le format fourni par BotFather.");
+        return;
+      }
+    }
     setSavingResource(true);
     setManagementError("");
-    const endpoint = `/api/kernel/admin/${resourceEditor.kind}${resourceEditor.creating ? "" : `/${resourceEditor.id}`}`;
+    const endpoint = `/api/kernel/admin/${editor.kind}${editor.creating ? "" : `/${editor.id}`}`;
     try {
       const response = await fetch(endpoint, {
-        method: resourceEditor.creating ? "POST" : "PUT",
+        method: editor.creating ? "POST" : "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          id: resourceEditor.id,
-          content: buildMarkdownResource(resourceEditor),
+          id: editor.id,
+          content: buildMarkdownResource(editor),
+          telegram: editor.kind === "agents" ? editor.telegram : undefined,
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Enregistrement impossible");
-      const refreshed = await fetch(`/api/kernel/admin/${resourceEditor.kind}`);
+      if (!response.ok) throw new Error(apiErrorDetail(data, "Enregistrement impossible"));
+      const refreshed = await fetch(`/api/kernel/admin/${editor.kind}`);
       if (refreshed.ok) setManagedResources(await refreshed.json());
       await refreshCatalog();
       setResourceEditor(null);
@@ -1557,6 +1832,38 @@ export default function Home() {
       ...current,
       frontmatter: { ...current.frontmatter, [name]: value },
     }));
+  }
+
+  function updateResourceId(value: string, normalize = false) {
+    setResourceEditor((current) => {
+      if (!current || !current.creating) return current;
+      const id = normalize ? normalizeResourceId(value) : value;
+      return {
+        ...current,
+        id,
+        frontmatter: {
+          ...current.frontmatter,
+          [current.kind === "agents" ? "id" : "name"]: id,
+        },
+      };
+    });
+  }
+
+  function updateTelegramField(
+    name: keyof TelegramAgentConfig,
+    value: string | boolean,
+  ) {
+    setResourceEditor((current) => current && current.kind === "agents" ? ({
+      ...current,
+      telegram: {
+        enabled: false,
+        hide_session: false,
+        user_id: "",
+        bot_token: "",
+        ...current.telegram,
+        [name]: value,
+      },
+    }) : current);
   }
 
   function toggleEditorListField(name: string, value: string, defaults: string[] = []) {
@@ -1582,6 +1889,7 @@ export default function Home() {
       frontmatter: parsed.frontmatter,
       body: parsed.body,
       creating: false,
+      telegram: kind === "agents" ? resource.telegram : undefined,
     });
     setManagementError("");
   }
@@ -1640,6 +1948,20 @@ export default function Home() {
           auth_help_url: codexAuthHelpUrl,
         };
       }
+      if (kind === "llama-cpp") {
+        return {
+          ...current,
+          kind,
+          connection_type: "local",
+          base_url: null,
+          port: current.port || 8123,
+          n_gpu_layers: current.n_gpu_layers ?? 999,
+          num_ctx: current.num_ctx || 16384,
+          flash_attn: current.flash_attn ?? true,
+          startup_timeout_seconds: current.startup_timeout_seconds || 240,
+          llama_args: current.llama_args || [],
+        };
+      }
       return { ...current, kind };
     });
   }
@@ -1667,6 +1989,43 @@ export default function Home() {
       }
       await refreshCatalog();
       setProviderEditor(null);
+    } catch (error) {
+      setManagementError(error instanceof Error ? error.message : "Enregistrement impossible");
+    } finally {
+      setSavingResource(false);
+    }
+  }
+
+  function updateModuleSetting(moduleId: string, fieldName: string, value: unknown) {
+    setModuleSettings((current) => current.map((module) => module.id !== moduleId
+      ? module
+      : {
+          ...module,
+          fields: module.fields.map((field) => field.name === fieldName
+            ? { ...field, value }
+            : field),
+        }));
+  }
+
+  async function saveModuleSettings(module: ConfigurableModule) {
+    setSavingResource(true);
+    setManagementError("");
+    try {
+      const values = Object.fromEntries(module.fields.map((field) => [
+        field.name,
+        field.type === "secret" ? (field.value || "") : field.value,
+      ]));
+      const response = await fetch(
+        `/api/kernel/admin/module-settings/${encodeURIComponent(module.id)}`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ values }),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Enregistrement impossible");
+      setModuleSettings((current) => current.map((item) => item.id === module.id ? data : item));
     } catch (error) {
       setManagementError(error instanceof Error ? error.message : "Enregistrement impossible");
     } finally {
@@ -2833,6 +3192,7 @@ export default function Home() {
     { id: "agents", icon: "agent", label: "Agents", onSelect: () => openManagement("agents") },
     { id: "skills", icon: "skill", label: "Skills", onSelect: () => openManagement("skills") },
     { id: "providers", icon: "provider", label: "Providers", onSelect: () => openManagement("providers") },
+    { id: "settings", icon: "settings", label: "Paramètres", onSelect: () => openManagement("settings") },
     {
       id: "crons",
       icon: "automation",
@@ -2959,6 +3319,7 @@ export default function Home() {
               availableSkillCount={catalog?.skills.length || 0}
               providerCount={catalog?.providers.length || 0}
               defaultProvider={catalog?.default_provider}
+              settingsCount={catalog?.configurable_modules?.length || 0}
               cronCount={cronJobs.length}
               activeCronCount={cronJobs.filter((job) => job.enabled).length}
               unreadCronCount={unreadCronCount}
@@ -3036,6 +3397,7 @@ export default function Home() {
                   {managementModal === "agents" && "Agents"}
                   {managementModal === "skills" && "Skills"}
                   {managementModal === "providers" && "Providers"}
+                  {managementModal === "settings" && "Paramètres"}
                   {managementModal === "crons" && "Automatisations"}
                 </h2>
               </div>
@@ -3064,6 +3426,15 @@ export default function Home() {
               <div className="management-error" role="alert">{managementError}</div>
             )}
 
+            {managementModal === "settings" && (
+              <ModuleSettingsPanel
+                modules={moduleSettings}
+                saving={savingResource}
+                onChange={updateModuleSetting}
+                onSave={(module) => void saveModuleSettings(module)}
+              />
+            )}
+
             {resourceEditor ? (
               <div className="resource-editor">
                 <div className="resource-fields">
@@ -3072,10 +3443,12 @@ export default function Home() {
                     <input
                       value={resourceEditor.id}
                       disabled={!resourceEditor.creating}
-                      onChange={(event) => setResourceEditor((current) => current && ({
-                        ...current, id: event.target.value,
-                      }))}
+                      onChange={(event) => updateResourceId(event.target.value)}
+                      onBlur={(event) => updateResourceId(event.target.value, true)}
                     />
+                    {resourceEditor.creating && (
+                      <small>Minuscules, chiffres, points, tirets ou underscores.</small>
+                    )}
                   </label>
                   <label className="field-wide">
                     Description
@@ -3117,6 +3490,53 @@ export default function Home() {
                           ))}
                         </select>
                       </label>
+                      <fieldset className="field-wide checkbox-field telegram-agent-field">
+                        <legend>Canal de conversation</legend>
+                        <label className="provider-vision">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(resourceEditor.telegram?.enabled)}
+                            onChange={(event) => updateTelegramField("enabled", event.target.checked)}
+                          />
+                          Telegram
+                        </label>
+                        {resourceEditor.telegram?.enabled && (
+                          <div className="resource-fields telegram-agent-settings">
+                            <label className="field-wide">
+                              Identifiant utilisateur Telegram
+                              <input
+                                type="password"
+                                inputMode="numeric"
+                                value={resourceEditor.telegram.user_id || ""}
+                                placeholder={resourceEditor.telegram.user_id_configured
+                                  ? "Identifiant configuré — laisser vide pour le conserver"
+                                  : "Identifiant numérique autorisé"}
+                                onChange={(event) => updateTelegramField("user_id", event.target.value)}
+                              />
+                              <small>Seul cet utilisateur pourra parler au bot, même dans un groupe.</small>
+                            </label>
+                            <label className="field-wide">
+                              Token API du bot
+                              <input
+                                type="password"
+                                value={resourceEditor.telegram.bot_token || ""}
+                                placeholder={resourceEditor.telegram.bot_token_configured
+                                  ? "Token configuré — laisser vide pour le conserver"
+                                  : "Token fourni par BotFather"}
+                                onChange={(event) => updateTelegramField("bot_token", event.target.value)}
+                              />
+                            </label>
+                            <label className="provider-vision field-wide">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(resourceEditor.telegram.hide_session)}
+                                onChange={(event) => updateTelegramField("hide_session", event.target.checked)}
+                              />
+                              Masquer cette session dans l’application
+                            </label>
+                          </div>
+                        )}
+                      </fieldset>
                       <fieldset className="field-wide checkbox-field">
                         <legend>Tools actifs</legend>
                         <div className="checkbox-grid">
@@ -3487,6 +3907,122 @@ export default function Home() {
                         }))}
                       />
                     </label>
+                  )}
+                  {providerEditor.kind === "llama-cpp" && (
+                    <>
+                      <label className="field-wide">
+                        Dossier des modèles GGUF
+                        <input
+                          value={providerEditor.models_dir || ""}
+                          placeholder="C:\\Users\\vous\\llama.cpp\\models"
+                          onChange={(event) => setProviderEditor((current) => current && ({
+                            ...current, models_dir: event.target.value || null,
+                          }))}
+                        />
+                      </label>
+                      <label className="field-wide">
+                        Exécutable llama-server
+                        <input
+                          value={providerEditor.server_binary || ""}
+                          placeholder="llama-server (PATH) ou chemin absolu"
+                          onChange={(event) => setProviderEditor((current) => current && ({
+                            ...current, server_binary: event.target.value || null,
+                          }))}
+                        />
+                      </label>
+                      <label>
+                        Port local
+                        <input
+                          type="number"
+                          min={1}
+                          max={65535}
+                          value={providerEditor.port || 8123}
+                          onChange={(event) => setProviderEditor((current) => current && ({
+                            ...current, port: Number(event.target.value),
+                          }))}
+                        />
+                      </label>
+                      <label>
+                        Fenêtre de contexte
+                        <input
+                          type="number"
+                          min={1}
+                          value={providerEditor.num_ctx || 16384}
+                          onChange={(event) => setProviderEditor((current) => current && ({
+                            ...current, num_ctx: Number(event.target.value),
+                          }))}
+                        />
+                      </label>
+                      <label>
+                        Couches GPU
+                        <input
+                          type="number"
+                          value={providerEditor.n_gpu_layers ?? 999}
+                          onChange={(event) => setProviderEditor((current) => current && ({
+                            ...current, n_gpu_layers: Number(event.target.value),
+                          }))}
+                        />
+                      </label>
+                      <label>
+                        Timeout de démarrage
+                        <input
+                          type="number"
+                          min={1}
+                          value={providerEditor.startup_timeout_seconds || 240}
+                          onChange={(event) => setProviderEditor((current) => current && ({
+                            ...current, startup_timeout_seconds: Number(event.target.value),
+                          }))}
+                        />
+                      </label>
+                      <label>
+                        Température
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.1}
+                          value={providerEditor.temperature ?? ""}
+                          onChange={(event) => setProviderEditor((current) => current && ({
+                            ...current,
+                            temperature: event.target.value === ""
+                              ? undefined : Number(event.target.value),
+                          }))}
+                        />
+                      </label>
+                      <label>
+                        Top K
+                        <input
+                          type="number"
+                          min={0}
+                          value={providerEditor.top_k ?? ""}
+                          onChange={(event) => setProviderEditor((current) => current && ({
+                            ...current,
+                            top_k: event.target.value === ""
+                              ? undefined : Number(event.target.value),
+                          }))}
+                        />
+                      </label>
+                      <label className="provider-vision">
+                        <input
+                          type="checkbox"
+                          checked={providerEditor.flash_attn ?? true}
+                          onChange={(event) => setProviderEditor((current) => current && ({
+                            ...current, flash_attn: event.target.checked,
+                          }))}
+                        />
+                        Flash attention
+                      </label>
+                      <label className="field-wide">
+                        Arguments llama-server (un par ligne)
+                        <textarea
+                          value={(providerEditor.llama_args || []).join("\n")}
+                          onChange={(event) => setProviderEditor((current) => current && ({
+                            ...current,
+                            llama_args: event.target.value.split(/\r?\n/).filter(Boolean),
+                          }))}
+                          placeholder={"--n-cpu-moe\n21"}
+                        />
+                      </label>
+                    </>
                   )}
                   {providerEditor.kind !== "openai-codex" && (
                     <label>

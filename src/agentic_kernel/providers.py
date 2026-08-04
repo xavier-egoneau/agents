@@ -9,6 +9,7 @@ import httpx
 
 from .auth import OAuthManager
 from .errors import AuthenticationError, ConfigurationError
+from .llama_server import LlamaServerError, LlamaServerManager, scan_gguf_models
 from .models import ConnectionType, ProviderConfig, ProviderRegistry
 from .provider_adapters import (
     ProviderAdapterRegistry,
@@ -23,10 +24,12 @@ class ProviderFactory:
         registry: ProviderRegistry,
         oauth: OAuthManager | None = None,
         adapters: ProviderAdapterRegistry | None = None,
+        runtime_dir: Path | None = None,
     ) -> None:
         self.registry = registry
         self.oauth = oauth or OAuthManager()
         self.adapters = adapters or ProviderAdapterRegistry()
+        self.runtime_dir = runtime_dir
 
     def get_config(self, provider_id: str) -> ProviderConfig:
         for provider in self.registry.providers:
@@ -41,12 +44,30 @@ class ProviderFactory:
             raise ConfigurationError(
                 f"provider {provider_id} requires a model selected for this run"
             )
+        manager = self._managed_llama(config)
+        if manager is not None:
+            try:
+                manager.ensure_running(model_name)
+            except LlamaServerError as exc:
+                raise ConfigurationError(str(exc)) from exc
         adapter = self.adapters.for_config(config)
         return adapter.build(config, model_name, self.oauth)
 
     async def check(self, provider_id: str) -> tuple[bool, str]:
         config = self.get_config(provider_id)
         if config.connection_type == ConnectionType.LOCAL:
+            manager = self._managed_llama(config)
+            if manager is not None:
+                try:
+                    manager.validate_configuration()
+                    state = manager.status()
+                    if state is None:
+                        return True, "configured; starts on first use"
+                    if manager.health_ok():
+                        return True, f"reachable; model={state.model}; pid={state.pid}"
+                    return False, f"llama-server pid {state.pid} is not healthy"
+                except LlamaServerError as exc:
+                    return False, str(exc)
             try:
                 base_url = local_base_url(config)
                 async with httpx.AsyncClient(timeout=5) as client:
@@ -74,13 +95,7 @@ class ProviderFactory:
         if config.connection_type == ConnectionType.LOCAL and models_dir:
             directory = Path(str(models_dir)).expanduser()
             if directory.is_dir():
-                discovered = sorted(
-                    {
-                        path.name[:-5]
-                        for path in directory.iterdir()
-                        if path.is_file() and path.name.lower().endswith(".gguf")
-                    }
-                )
+                discovered = scan_gguf_models(directory)
                 if discovered:
                     return discovered, "directory", None
 
@@ -157,6 +172,44 @@ class ProviderFactory:
         except Exception as exc:
             return configured, "configured", str(exc)[:240]
         return configured, "configured", None
+
+    def managed_llama(self, provider_id: str) -> LlamaServerManager | None:
+        """Expose lifecycle controls without starting a configured server."""
+        return self._managed_llama(self.get_config(provider_id))
+
+    def _managed_llama(self, config: ProviderConfig) -> LlamaServerManager | None:
+        if config.kind not in {"llama-cpp", "llama.cpp"} or not config.models_dir:
+            return None
+        if self.runtime_dir is None:
+            raise ConfigurationError(
+                "managed llama.cpp requires a provider runtime directory"
+            )
+        server_args: list[str] = []
+        option_pairs = (
+            (config.n_gpu_layers, "--n-gpu-layers"),
+            (config.num_ctx, "--ctx-size"),
+            (config.threads, "--threads"),
+            (config.parallel, "--parallel"),
+            (config.batch_size, "--batch-size"),
+            (config.ubatch_size, "--ubatch-size"),
+        )
+        for value, option in option_pairs:
+            if value is not None:
+                server_args.extend([option, str(value)])
+        if config.flash_attn is True:
+            server_args.extend(["--flash-attn", "on"])
+        elif config.flash_attn is False:
+            server_args.extend(["--flash-attn", "off"])
+        server_args.extend(config.llama_args)
+        return LlamaServerManager(
+            state_dir=self.runtime_dir,
+            models_dir=Path(config.models_dir),
+            provider_id=config.id,
+            binary=config.server_binary,
+            port=config.port or 8123,
+            server_args=server_args,
+            startup_timeout_seconds=config.startup_timeout_seconds or 180,
+        )
 
 
 def _codex_client_version() -> str:

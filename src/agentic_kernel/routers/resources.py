@@ -12,17 +12,25 @@ from pydantic import BaseModel, Field
 from ..config import ProjectConfig
 from ..errors import ConfigurationError
 from ..models import ProviderRegistry
+from ..module_settings import ModuleSettingsStore
+from ..modules import ModuleRegistry
 from ..platform.secure_files import secure_file
+from ..telegram import TelegramAgentInput, TelegramConfigStore
 
 
 class MarkdownResourceBody(BaseModel):
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$")
     content: str = Field(min_length=1)
+    telegram: TelegramAgentInput | None = None
 
 
 class ProviderResourceBody(BaseModel):
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$")
     config: dict[str, object]
+
+
+class ModuleSettingsBody(BaseModel):
+    values: dict[str, object]
 
 
 def _atomic_markdown_write(
@@ -59,17 +67,42 @@ def _validate_skill(project: ProjectConfig, skill_id: str, target: Path) -> None
         raise ConfigurationError(f"Le front matter doit déclarer exactement name: {skill_id}")
 
 
-def create_resource_router(project: ProjectConfig) -> APIRouter:
+def create_resource_router(
+    project: ProjectConfig,
+    telegram_store: TelegramConfigStore | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/api/admin", tags=["resources"])
+    telegram = telegram_store or TelegramConfigStore(project.content_root)
+    module_settings = ModuleSettingsStore(
+        project.content_root,
+        ModuleRegistry(project.tools_root),
+    )
+
+    @router.get("/module-settings")
+    async def configurable_modules() -> list[dict[str, object]]:
+        try:
+            return module_settings.list()
+        except ConfigurationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.put("/module-settings/{module_id}")
+    async def update_module_settings(
+        module_id: str, payload: ModuleSettingsBody
+    ) -> dict[str, object]:
+        try:
+            return module_settings.update(module_id, payload.values)
+        except (ConfigurationError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.get("/agents")
-    async def agents() -> list[dict[str, str]]:
+    async def agents() -> list[dict[str, object]]:
         managed_root = (project.content_root / "agents").resolve()
         return [
             {
                 "id": agent.id,
                 "description": agent.description,
                 "content": Path(agent.source).read_text(encoding="utf-8"),
+                "telegram": telegram.view(agent.id),
             }
             for agent in project.agents().values()
             if Path(agent.source).resolve().parent == managed_root
@@ -81,11 +114,15 @@ def create_resource_router(project: ProjectConfig) -> APIRouter:
         if target.exists():
             raise HTTPException(status_code=409, detail=f"L’agent {payload.id} existe déjà")
         try:
+            if payload.telegram is not None:
+                telegram.validate(payload.id, payload.telegram)
             _atomic_markdown_write(
                 target,
                 payload.content,
                 lambda: _validate_agent(project, payload.id, target),
             )
+            if payload.telegram is not None:
+                telegram.update(payload.id, payload.telegram)
         except ConfigurationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"id": payload.id, "status": "created"}
@@ -103,11 +140,15 @@ def create_resource_router(project: ProjectConfig) -> APIRouter:
         if not target.exists():
             raise HTTPException(status_code=404, detail="Agent introuvable")
         try:
+            if payload.telegram is not None:
+                telegram.validate(agent_id, payload.telegram)
             _atomic_markdown_write(
                 target,
                 payload.content,
                 lambda: _validate_agent(project, agent_id, target),
             )
+            if payload.telegram is not None:
+                telegram.update(agent_id, payload.telegram)
         except ConfigurationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"id": agent_id, "status": "updated"}
@@ -128,6 +169,7 @@ def create_resource_router(project: ProjectConfig) -> APIRouter:
         if not target.exists():
             raise HTTPException(status_code=404, detail="Agent introuvable")
         target.unlink()
+        telegram.delete(agent_id)
         (project.content_root / "agents" / f"{agent_id}.tools-disabled.json").unlink(
             missing_ok=True
         )

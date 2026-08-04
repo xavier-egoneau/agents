@@ -643,6 +643,7 @@
           "persistent": true
         }
       ],
+      "config": null,
       "enabled": true
     },
     {
@@ -853,6 +854,7 @@
           "persistent": false
         }
       ],
+      "config": null,
       "enabled": true
     },
     {
@@ -1766,6 +1768,7 @@
           "persistent": true
         }
       ],
+      "config": null,
       "enabled": true
     },
     {
@@ -2250,6 +2253,7 @@
           "persistent": false
         }
       ],
+      "config": null,
       "enabled": true
     },
     {
@@ -2353,6 +2357,7 @@
           "persistent": false
         }
       ],
+      "config": null,
       "enabled": true
     },
     {
@@ -3370,6 +3375,7 @@
           "persistent": false
         }
       ],
+      "config": null,
       "enabled": true
     },
     {
@@ -3570,6 +3576,7 @@
           "persistent": false
         }
       ],
+      "config": null,
       "enabled": true
     },
     {
@@ -3580,7 +3587,8 @@
       "version": "1.0.0",
       "entrypoint": "module.py:module",
       "capabilities": [
-        "tools"
+        "tools",
+        "config"
       ],
       "tools": [
         {
@@ -3811,6 +3819,41 @@
           "persistent": false
         }
       ],
+      "config": {
+        "title": "Agenda iCloud",
+        "description": "Identifiants CalDAV utilisés par les outils de calendrier. Les valeurs restent dans le coffre local.",
+        "applies_to": [
+          "icloud_list_calendars",
+          "icloud_list_events"
+        ],
+        "fields": [
+          {
+            "name": "username",
+            "label": "Identifiant Apple",
+            "type": "secret",
+            "description": "Adresse du compte iCloud.",
+            "required": true,
+            "default": null,
+            "secret_name": "ICLOUD_CALDAV_USERNAME",
+            "options": [],
+            "minimum": null,
+            "maximum": null
+          },
+          {
+            "name": "password",
+            "label": "Mot de passe d’application",
+            "type": "secret",
+            "description": "Mot de passe d’application généré dans le compte Apple.",
+            "required": true,
+            "default": null,
+            "secret_name": "ICLOUD_CALDAV_PASSWORD",
+            "options": [],
+            "minimum": null,
+            "maximum": null
+          }
+        ],
+        "legacy_file": null
+      },
       "enabled": true
     },
     {
@@ -4143,6 +4186,7 @@
           "persistent": false
         }
       ],
+      "config": null,
       "enabled": true
     },
     {
@@ -4596,6 +4640,7 @@
           "persistent": false
         }
       ],
+      "config": null,
       "enabled": true
     },
     {
@@ -4800,6 +4845,7 @@
           "persistent": true
         }
       ],
+      "config": null,
       "enabled": true
     },
     {
@@ -6410,6 +6456,7 @@
           "persistent": true
         }
       ],
+      "config": null,
       "enabled": true
     },
     {
@@ -6420,7 +6467,8 @@
       "version": "1.0.0",
       "entrypoint": "module.py:module",
       "capabilities": [
-        "tools"
+        "tools",
+        "config"
       ],
       "tools": [
         {
@@ -6832,6 +6880,148 @@
           "persistent": true
         }
       ],
+      "config": {
+        "title": "Vision locale",
+        "description": "Modèle multimodal et serveur llama.cpp utilisés par image_inspect.",
+        "applies_to": [
+          "image_inspect"
+        ],
+        "fields": [
+          {
+            "name": "base_url",
+            "label": "URL locale",
+            "type": "text",
+            "description": null,
+            "required": true,
+            "default": "http://127.0.0.1:8081/v1",
+            "secret_name": null,
+            "options": [],
+            "minimum": null,
+            "maximum": null
+          },
+          {
+            "name": "model",
+            "label": "Nom du modèle",
+            "type": "text",
+            "description": null,
+            "required": true,
+            "default": "gemma-4-E2B-it",
+            "secret_name": null,
+            "options": [],
+            "minimum": null,
+            "maximum": null
+          },
+          {
+            "name": "model_path",
+            "label": "Fichier GGUF",
+            "type": "file",
+            "description": "Facultatif si un dépôt Hugging Face est renseigné.",
+            "required": false,
+            "default": null,
+            "secret_name": null,
+            "options": [],
+            "minimum": null,
+            "maximum": null
+          },
+          {
+            "name": "hf_repo",
+            "label": "Modèle Hugging Face",
+            "type": "text",
+            "description": null,
+            "required": false,
+            "default": "ggml-org/gemma-4-E2B-it-GGUF:Q4_0",
+            "secret_name": null,
+            "options": [],
+            "minimum": null,
+            "maximum": null
+          },
+          {
+            "name": "mmproj_path",
+            "label": "Projection multimodale",
+            "type": "file",
+            "description": null,
+            "required": false,
+            "default": null,
+            "secret_name": null,
+            "options": [],
+            "minimum": null,
+            "maximum": null
+          },
+          {
+            "name": "server_binary",
+            "label": "Exécutable llama-server",
+            "type": "file",
+            "description": null,
+            "required": true,
+            "default": "llama-server",
+            "secret_name": null,
+            "options": [],
+            "minimum": null,
+            "maximum": null
+          },
+          {
+            "name": "port",
+            "label": "Port local",
+            "type": "integer",
+            "description": null,
+            "required": true,
+            "default": 8081,
+            "secret_name": null,
+            "options": [],
+            "minimum": 1.0,
+            "maximum": 65535.0
+          },
+          {
+            "name": "timeout_seconds",
+            "label": "Timeout des requêtes",
+            "type": "number",
+            "description": null,
+            "required": false,
+            "default": 180,
+            "secret_name": null,
+            "options": [],
+            "minimum": 1.0,
+            "maximum": null
+          },
+          {
+            "name": "startup_timeout_seconds",
+            "label": "Timeout de démarrage",
+            "type": "number",
+            "description": null,
+            "required": false,
+            "default": 1800,
+            "secret_name": null,
+            "options": [],
+            "minimum": 1.0,
+            "maximum": null
+          },
+          {
+            "name": "max_tokens",
+            "label": "Tokens maximum",
+            "type": "integer",
+            "description": null,
+            "required": false,
+            "default": 2048,
+            "secret_name": null,
+            "options": [],
+            "minimum": 1.0,
+            "maximum": null
+          },
+          {
+            "name": "llama_args",
+            "label": "Arguments llama-server",
+            "type": "string_list",
+            "description": "Un argument par ligne.",
+            "required": false,
+            "default": [],
+            "secret_name": null,
+            "options": [],
+            "minimum": null,
+            "maximum": null
+          }
+        ],
+        "legacy_file": "vision.json"
+      },
       "enabled": true
     },
     {
@@ -7388,6 +7578,7 @@
           "persistent": true
         }
       ],
+      "config": null,
       "enabled": true
     },
     {
@@ -8135,6 +8326,7 @@
           "persistent": false
         }
       ],
+      "config": null,
       "enabled": true
     }
   ]

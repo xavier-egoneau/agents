@@ -33,6 +33,8 @@ from .scheduler import (
     CronService,
     SchedulerError,
 )
+from .session_lifecycle import SessionLifecycle
+from .telegram import TelegramConfigStore, TelegramSupervisor
 from .workflows import WorkflowProposalService
 
 
@@ -116,6 +118,8 @@ def create_app(
     git_service = GitService()
     running_tasks: dict[UUID, asyncio.Task[RunResult]] = {}
     cron_service = CronService(project.content_root / "state.db")
+    telegram_store = TelegramConfigStore(project.content_root)
+    session_lifecycle = SessionLifecycle(kernel, project.content_root / "state.db")
     cron_service.import_legacy_once(
         project.content_root / "agents" / "crons.json", workspace_root
     )
@@ -247,6 +251,43 @@ def create_app(
 
     scheduler = CronScheduler(cron_service, launch)
 
+    async def resolve_telegram_approvals(
+        approval_ids: list[UUID], approved: bool
+    ) -> RunResult:
+        if not approval_ids:
+            raise ConfigurationError("aucune autorisation Telegram à traiter")
+        state = kernel.approvals.load_state(approval_ids[0])
+        if state is None:
+            raise ConfigurationError("autorisation Telegram introuvable ou déjà traitée")
+        request = RunRequest.model_validate(state["request"])
+        if request.trigger != "telegram":
+            raise ConfigurationError("cette autorisation n’appartient pas à Telegram")
+        if request.session_id in running_tasks:
+            raise ConfigurationError("une résolution est déjà en cours")
+        task = asyncio.create_task(kernel.resolve_approval_batch(approval_ids, approved))
+        running_tasks[request.session_id] = task
+        try:
+            return await task
+        finally:
+            running_tasks.pop(request.session_id, None)
+
+    def clear_telegram_session(session_id: UUID) -> bool:
+        if session_id in running_tasks:
+            raise ConfigurationError("un run est encore en cours")
+        session = kernel.events.projection.session(session_id)
+        if session is not None and session.get("trigger") != "telegram":
+            raise ConfigurationError("cette session n’appartient pas à Telegram")
+        return session_lifecycle.delete(session_id)
+
+    telegram = TelegramSupervisor(
+        telegram_store,
+        lambda: set(project.agents()),
+        launch,
+        kernel.list_approvals,
+        resolve_telegram_approvals,
+        clear_telegram_session,
+    )
+
     def workflow_proposal_service(payload: CronJobInput) -> WorkflowProposalService:
         agents = project.agents()
         agent = agents.get(payload.agent_id)
@@ -259,7 +300,10 @@ def create_app(
                 "Le skill workflow-creator doit être installé pour proposer un workflow"
             )
         provider_id = payload.provider_id or agent.provider
-        model = ProviderFactory(project.providers()).build(
+        model = ProviderFactory(
+            project.providers(),
+            runtime_dir=project.content_root / "runtime" / "providers",
+        ).build(
             provider_id,
             payload.model or agent.model,
         )
@@ -274,14 +318,16 @@ def create_app(
             scheduler.run_forever(),
             name="amk-cron-scheduler",
         )
+        telegram_task = asyncio.create_task(
+            telegram.run_forever(),
+            name="amk-telegram-supervisor",
+        )
         try:
             yield
         finally:
-            scheduler_task.cancel()
-            try:
-                await scheduler_task
-            except asyncio.CancelledError:
-                pass
+            for task in (scheduler_task, telegram_task):
+                task.cancel()
+            await asyncio.gather(scheduler_task, telegram_task, return_exceptions=True)
 
     app = FastAPI(
         title="Agentic Markdown Kernel",
@@ -305,7 +351,7 @@ def create_app(
         )
     )
     app.include_router(create_artifact_router(kernel))
-    app.include_router(create_resource_router(project))
+    app.include_router(create_resource_router(project, telegram_store))
     app.include_router(create_git_router(project, git_service))
     app.include_router(create_files_router())
 
@@ -429,6 +475,11 @@ def create_app(
                 if module.enabled
                 for tool in module.tools
             ],
+            "configurable_modules": [
+                {"id": module.id, "name": module.name}
+                for module in kernel.module_registry.discover().modules
+                if module.enabled and module.config is not None
+            ],
         }
 
     @app.get("/api/commands")
@@ -443,9 +494,10 @@ def create_app(
     @app.get("/api/providers/{provider_id}/models")
     async def provider_models(provider_id: str) -> dict[str, object]:
         try:
-            models, source, error = await ProviderFactory(project.providers()).list_models(
-                provider_id
-            )
+            models, source, error = await ProviderFactory(
+                project.providers(),
+                runtime_dir=project.content_root / "runtime" / "providers",
+            ).list_models(provider_id)
         except ConfigurationError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"provider_id": provider_id, "models": models, "source": source, "error": error}
