@@ -10,12 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import shutil
 from urllib.parse import urlparse
 
 from .converters import ConversionError, Converted
-from .managed_tools import managed_executable
+from .managed_tools import discovered_executable
 
 MAX_OUTPUT_BYTES = 2_000_000
 
@@ -27,10 +25,7 @@ _TITLE_KEYS = ("title", "name", "heading")
 
 
 def resolve_binary() -> str | None:
-    configured = os.getenv("AMK_KETCH_BIN")
-    if configured:
-        return configured if os.path.isfile(configured) and os.access(configured, os.X_OK) else None
-    return shutil.which("ketch") or managed_executable("ketch")
+    return discovered_executable("ketch", "AMK_KETCH_BIN")
 
 
 def is_url(value: str) -> bool:

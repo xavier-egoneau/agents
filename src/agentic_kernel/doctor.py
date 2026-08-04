@@ -3,10 +3,11 @@ from __future__ import annotations
 import shutil
 from dataclasses import dataclass
 
-from .managed_tools import managed_executable
+from .managed_tools import discovered_executable
 from .modules import ModuleRegistry
 from .paths import RuntimeLayout
 from .platform.sandbox import sandbox_capabilities
+from .vision import LocalVisionService, VisionUnavailable
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,11 @@ class Diagnostic:
 def diagnose(layout: RuntimeLayout) -> list[Diagnostic]:
     content = layout.content_root
     capabilities = sandbox_capabilities()
+    ketch = discovered_executable("ketch", "AMK_KETCH_BIN")
+    try:
+        llama, gemma = LocalVisionService(content).installed_assets()
+    except VisionUnavailable:
+        llama, gemma = None, None
     checks = [
         Diagnostic("application", "ok", str(layout.application_root), True),
         Diagnostic("user data", "ok" if content.is_dir() else "missing", str(content), True),
@@ -41,15 +47,18 @@ def diagnose(layout: RuntimeLayout) -> list[Diagnostic]:
         ),
         Diagnostic(
             "ketch",
-            "ok" if shutil.which("ketch") or managed_executable("ketch") else "missing",
-            shutil.which("ketch") or managed_executable("ketch") or "run amk setup",
+            "ok" if ketch else "missing",
+            ketch or "run amk setup",
         ),
         Diagnostic(
             "llama.cpp",
-            "ok" if shutil.which("llama-server") or managed_executable("llama") else "optional",
-            shutil.which("llama-server")
-            or managed_executable("llama")
-            or "run amk setup --full",
+            "ok" if llama else "optional",
+            llama or "run amk setup --full",
+        ),
+        Diagnostic(
+            "Gemma 4 model",
+            "ok" if gemma else "optional",
+            gemma or "downloaded on first vision use or by amk setup --full",
         ),
         Diagnostic(
             "npm development runtime",

@@ -4,7 +4,7 @@ import pytest
 from typer.testing import CliRunner
 
 from agentic_kernel.cli import app
-from agentic_kernel.managed_tools import ManagedToolInstaller
+from agentic_kernel.managed_tools import ManagedToolInstaller, discovered_executable
 
 
 def test_release_asset_selection_is_exact() -> None:
@@ -31,3 +31,13 @@ def test_setup_without_downloads_creates_user_content(
     content = tmp_path / "home" / "content-agents"
     assert (content / "system.md").is_file()
     assert (content / "agents" / "main.md").is_file()
+
+
+def test_discovery_accepts_an_existing_configured_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = tmp_path / "ketch.exe"
+    binary.write_bytes(b"")
+    monkeypatch.setenv("AMK_KETCH_BIN", str(binary))
+
+    assert discovered_executable("ketch", "AMK_KETCH_BIN") == str(binary.resolve())

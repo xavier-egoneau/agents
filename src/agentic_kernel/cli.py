@@ -15,7 +15,7 @@ from .config import ProjectConfig
 from .doctor import diagnose
 from .errors import KernelError
 from .kernel import Kernel
-from .managed_tools import ManagedToolInstaller
+from .managed_tools import ManagedToolInstaller, discovered_executable
 from .models import RunRequest, RunStatus, SecurityMode
 from .modules import ModuleRegistry
 from .paths import application_root, runtime_layout
@@ -80,8 +80,12 @@ def setup(
     if no_downloads:
         return
     installer = ManagedToolInstaller()
-    typer.echo("Installation de Ketch…")
-    typer.echo(f"  {installer.install('ketch')}")
+    ketch = discovered_executable("ketch", "AMK_KETCH_BIN")
+    if ketch:
+        typer.echo(f"Ketch existant réutilisé : {ketch}")
+    else:
+        typer.echo("Installation de Ketch…")
+        typer.echo(f"  {installer.install('ketch')}")
     web_root = layout.application_root / "surfaces" / "web"
     if not (web_root / "node_modules").is_dir():
         npm = shutil.which("npm")
@@ -92,12 +96,20 @@ def setup(
     if not full:
         typer.echo("Vision locale optionnelle : amk setup --full")
         return
-    typer.echo("Installation de llama.cpp…")
-    typer.echo(f"  {installer.install('llama')}")
-    typer.echo("Téléchargement et préparation du modèle vision…")
     from .vision import LocalVisionService
 
     service = LocalVisionService(layout.content_root)
+    llama, gemma = service.installed_assets()
+    if llama:
+        typer.echo(f"llama.cpp existant réutilisé : {llama}")
+    else:
+        typer.echo("Installation de llama.cpp…")
+        typer.echo(f"  {installer.install('llama')}")
+    if gemma:
+        typer.echo(f"Gemma 4 existant réutilisé : {gemma}")
+    else:
+        typer.echo("Téléchargement du modèle vision…")
+    typer.echo("Préparation de la vision locale…")
     try:
         asyncio.run(service.prepare())
     finally:

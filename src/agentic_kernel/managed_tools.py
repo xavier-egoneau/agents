@@ -78,6 +78,23 @@ def managed_executable(name: str) -> str | None:
     return str(path) if path.is_file() else None
 
 
+def discovered_executable(name: str, env_var: str | None = None) -> str | None:
+    """Find an existing tool without requiring it to be managed by AMK."""
+    spec = tool_specs().get(name)
+    if spec is None:
+        return None
+    if env_var and (configured := os.getenv(env_var)):
+        path = Path(configured).expanduser()
+        return str(path.resolve()) if path.is_file() else None
+    if on_path := shutil.which(spec.executable):
+        return str(Path(on_path).resolve())
+    for directory in (Path.home() / "bin", Path.home() / ".local" / "bin"):
+        candidate = directory / spec.executable
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return managed_executable(name)
+
+
 class ManagedToolInstaller:
     def __init__(self, root: Path | None = None) -> None:
         self.root = (root or tools_home()).expanduser().resolve()

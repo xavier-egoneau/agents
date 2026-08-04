@@ -51,9 +51,11 @@ uv run amk agents validate
 uv run amk run --agent main "Quelle heure est-il ?"
 ```
 
-`amk setup` installe l’espace utilisateur, Ketch et les dépendances web. Le
-profil `amk setup --full` ajoute llama.cpp puis télécharge et prépare le modèle
-vision. `amk setup --no-downloads` ne matérialise que le socle. `amk doctor`
+`amk setup` installe l’espace utilisateur, Ketch et les dépendances web. Il
+réutilise les binaires déjà présents dans le `PATH`, `~/bin` ou `~/.local/bin`.
+Le profil `amk setup --full` réutilise également llama.cpp et le modèle vision
+configuré lorsqu’ils existent, sinon il les installe. `amk setup --no-downloads`
+ne matérialise que le socle. `amk doctor`
 diagnostique ensuite les chemins, providers, outils, catalogue et capacités du
 sandbox.
 
@@ -280,9 +282,10 @@ Le module `web` expose une interface unique pour cinq surfaces de recherche : `s
 `code`, `docs` et `crawl`. Il utilise le binaire stateless Ketch, force les sorties JSON, borne les
 résultats et traduit ses codes d'erreur en catégories stables. Installation opérateur :
 
-`amk setup` télécharge le binaire Ketch précompilé correspondant à la plateforme,
-vérifie son SHA-256 et le conserve dans le répertoire de données AMK sans modifier
-le `PATH` système. `ketch config` reste disponible pour choisir les backends.
+`amk setup` réutilise d’abord Ketch depuis `AMK_KETCH_BIN`, le `PATH`, `~/bin` ou
+`~/.local/bin`. À défaut, il télécharge le binaire précompilé correspondant à la
+plateforme, vérifie son SHA-256 et le conserve dans le répertoire de données AMK
+sans modifier le `PATH` système. `ketch config` reste disponible pour choisir les backends.
 
 La recherche web utilise DuckDuckGo par défaut sans clé. Les autres backends et Context7 peuvent
 être configurés directement dans Ketch. Les pages récupérées sont considérées comme des données non

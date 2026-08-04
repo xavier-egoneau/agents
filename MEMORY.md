@@ -21,8 +21,9 @@
 
 ## Installation
 
-- `amk setup` prépare le socle, Ketch et les dépendances web; `--full` ajoute
-  llama.cpp et précharge Gemma, `--no-downloads` reste purement local.
+- `amk setup` prépare le socle, Ketch et les dépendances web; il réutilise les
+  installations existantes. `--full` complète seulement les éléments llama.cpp
+  ou Gemma absents, `--no-downloads` reste purement local.
 - La racine applicative ne dépend plus du CWD. Un checkout existant garde son
   `content-agents/`; une installation neuve utilise la racine de données OS.
 - Le manifeste `.amk-defaults.json` met à jour uniquement les fichiers livrés

@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
@@ -12,7 +11,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .errors import KernelError
-from .managed_tools import managed_executable
+from .managed_tools import discovered_executable
 
 
 class VisionUnavailable(KernelError):
@@ -31,6 +30,24 @@ class LocalVisionService:
     async def prepare(self) -> None:
         """Install/download and load the configured model once."""
         await self._ensure_server(self._config())
+
+    def installed_assets(self) -> tuple[str | None, str | None]:
+        """Return configured local vision assets that are already present."""
+        config = self._config()
+        binary_name = str(config.get("server_binary") or "llama-server")
+        binary_path = Path(binary_name).expanduser()
+        binary = (
+            str(binary_path.resolve())
+            if binary_path.is_file()
+            else discovered_executable("llama", "AMK_LLAMA_BIN")
+        )
+        model = None
+        model_value = config.get("model_path")
+        if isinstance(model_value, str) and model_value.strip():
+            model_path = Path(model_value).expanduser()
+            if model_path.is_file():
+                model = str(model_path.resolve())
+        return binary, model
 
     def close(self) -> None:
         """Stop only the llama-server process started by this service."""
@@ -169,7 +186,7 @@ class LocalVisionService:
             binary = (
                 binary_name
                 if Path(binary_name).is_file()
-                else shutil.which(binary_name) or managed_executable("llama")
+                else discovered_executable("llama", "AMK_LLAMA_BIN")
             )
             if not binary:
                 raise VisionUnavailable(
