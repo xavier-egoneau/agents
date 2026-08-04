@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -64,3 +65,17 @@ async def test_missing_credentials_are_reported_by_secret_name() -> None:
     assert result["error"]["type"] == "caldav"
     assert "ICLOUD_CALDAV_USERNAME" in result["error"]["message"]
     assert "ICLOUD_CALDAV_PASSWORD" in result["error"]["message"]
+
+
+def test_default_event_bounds_cover_today_and_the_seven_following_days() -> None:
+    module = load_module()
+
+    start, end = module._event_bounds(
+        None,
+        None,
+        7,
+        now=datetime(2026, 8, 4, 9, 30, tzinfo=UTC),
+    )
+
+    assert start == datetime(2026, 8, 4, tzinfo=UTC)
+    assert end == datetime(2026, 8, 12, tzinfo=UTC)

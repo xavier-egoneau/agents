@@ -443,10 +443,20 @@ class WorkflowProposalDisplayError extends Error {}
  * précisément ce qui a échoué — le diagnostic était jeté avec le corps.
  */
 async function workflowProposalError(response: Response): Promise<WorkflowProposalDisplayError> {
-  return workflowProposalErrorForStatus(response.status);
+  let detail = "";
+  try {
+    const payload: unknown = await response.json();
+    if (isRecord(payload) && typeof payload.detail === "string") detail = payload.detail.trim();
+  } catch {
+    // The status-specific message remains useful when a proxy returns no JSON.
+  }
+  return workflowProposalErrorForStatus(response.status, detail);
 }
 
-function workflowProposalErrorForStatus(status: number): WorkflowProposalDisplayError {
+function workflowProposalErrorForStatus(
+  status: number,
+  detail = "",
+): WorkflowProposalDisplayError {
   if (status === 404) {
     return new WorkflowProposalDisplayError(
       "La proposition guidée n’est pas encore chargée dans l’application active. "
@@ -472,8 +482,10 @@ function workflowProposalErrorForStatus(status: number): WorkflowProposalDisplay
   }
   if (status === 422) {
     return new WorkflowProposalDisplayError(
-      "Le prompt, les skills ou les outils disponibles ne permettent pas encore de préparer un workflow. "
-      + "Ajuste la routine, puis réessaie.",
+      detail || (
+        "Le prompt, les skills ou les outils disponibles ne permettent pas encore de préparer un workflow. "
+        + "Ajuste la routine, puis réessaie."
+      ),
     );
   }
   return new WorkflowProposalDisplayError(

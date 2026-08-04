@@ -422,6 +422,25 @@ def test_basis_hash_is_canonical_for_catalog_and_skill_order(tmp_path: Path) -> 
     assert workflow_basis_hash(first) == workflow_basis_hash(second)
 
 
+def test_workflow_basis_accepts_a_personal_workspace_and_guardian_metadata() -> None:
+    current = WorkflowBasis(
+        name="Routine personnelle",
+        prompt="Prépare le point quotidien",
+        schedule="0 10 * * *",
+        workspace="",
+        tool_catalog=[
+            WorkflowTool(
+                name="command_run",
+                path_parameters=["cwd"],
+                url_parameters=[],
+            )
+        ],
+    )
+
+    assert current.workspace == ""
+    assert current.tool_catalog[0].path_parameters == ["cwd"]
+
+
 def test_synthesis_only_has_empty_allowlist_and_inline_instructions(tmp_path: Path) -> None:
     definition = workflow(
         permissions={

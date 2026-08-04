@@ -3689,10 +3689,32 @@
             "additionalProperties": false,
             "properties": {
               "start": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "end": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "days_ahead": {
+                "default": 7,
+                "maximum": 365,
+                "minimum": 0,
+                "type": "integer"
               },
               "calendar": {
                 "anyOf": [
@@ -3716,10 +3738,6 @@
                 "type": "string"
               }
             },
-            "required": [
-              "start",
-              "end"
-            ],
             "type": "object"
           },
           "output_schema": {

@@ -92,6 +92,10 @@ la routine possède directement le workflow accepté, séparément de ses skills
   `permissions.unlisted: stop_and_report` par défaut.
 - Résoudre la date depuis le contexte d’exécution ; ne pas figer la date de
   création du workflow.
+- Ne pas ajouter une étape shell uniquement pour calculer ou formater une date.
+  Utiliser les variables `runtime.*`; si le schéma ne sait pas exprimer une
+  opération calendaire, laisser l’agent fournir dynamiquement les bornes à
+  l’outil concerné à partir du contexte d’exécution.
 - Borner chaque retry à trois tentatives maximum.
 - Exiger une preuve exploitable pour toute étape outillée.
 - Dériver la liste d’outils d’exécution uniquement des étapes outillées. Une

@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter
 from pydantic import BaseModel, ConfigDict, Field
@@ -260,11 +261,27 @@ class CronService:
             raise SchedulerError(f"Expression cron invalide : {expression}")
 
     @staticmethod
-    def next_fire(expression: str, base: datetime | None = None) -> datetime:
+    def next_fire(
+        expression: str,
+        base: datetime | None = None,
+        *,
+        timezone: str = "Europe/Paris",
+    ) -> datetime:
         CronService.validate_schedule(expression)
-        reference = base or datetime.now().astimezone()
+        try:
+            zone = ZoneInfo(timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise SchedulerError(f"Fuseau horaire inconnu : {timezone}") from exc
+        reference = (base or datetime.now(UTC)).astimezone(zone)
         result = croniter(expression, reference).get_next(datetime)
         return result if result.tzinfo else result.replace(tzinfo=reference.tzinfo)
+
+    @staticmethod
+    def _workflow_timezone(workflow: dict[str, Any] | None) -> str:
+        execution = workflow.get("execution") if isinstance(workflow, dict) else None
+        if isinstance(execution, dict) and execution.get("timezone"):
+            return str(execution["timezone"])
+        return "Europe/Paris"
 
     @staticmethod
     def _same_workspace(candidate: Path, current: Path | None) -> bool:
@@ -323,7 +340,10 @@ class CronService:
         now = datetime.now(UTC)
         job_id = f"cron_{uuid4().hex}"
         session_id = uuid4()
-        next_run = self.next_fire(payload.schedule)
+        next_run = self.next_fire(
+            payload.schedule,
+            timezone=self._workflow_timezone(workflow),
+        )
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO cron_jobs (
@@ -384,7 +404,10 @@ class CronService:
         self.validate_schedule(payload.schedule)
         workspace = self._validated_workspace(payload, current=existing.workspace)
         now = datetime.now(UTC)
-        next_run = self.next_fire(payload.schedule)
+        next_run = self.next_fire(
+            payload.schedule,
+            timezone=self._workflow_timezone(existing.workflow),
+        )
         with self._connect() as connection:
             connection.execute(
                 """UPDATE cron_jobs SET name=?, schedule=?, prompt=?, workspace=?,
@@ -428,7 +451,10 @@ class CronService:
         self.validate_schedule(payload.schedule)
         workspace = self._validated_workspace(payload, current=job.workspace)
         now = datetime.now(UTC)
-        next_run = self.next_fire(payload.schedule)
+        next_run = self.next_fire(
+            payload.schedule,
+            timezone=self._workflow_timezone(workflow),
+        )
         with self._connect() as connection:
             cursor = connection.execute(
                 """UPDATE cron_jobs SET name=?, schedule=?, prompt=?, workspace=?,
@@ -547,7 +573,11 @@ class CronService:
                    last_error=NULL WHERE id=? AND enabled=1 AND in_flight=0 AND blocked=0""",
                 (
                     fired_at.isoformat(),
-                    self.next_fire(job.schedule, fired_at).isoformat(),
+                    self.next_fire(
+                        job.schedule,
+                        fired_at,
+                        timezone=self._workflow_timezone(job.workflow),
+                    ).isoformat(),
                     job_id,
                 ),
             )

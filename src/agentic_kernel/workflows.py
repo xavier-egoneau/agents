@@ -55,6 +55,11 @@ class WorkflowTool(_StrictModel):
     cancellable: bool = False
     persistent: bool = False
     module: str | None = None
+    # Guardian metadata is part of the effective tool contract. Keeping it in
+    # the workflow basis both accepts the catalog emitted by Kernel and makes
+    # security-relevant catalog changes invalidate an older proposal cleanly.
+    path_parameters: list[str] = Field(default_factory=list)
+    url_parameters: list[str] = Field(default_factory=list)
 
 
 class WorkflowBasis(_StrictModel):
@@ -64,7 +69,9 @@ class WorkflowBasis(_StrictModel):
     prompt: str = Field(min_length=1)
     schedule: str = Field(min_length=1, max_length=120)
     timezone: str = Field(default="Europe/Paris", min_length=1)
-    workspace: str = Field(min_length=1)
+    # Empty is the canonical logical representation of `workspace: null`.
+    # Runtime execution resolves it to the agent's personal workspace.
+    workspace: str = ""
     agent_id: str = Field(default="main", pattern=r"^[a-z0-9][a-z0-9._-]*$")
     skills: list[str] = Field(default_factory=list)
     skill_instructions: dict[str, str] = Field(default_factory=dict)

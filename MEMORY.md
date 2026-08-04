@@ -18,6 +18,8 @@
 - Compaction du contexte à 70 % de la fenêtre connue, snapshot exact compressé
   écrit avant réduction.
 - Routines planifiées avec workflow optionnel, prévalidées avant activation.
+  Leur cron reste évalué dans le fuseau du workflow après chaque occurrence;
+  les métadonnées de sécurité Guardian font partie du contrat versionné.
 
 ## Installation
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Any
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree
@@ -169,6 +169,31 @@ def _parse_bound(value: str, *, end: bool = False) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _event_bounds(
+    start: str | None,
+    end: str | None,
+    days_ahead: int,
+    *,
+    now: datetime | None = None,
+) -> tuple[datetime, datetime]:
+    if (start is None) != (end is None):
+        raise ValueError("start et end doivent être fournis ensemble")
+    if start is not None and end is not None:
+        return _parse_bound(start), _parse_bound(end, end=True)
+    local_now = now or datetime.now().astimezone()
+    local_zone = local_now.tzinfo
+    today = local_now.date()
+    start_at = datetime.combine(today, time.min, tzinfo=local_zone)
+    # `days_ahead=7` means today plus the seven following calendar days;
+    # CalDAV's upper bound is exclusive, hence the extra day.
+    end_at = datetime.combine(
+        today + timedelta(days=days_ahead + 1),
+        time.min,
+        tzinfo=local_zone,
+    )
+    return start_at.astimezone(UTC), end_at.astimezone(UTC)
+
+
 def _caldav_timestamp(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
 
@@ -256,15 +281,16 @@ async def icloud_list_calendars(
 
 async def icloud_list_events(
     ctx: RunContext[Any],
-    start: str,
-    end: str,
+    start: str | None = None,
+    end: str | None = None,
+    days_ahead: Annotated[int, Field(ge=0, le=365)] = 7,
     calendar: str | None = None,
     limit: Annotated[int, Field(ge=1, le=500)] = 100,
     justification: str = "",
 ) -> dict[str, Any]:
     """Read iCloud events in an ISO-8601 interval of at most 366 days."""
     try:
-        start_at, end_at = _parse_bound(start), _parse_bound(end, end=True)
+        start_at, end_at = _event_bounds(start, end, days_ahead)
         if end_at <= start_at:
             raise ValueError("la fin doit être postérieure au début")
         if (end_at - start_at).days > 366:

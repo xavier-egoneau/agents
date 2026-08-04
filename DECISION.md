@@ -217,6 +217,24 @@ Les profils `limited` et `power` restent bornés au workspace effectif. Pour une
 session globale, cette frontière est donc l’espace personnel de son agent, pas
 le dépôt AMK ni le dossier utilisateur.
 
+### 30. Le workflow versionne le contrat de sécurité et le fuseau
+Le catalogue remis au générateur de workflows comprend les paramètres de chemin
+et d’URL interprétés par le Guardian. Ces métadonnées sont acceptées par le
+schéma et participent au hash de base : une évolution de sécurité invalide donc
+explicitement une proposition antérieure, sans empêcher d’en générer une
+nouvelle. `workspace: null` est représenté par une chaîne vide uniquement dans
+ce hash; l’exécution continue de le résoudre vers l’espace personnel.
+
+Une échéance cron est calculée dans `execution.timezone` du workflow,
+`Europe/Paris` par défaut. Le scheduler reconvertit chaque instant de référence
+UTC vers ce fuseau avant de chercher l’occurrence suivante. La base IANA
+`tzdata` est une dépendance runtime afin que le même contrat fonctionne sous
+Windows et respecte les changements heure d’été/hiver.
+
+Enfin, un outil calendrier peut recevoir `days_ahead` sans bornes ISO
+pré-calculées. Un workflow n’a donc plus besoin d’inventer une commande shell
+Unix pour exprimer « aujourd’hui et les sept jours suivants ».
+
 ### 23. Mémoire indexée, jamais devinée *(remplacée par 24)*
 Les mémoires explicites étaient indexées en FTS5 avec le tokenizer du RAG et
 classées par bm25. Cette table n’existe plus : voir la décision 24.

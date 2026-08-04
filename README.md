@@ -331,8 +331,9 @@ une seule session durable afin de ne pas encombrer l’historique.
 Le panel **Automatisations** permet de créer, éditer, suspendre, tester, lancer
 et supprimer les routines. L’utilisateur choisit une fréquence lisible
 (minutes, heures, jour, semaine ou année); le kernel conserve sa représentation
-cron interne et l’évalue dans le fuseau local du serveur. Un arrêt
-transitoire peut être repris automatiquement à l’occurrence suivante; les
+cron interne et l’évalue dans le fuseau déclaré par son workflow
+(`Europe/Paris` par défaut), y compris après une exécution déclenchée en UTC.
+Un arrêt transitoire peut être repris automatiquement à l’occurrence suivante; les
 échecs de configuration ou d’authentification et les demandes d’approbation
 restent bloqués pour intervention humaine.
 

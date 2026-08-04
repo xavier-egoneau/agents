@@ -165,6 +165,25 @@ def test_cron_can_run_without_an_associated_workspace(tmp_path: Path) -> None:
     assert CronScheduler.request_for(job).workspace is None
 
 
+def test_next_run_stays_in_the_workflow_timezone_after_a_utc_claim(
+    tmp_path: Path,
+) -> None:
+    service = CronService(tmp_path / "state.db")
+    job = service.create(
+        payload(tmp_path).model_copy(update={"workspace": None}),
+        workflow=workflow_definition(),
+        workflow_basis_hash="sha256:basis",
+    )
+    summer_morning_utc = datetime(2026, 8, 4, 8, 0, tzinfo=UTC)
+
+    claimed = service.claim(job.id, summer_morning_utc, scheduled_for=summer_morning_utc)
+
+    assert claimed is not None
+    following = service.get(job.id).next_run_at
+    assert following is not None
+    assert following.isoformat() == "2026-08-05T09:00:00+02:00"
+
+
 def test_cron_workflow_is_optional_persistent_and_independently_removable(
     tmp_path: Path,
 ) -> None:
