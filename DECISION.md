@@ -2,7 +2,10 @@
 
 ## Status
 
-Décisions actives, révisées avec les schémas et comportements de la version 0.1.
+Journal historique de la version 0.1. La numérotation suit l’ordre de décision,
+pas l’ordre du fichier; une entrée marquée « remplacée » reste lisible mais ne
+décrit plus le contrat courant. Les contrats transverses les plus récents sont
+les décisions 27 à 30.
 
 ## Décisions retenues
 
@@ -129,8 +132,8 @@ Un identifiant d’installation est stocké hors du dossier de contenu, dans le
 répertoire de données de l’OS, hors de portée d’une copie ou d’une
 synchronisation du projet. Les routines le portent, et ne sont ni listées ni
 exécutées ailleurs : leurs chemins, autorisations et workspaces n’ont de sens
-que sur la machine d’origine. Rien n’est détruit; `amk crons adopt` permet une
-reprise explicite.
+que sur la machine d’origine. Rien n’est détruit; cette politique a ensuite été
+retirée par la décision 26 et aucune commande d’adoption n’est requise.
 
 ### 26. Les routines ne sont plus mises en quarantaine *(remplace 22)*
 L'ancrage à l'installation est retiré des routines. Il protégeait d'un mélange

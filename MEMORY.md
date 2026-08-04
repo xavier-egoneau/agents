@@ -60,6 +60,14 @@ tokens (`app/theme/tokens.css`), une structure fixe et des thèmes
 interchangeables; `npm run check:contrast` vérifie les ratios WCAG et la
 complétude des scopes de contexte.
 
+## Documentation
+
+- `README.md` est la porte d’entrée; les procédures utilisateur sont séparées
+  sous `docs/` : installation, configuration, workspaces, sandbox, routines,
+  dépannage et développement.
+- `DECISION.md` reste le journal des raisons; une décision remplacée n’est pas
+  une description du comportement courant.
+
 ## Dette connue
 
 - Le RAG n'a jamais été exécuté : aucun document indexé à ce jour.
