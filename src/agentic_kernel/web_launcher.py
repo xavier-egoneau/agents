@@ -95,8 +95,11 @@ def _terminate(pid: int) -> None:
     terminate_tree(pid, 4)
 
 
-def run_web(root: Path, host: str, api_port: int, web_port: int) -> int:
+def run_web(
+    root: Path, workspace: Path, host: str, api_port: int, web_port: int
+) -> int:
     root = root.resolve()
+    workspace = workspace.resolve()
     # The index is derived data. Rebuild it before starting the long-lived
     # scheduler so a newly installed or edited module cannot poison cron runs
     # with a stale catalog from a previous process.
@@ -126,7 +129,16 @@ def run_web(root: Path, host: str, api_port: int, web_port: int) -> int:
         )
         web_port = selected_web_port
     backend = subprocess.Popen(
-        [amk, "serve", "--host", host, "--port", str(api_port)],
+        [
+            amk,
+            "serve",
+            "--host",
+            host,
+            "--port",
+            str(api_port),
+            "--workspace",
+            str(workspace),
+        ],
         cwd=root,
         **subprocess_group_kwargs(),
     )

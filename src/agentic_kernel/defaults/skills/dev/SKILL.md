@@ -75,8 +75,9 @@ Au démarrage d'une tâche non triviale sur un projet inconnu, lire `DECISION.md
 et `MEMORY.md` avant d'explorer le code. En fin de tâche, vérifier si le
 changement en a rendu une partie fausse — et la corriger dans le même diff.
 
-Ne rien créer sur un projet qui n'en a pas l'usage. Une session sans workspace
-n'a aucun de ces fichiers : s'en tenir alors au contexte de la conversation.
+Ne rien créer sur un projet qui n'en a pas l'usage. Une session sans projet
+rattaché utilise l'espace personnel de l'agent : ne pas y inventer ces fichiers
+de mémoire, et s'en tenir alors au contexte de la conversation.
 
 Pour retrouver une information dans un corpus volumineux, `knowledge_index` puis
 `knowledge_search` avec `scope="project"` donnent des extraits cités ligne à

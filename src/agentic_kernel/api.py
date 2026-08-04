@@ -107,13 +107,18 @@ def _session_messages(events: list) -> list[dict[str, object]]:
     return visible
 
 
-def create_app(root: Path | str = ".") -> FastAPI:
+def create_app(
+    root: Path | str = ".", default_workspace: Path | str | None = None
+) -> FastAPI:
     project = ProjectConfig(root)
+    workspace_root = Path(default_workspace or project.root).expanduser().resolve()
     kernel = Kernel(root)
     git_service = GitService()
     running_tasks: dict[UUID, asyncio.Task[RunResult]] = {}
     cron_service = CronService(project.content_root / "state.db")
-    cron_service.import_legacy_once(project.content_root / "agents" / "crons.json", project.root)
+    cron_service.import_legacy_once(
+        project.content_root / "agents" / "crons.json", workspace_root
+    )
     cron_service.repair_orphaned_blocks(
         {item.session_id for item in kernel.list_approvals()}
     )
@@ -289,7 +294,7 @@ def create_app(root: Path | str = ".") -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["content-type"],
     )
-    app.include_router(create_run_router(kernel, project.root, running_tasks, launch))
+    app.include_router(create_run_router(kernel, running_tasks, launch))
     app.include_router(
         create_cron_router(
             cron_service,
@@ -353,7 +358,7 @@ def create_app(root: Path | str = ".") -> FastAPI:
 
     @app.get("/api/workspaces/current", response_model=WorkspaceInfo)
     async def current_workspace() -> WorkspaceInfo:
-        return workspace_info(project.root)
+        return workspace_info(workspace_root)
 
     @app.post("/api/workspaces/validate", response_model=WorkspaceInfo)
     async def validate_workspace(payload: WorkspaceRequest) -> WorkspaceInfo:
@@ -428,7 +433,7 @@ def create_app(root: Path | str = ".") -> FastAPI:
 
     @app.get("/api/commands")
     async def commands(workspace: str | None = None) -> list[dict[str, str]]:
-        selected = workspace_info(workspace).path if workspace else str(project.root)
+        selected = workspace_info(workspace).path if workspace else str(workspace_root)
         return project.commands(selected)
 
     app.include_router(

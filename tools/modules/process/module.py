@@ -127,12 +127,13 @@ async def command_run(
     args: list[str] | None = None,
     cwd: str = ".",
     timeout_seconds: Annotated[float, Field(gt=0, le=300)] = 120,
+    network: bool = False,
     justification: str = "",
 ) -> dict[str, Any]:
     """Run a structured command without a shell and return bounded output."""
     command = _command(program, args or [])
     workdir = _cwd(ctx, cwd)
-    prepared = ExecutionSandbox.prepare(command, ctx.deps)
+    prepared = ExecutionSandbox.prepare(command, ctx.deps, allow_network=network)
     started = time.monotonic()
     process = await asyncio.create_subprocess_exec(
         *prepared.command,
@@ -181,12 +182,13 @@ async def process_start(
     program: str,
     args: list[str] | None = None,
     cwd: str = ".",
+    network: bool = False,
     justification: str = "",
 ) -> dict[str, Any]:
     """Start a structured persistent process and store its identity durably."""
     command = _command(program, args or [])
     workdir = _cwd(ctx, cwd)
-    prepared = ExecutionSandbox.prepare(command, ctx.deps)
+    prepared = ExecutionSandbox.prepare(command, ctx.deps, allow_network=network)
     process_id = str(uuid4())
     output_dir = ctx.deps.events.directory / "processes" / str(ctx.deps.session_id)
     output_dir.mkdir(parents=True, exist_ok=True)

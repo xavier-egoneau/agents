@@ -56,6 +56,23 @@ async def test_kernel_run_writes_complete_session(project: Path, monkeypatch) ->
     assert any(event.type == "messages.snapshot" for event in events)
 
 
+async def test_null_workspace_uses_the_agents_personal_directory(
+    project: Path, monkeypatch
+) -> None:
+    ModuleRegistry(project / "tools").build_index()
+    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: TestModel(call_tools=[]))
+    kernel = Kernel(project)
+
+    result = await kernel.run(RunRequest(prompt="Use my personal workspace"))
+
+    started = kernel.events.read(result.session_id)[0]
+    expected = project / "content-agents" / "workspaces" / "main"
+    assert expected.is_dir()
+    assert started.payload["workspace"] is None
+    assert started.payload["effective_workspace"] == str(expected.resolve())
+    assert started.payload["workspace_kind"] == "agent_default"
+
+
 def test_kernel_supersedes_only_a_pending_cron_test_batch(project: Path) -> None:
     kernel = Kernel(project)
     cron_job_id = "cron-workflow"

@@ -77,6 +77,9 @@ def ensure_content_root(content_root: Path, *, defaults: Path | None = None) -> 
         return report
 
     content_root.mkdir(parents=True, exist_ok=True)
+    # `workspace: null` resolves to this personal, user-visible directory for
+    # the bundled main agent. Other agents are materialized lazily.
+    (content_root / "workspaces" / "main").mkdir(parents=True, exist_ok=True)
     manifest_path = content_root / MANIFEST_FILE
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

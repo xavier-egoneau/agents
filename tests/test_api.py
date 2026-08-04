@@ -80,6 +80,18 @@ def test_health_and_catalog(project: Path) -> None:
     assert missing.status_code == 422
 
 
+def test_api_default_workspace_is_distinct_from_application_root(
+    project: Path, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "customer-project"
+    workspace.mkdir()
+
+    current = TestClient(create_app(project, workspace)).get("/api/workspaces/current")
+
+    assert current.status_code == 200
+    assert current.json()["path"] == str(workspace.resolve())
+
+
 def test_git_api_is_scoped_to_the_requested_workspace(project: Path, tmp_path: Path) -> None:
     repository = tmp_path / "customer-project"
     workspace = repository / "packages" / "web"
@@ -893,6 +905,11 @@ def test_session_history_has_global_routine_inbox_and_hides_execution_sessions(
     sessions = TestClient(app).get("/api/sessions", params={"workspace": str(project)}).json()
     assert any(
         item["trigger"] == "routine_inbox" and item["workspace"] is None for item in sessions
+    )
+    inbox = next(item for item in sessions if item["trigger"] == "routine_inbox")
+    assert inbox["workspace_kind"] == "agent_default"
+    assert inbox["effective_workspace"] == str(
+        (project / "content-agents" / "workspaces" / "main").resolve()
     )
     assert all(item["session_id"] != str(automation_session) for item in sessions)
 

@@ -59,6 +59,15 @@ ne matérialise que le socle. `amk doctor`
 diagnostique ensuite les chemins, providers, outils, catalogue et capacités du
 sandbox.
 
+La surface accepte `amk web --workspace <projet>`. Sans option, le CWD n'est
+retenu que s'il appartient à un dépôt Git; un lancement depuis le dossier
+utilisateur emploie sinon l’espace personnel de l’agent
+`content-agents/workspaces/main/` jusqu'à ce qu'un projet soit choisi dans
+l'interface. Plus généralement, une session dont `workspace` vaut `null` reste
+logiquement détachée d’un projet, mais s’exécute dans
+`content-agents/workspaces/<agent_id>/`. La racine applicative, les données AMK
+et le workspace effectif d'un run sont donc trois notions distinctes.
+
 `amk init` matérialise seulement `content-agents/` : prompt système, agent
 `main`, skills de base et gabarits de configuration. Cet espace n’est pas
 versionné — il contient des données et des secrets propres à chaque poste — mais
@@ -169,17 +178,27 @@ Les décisions et phases d'exécution sont enregistrées dans le JSONL de sessio
 séparées des observations bornées renvoyées au modèle et leurs champs secrets sont masqués. Le
 guardian reste la politique d’autorisation. `command_run` et `process_start`
 ajoutent une isolation d’exécution via un backend propre à la plateforme. Sur
-macOS, `sandbox-exec` limite les écritures au workspace, aux artefacts de la
-session et à son runtime temporaire. Windows et Linux disposent de la même
-gestion structurée des processus et de leur arbre, mais ne déclarent pas encore
-d’isolation filesystem native. Sans backend d’isolation forte, `safe` et
-`limited` refusent l’exécution; `power` exige une approbation explicite. Les
-capacités sont interrogées par le Guardian plutôt que déduites du nom de l’OS.
+une machine équipée de Codex CLI, AMK réutilise son helper OS : profil
+`:read-only` en mode `safe`, profil `:workspace` en `limited` et `power`, secrets
+explicitement interdits et réseau coupé sauf demande explicite. Il bénéficie
+ainsi de Seatbelt sur macOS, de `bwrap`/`seccomp` sur Linux et du sandbox natif
+sur Windows. Le backend Windows `unelevated` ne sait pas garantir les exclusions
+de lecture exigées par AMK et est donc refusé; le mode `elevated` est requis.
+`amk sandbox setup` déclenche le flux officiel d'installation élevée de Codex.
+Sans helper Codex compatible, le backend Seatbelt historique reste disponible
+sur macOS. Ailleurs, `safe` et `limited` refusent l’exécution; `power` exige une
+approbation explicite. Les capacités sont interrogées par le Guardian plutôt
+que déduites du nom de l’OS.
 Les manifestes déclarent en plus quels arguments sont des chemins ou des URL :
 le Guardian ne dépend donc plus uniquement de noms conventionnels comme
 `path` ou `url`. Les modules Python restent privilégiés tant qu’ils s’exécutent
 dans le processus du kernel; une isolation forte de tous les tools demandera
 un hôte de modules séparé.
+
+Sous Windows, l'utilisateur sandbox hors ligne bloque l'egress public, mais le
+loopback reste techniquement joignable par un socket brut. Le Guardian continue
+donc d'exiger une approbation pour les destinations locales ou privées; le
+diagnostic ne présente pas cette combinaison comme une isolation réseau totale.
 
 Les groupes de processus POSIX sont utilisés sur macOS et Linux. Windows utilise
 un groupe de processus natif et une terminaison récursive contrôlée. Les fichiers
@@ -354,5 +373,6 @@ npm ci --prefix surfaces/web
 ```
 
 La CI exécute les validations sur Ubuntu, macOS et Windows. Une sandbox absente
-n’est jamais assimilée à une isolation réussie : le backend natif non isolé reste
-réservé au mode `power` avec approbation.
+ou incapable d'appliquer le profil complet n’est jamais assimilée à une
+isolation réussie : le backend natif non isolé reste réservé au mode `power`
+avec approbation.

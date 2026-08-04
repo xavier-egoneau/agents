@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,8 @@ NATIVE_RPPL_COMMANDS: dict[str, dict[str, str]] = {
     },
 }
 
+_AGENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
 
 def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
     if not text.startswith("---\n"):
@@ -75,6 +78,28 @@ class ProjectConfig:
             path = self.content_root / sensitive
             if path.exists():
                 secure_file(path)
+
+    def agent_workspace(self, agent_id: str) -> Path:
+        """Return the durable personal workspace owned by an agent.
+
+        A missing logical workspace is not the application source tree.  It is
+        resolved here to a visible directory under the user's content root.
+        """
+        if not _AGENT_ID_PATTERN.fullmatch(agent_id):
+            raise ConfigurationError(f"invalid agent id: {agent_id}")
+        base = (self.content_root / "workspaces").resolve()
+        workspace = (base / agent_id).resolve()
+        try:
+            workspace.relative_to(base)
+        except ValueError as exc:
+            raise ConfigurationError(f"invalid agent workspace: {agent_id}") from exc
+        workspace.mkdir(parents=True, exist_ok=True)
+        return workspace
+
+    def resolve_workspace(self, agent_id: str, workspace: Path | str | None) -> Path:
+        if workspace is None:
+            return self.agent_workspace(agent_id)
+        return Path(workspace).expanduser().resolve()
 
     def system_instructions(self) -> str:
         path = self.content_root / "system.md"

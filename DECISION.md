@@ -170,6 +170,53 @@ de ceux qui le sont, et le fichier déposé reste intact.
 `scope` distingue les deux corpus à l'indexation comme à la recherche : sans
 lui, ni l'agent ni le lecteur de ses citations ne saurait lequel a répondu.
 
+### 28. Sandbox Codex réutilisé, politique AMK conservée
+Le Guardian et le sandbox répondent à deux questions distinctes : le premier
+décide si une action est autorisée, le second borne techniquement ce qu'un
+processus autorisé peut atteindre. Une approbation ne désactive jamais le
+sandbox.
+
+Lorsqu'il est installé et capable d'appliquer tout le profil, le helper de Codex
+CLI devient le backend OS d'AMK. `safe` étend `:read-only`; `limited` et `power`
+étendent `:workspace`. Le runtime et les artefacts de session sont les seules
+racines ajoutées en écriture, les fichiers providers/secrets et les dossiers de
+credentials sont interdits, et le réseau est désactivé par défaut. Un appel de
+processus doit le demander explicitement.
+
+Ici, `:workspace` décrit d'abord la frontière d'écriture des processus. AMK
+ajoute `:root = deny` et `:minimal = read` pour éviter la lecture générale du
+poste, puis réouvre seulement l'interpréteur nécessaire. Le workspace du web
+n'est plus implicitement la racine applicative : il est choisi par le run,
+fourni avec `amk web -w`, repris du dépôt Git courant ou remplacé par un dossier
+personnel sous `content-agents/workspaces/` si le lancement vient d'un CWD trop
+large.
+
+Le backend Windows `unelevated` refuse les exclusions de lecture fines. AMK ne
+retire pas ces exclusions pour obtenir artificiellement un statut vert : seul
+`elevated` est accepté. Si aucun backend complet n'est disponible, `safe` et
+`limited` refusent l'exécution et `doctor` expose la cause. À terme, le helper
+devra être livré avec AMK plutôt que dépendre d'une installation Codex voisine.
+Sur Windows, le compte hors ligne bloque bien l'egress public mais pas le
+loopback brut; cette limite reste annoncée et les URL locales sont contrôlées
+par le Guardian.
+
+### 29. `workspace: null` désigne l’espace personnel de l’agent
+Une session détachée d’un projet ne s’exécute plus dans la racine de
+l’application. Sa valeur logique reste `null` dans les événements, projections,
+routines et API, mais le kernel la résout vers le dossier durable et visible
+`content-agents/workspaces/<agent_id>/`. Le socle crée celui de `main`; ceux des
+autres agents sont créés à la demande.
+
+Cette séparation évite deux confusions. `null` continue de signifier « aucun
+projet rattaché » et ne devient pas un chemin figé dans une routine, tandis que
+les outils et le sandbox reçoivent toujours une frontière concrète. L’API expose
+donc aussi `effective_workspace` et `workspace_kind`; l’interface peut ouvrir le
+dossier réellement utilisé sans prétendre qu’il s’agit d’un projet.
+
+Les profils `limited` et `power` restent bornés au workspace effectif. Pour une
+session globale, cette frontière est donc l’espace personnel de son agent, pas
+le dépôt AMK ni le dossier utilisateur.
+
 ### 23. Mémoire indexée, jamais devinée *(remplacée par 24)*
 Les mémoires explicites étaient indexées en FTS5 avec le tokenizer du RAG et
 classées par bm25. Cette table n’existe plus : voir la décision 24.

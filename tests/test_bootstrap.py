@@ -30,6 +30,7 @@ def test_cold_install_provides_the_reference_content(tmp_path: Path) -> None:
     assert report.initialized
     assert (content_root / "system.md").is_file()
     assert (content_root / "agents" / "main.md").is_file()
+    assert (content_root / "workspaces" / "main").is_dir()
     installed = {path.name for path in (content_root / "skills").iterdir()}
     assert {"dev", "explore", "model-context", "plan-build", "skill-creator"} <= installed
     assert (content_root / "skills" / "workflow-creator" / "references").is_dir()

@@ -90,7 +90,7 @@ class AgentFactory:
             )
             for child in config.delegates
         ]
-        active_workspace = workspace or self.config.root
+        active_workspace = workspace or self.config.agent_workspace(agent_id)
         active_security = security_mode or SecurityMode.LIMITED
         instructions = [
             self.config.system_instructions(),

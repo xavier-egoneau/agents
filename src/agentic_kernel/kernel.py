@@ -95,7 +95,7 @@ class Kernel:
 
     async def run(self, request: RunRequest) -> RunResult:
         display_prompt = request.prompt
-        workspace = (request.workspace or self.config.root).resolve()
+        workspace = self.config.resolve_workspace(request.agent_id, request.workspace)
         command = self.config.resolve_command(request.prompt, workspace)
         if command and command["command"] in {"/secret", "/secret_list"}:
             return self._run_native_secret_command(
@@ -175,7 +175,15 @@ class Kernel:
                     "budgets": budgets.model_dump(),
                     "skills": request.skills,
                     "resolved_command": command["command"] if command else None,
-                    "workspace": str(workspace),
+                    "workspace": (
+                        str(request.workspace.expanduser().resolve())
+                        if request.workspace is not None
+                        else None
+                    ),
+                    "effective_workspace": str(workspace),
+                    "workspace_kind": (
+                        "project" if request.workspace is not None else "agent_default"
+                    ),
                     "security_mode": request.security_mode,
                     "provider_id": active_provider_id,
                     "model": active_model,
@@ -609,7 +617,7 @@ class Kernel:
             session_id=request.session_id,
             run_id=run_id,
             budgets=budgets,
-            workspace=(request.workspace or self.config.root).resolve(),
+            workspace=self.config.resolve_workspace(request.agent_id, request.workspace),
             security_mode=request.security_mode,
             approved_scopes=self._approved_scopes(request.session_id),
             tool_catalog=self._tool_catalog(),

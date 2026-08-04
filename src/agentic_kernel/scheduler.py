@@ -305,7 +305,8 @@ class CronService:
         if not workspace.is_dir():
             raise SchedulerError(
                 f"Workspace introuvable : {workspace}. Corrige le dossier de la "
-                "routine, ou laisse le champ vide pour l’exécuter sans workspace."
+                "routine, ou laisse le champ vide pour l’exécuter dans l’espace "
+                "personnel de l’agent."
             )
         return workspace
 

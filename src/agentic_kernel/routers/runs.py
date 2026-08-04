@@ -39,7 +39,6 @@ class SecurityModeBody(BaseModel):
 
 def create_run_router(
     kernel: Kernel,
-    project_root: Path,
     running_tasks: dict[UUID, asyncio.Task[Any]],
     launch: LaunchRun,
 ) -> APIRouter:
@@ -48,14 +47,12 @@ def create_run_router(
     @router.post("", response_model=RunResult)
     async def run_agent(payload: WebRunRequest) -> RunResult:
         try:
-            session = kernel.events.projection.session(payload.session_id)
-            is_routine_inbox = bool(session and session.get("trigger") == "routine_inbox")
             return await launch(
                 RunRequest(
                     prompt=payload.prompt,
                     agent_id=payload.agent_id,
                     skills=payload.skills,
-                    workspace=None if is_routine_inbox else payload.workspace or project_root,
+                    workspace=payload.workspace,
                     security_mode=payload.security_mode,
                     session_id=payload.session_id,
                     provider_id=payload.provider_id,
@@ -86,6 +83,13 @@ def create_run_router(
                 detail="Seules les sessions interrompues peuvent être reprises",
             )
         started = next(event for event in reversed(events) if event.type == "session.started")
+        session = kernel.events.projection.session(session_id)
+        logical_workspace = started.payload.get("workspace")
+        if session and session.get("trigger") == "routine_inbox":
+            # Compatibility with events written before logical and effective
+            # workspaces were separated: the global inbox was already NULL in
+            # the projection even though its event contained the app root.
+            logical_workspace = None
         prompt = payload.prompt or (
             "Reprends la tâche interrompue à partir des traces, artefacts et résultats "
             "déjà persistés. Ne rejoue pas les outils déjà terminés. Vérifie l'état "
@@ -98,7 +102,11 @@ def create_run_router(
                     agent_id=started.agent_id,
                     skills=list(started.payload.get("skills", [])),
                     session_id=session_id,
-                    workspace=Path(str(started.payload.get("workspace") or project_root)),
+                    workspace=(
+                        Path(str(logical_workspace))
+                        if logical_workspace is not None
+                        else None
+                    ),
                     security_mode=SecurityMode(
                         str(started.payload.get("security_mode") or "limited")
                     ),

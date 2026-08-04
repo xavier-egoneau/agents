@@ -21,6 +21,13 @@ class Diagnostic:
 def diagnose(layout: RuntimeLayout) -> list[Diagnostic]:
     content = layout.content_root
     capabilities = sandbox_capabilities()
+    sandbox_detail = capabilities.backend
+    if capabilities.backend == "codex-windows-unelevated-insufficient":
+        sandbox_detail += '; run Codex /setup-default-sandbox, then select "elevated"'
+    elif capabilities.backend == "codex-windows-sandbox":
+        sandbox_detail += (
+            "; filesystem isolated, public egress offline, loopback guarded by Guardian"
+        )
     ketch = discovered_executable("ketch", "AMK_KETCH_BIN")
     try:
         llama, gemma = LocalVisionService(content).installed_assets()
@@ -43,7 +50,7 @@ def diagnose(layout: RuntimeLayout) -> list[Diagnostic]:
         Diagnostic(
             "sandbox",
             "ok" if capabilities.execution_isolated else "limited",
-            capabilities.backend,
+            sandbox_detail,
         ),
         Diagnostic(
             "ketch",

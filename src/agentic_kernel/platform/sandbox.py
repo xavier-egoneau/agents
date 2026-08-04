@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
+import sys
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -83,8 +86,10 @@ class RuntimeDirectories:
 
 
 class UnavailableSandbox:
-    def __init__(self, system: str) -> None:
-        self.capabilities = SandboxCapabilities(backend=f"{system.lower()}-native")
+    def __init__(self, system: str, backend: str | None = None) -> None:
+        self.capabilities = SandboxCapabilities(
+            backend=backend or f"{system.lower()}-native"
+        )
 
     def prepare(
         self,
@@ -106,6 +111,101 @@ class UnavailableSandbox:
             env=runtime_environment(runtime),
             profile_path=None,
             sandboxed=False,
+            backend=self.capabilities.backend,
+        )
+
+
+class CodexCliSandbox:
+    """Use the open-source Codex CLI as a cross-platform OS sandbox helper."""
+
+    capabilities = SandboxCapabilities(
+        backend=f"codex-{platform.system().lower()}-sandbox",
+        process_tree_isolation=True,
+        filesystem_isolation=True,
+        # Windows Firewall blocks public egress for the offline sandbox user,
+        # but loopback remains reachable at the socket layer. The Guardian
+        # still gates declared local/private targets, so do not overstate the
+        # OS-level network guarantee here.
+        network_isolation=platform.system() != "Windows",
+    )
+
+    def __init__(self, executable: str) -> None:
+        self.executable = executable
+
+    @staticmethod
+    def discover() -> str | None:
+        if os.getenv("AMK_CODEX_SANDBOX", "1").casefold() in {"0", "false", "no", "off"}:
+            return None
+        executable = shutil.which("codex")
+        if executable is None:
+            return None
+        # Codex's unelevated Windows fallback refuses the restricted read
+        # carve-outs AMK needs to hide provider and credential files. Never
+        # silently weaken the profile just to make a command run.
+        if platform.system() == "Windows" and not _codex_windows_elevated():
+            return None
+        return executable
+
+    def prepare(
+        self,
+        command: list[str],
+        deps: Any,
+        runtime: RuntimeDirectories,
+        *,
+        allow_network: bool,
+    ) -> PreparedExecution:
+        mode = getattr(deps, "security_mode", SecurityMode.LIMITED)
+        parent = ":read-only" if mode is SecurityMode.SAFE else ":workspace"
+        filesystem: dict[str, str] = {
+            ":root": "deny",
+            ":minimal": "read",
+            str(runtime.runtime_root.resolve()): "write",
+            str(runtime.artifact_root.resolve()): "write",
+            str(Path(sys.base_prefix).resolve()): "read",
+        }
+        protected = {
+            runtime.events_root.parent / "providers.json",
+            runtime.events_root.parent / "secrets.json",
+            Path.home() / ".ssh",
+            Path.home() / ".gnupg",
+            Path.home() / ".aws",
+            Path.home() / ".kube",
+            Path.home() / ".codex",
+        }
+        filesystem.update(
+            {str(path.resolve()): "deny" for path in protected if path.exists()}
+        )
+        entries = ", ".join(
+            f"{json.dumps(path)}={json.dumps(permission)}"
+            for path, permission in sorted(filesystem.items())
+        )
+        network = (
+            '{enabled=true, mode="full", allow_local_binding=true}'
+            if allow_network
+            else "{enabled=false}"
+        )
+        profile = (
+            f'{{ extends={json.dumps(parent)}, filesystem={{{entries}}}, '
+            f"network={network} }}"
+        )
+        sandbox_command = [
+                self.executable,
+                "sandbox",
+                "-C",
+                str(runtime.workspace),
+                "-P",
+                "amk-runtime",
+                "-c",
+                f"permissions.amk-runtime={profile}",
+            ]
+        if not allow_network:
+            sandbox_command.append("--sandbox-state-disable-network")
+        sandbox_command.extend(["--", *command])
+        return PreparedExecution(
+            command=sandbox_command,
+            env=runtime_environment(runtime),
+            profile_path=None,
+            sandboxed=True,
             backend=self.capabilities.backend,
         )
 
@@ -176,6 +276,10 @@ class MacOSSeatbeltSandbox:
 
 
 def selected_backend() -> SandboxBackend:
+    if codex := CodexCliSandbox.discover():
+        return CodexCliSandbox(codex)
+    if platform.system() == "Windows" and shutil.which("codex"):
+        return UnavailableSandbox("Windows", "codex-windows-unelevated-insufficient")
     if MacOSSeatbeltSandbox.available():
         return MacOSSeatbeltSandbox()
     return UnavailableSandbox(platform.system())
@@ -186,7 +290,7 @@ def sandbox_capabilities() -> SandboxCapabilities:
 
 
 def prepare_execution(
-    command: list[str], deps: Any, *, allow_network: bool = True
+    command: list[str], deps: Any, *, allow_network: bool = False
 ) -> PreparedExecution:
     runtime = runtime_directories(deps)
     return selected_backend().prepare(
@@ -253,3 +357,13 @@ def runtime_environment(runtime: RuntimeDirectories) -> dict[str, str]:
 
 def _seatbelt(path: Path) -> str:
     return str(path.resolve()).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _codex_windows_elevated() -> bool:
+    codex_home = Path(os.getenv("CODEX_HOME", Path.home() / ".codex")).expanduser()
+    try:
+        config = tomllib.loads((codex_home / "config.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    windows = config.get("windows")
+    return isinstance(windows, dict) and windows.get("sandbox") == "elevated"

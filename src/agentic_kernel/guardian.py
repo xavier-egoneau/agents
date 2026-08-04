@@ -290,6 +290,7 @@ def _review_execution(arguments: dict[str, Any], mode: SecurityMode) -> tuple[Gu
         and any(value in {"install", "add", "remove", "uninstall"} for value in lowered)
     )
     network_program = executable in {"curl", "wget", "ssh", "scp", "nc", "ncat", "telnet"}
+    network_requested = arguments.get("network") is True
     interpreter_escape = executable in {
         "python",
         "python3",
@@ -310,7 +311,11 @@ def _review_execution(arguments: dict[str, Any], mode: SecurityMode) -> tuple[Gu
     if mode is SecurityMode.SAFE:
         return GuardianVerdict.ASK, "Command execution requires approval in safe mode."
     if mode is SecurityMode.LIMITED and (
-        installs or network_program or interpreter_escape or external_path_argument
+        installs
+        or network_program
+        or network_requested
+        or interpreter_escape
+        or external_path_argument
     ):
         return (
             GuardianVerdict.ASK,

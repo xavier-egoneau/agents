@@ -21,7 +21,7 @@ class ExecutionSandbox:
         command: list[str],
         deps: Any,
         *,
-        allow_network: bool = True,
+        allow_network: bool = False,
     ) -> PreparedExecution:
         return prepare_execution(command, deps, allow_network=allow_network)
 

@@ -26,10 +26,16 @@
   ou Gemma absents, `--no-downloads` reste purement local.
 - La racine applicative ne dépend plus du CWD. Un checkout existant garde son
   `content-agents/`; une installation neuve utilise la racine de données OS.
+- Le workspace est une donnée explicite du run, pas la racine de l'application :
+  `amk web -w` le fixe; hors dépôt Git, le fallback est un dossier neutre sous
+  les données AMK plutôt que le dossier utilisateur. Une valeur logique `null`
+  est conservée en base et résolue à l’exécution vers l’espace personnel durable
+  `content-agents/workspaces/<agent_id>/`.
 - Le manifeste `.amk-defaults.json` met à jour uniquement les fichiers livrés
   que l'utilisateur n'a pas modifiés.
-- `amk doctor` expose notamment l'absence actuelle de sandbox filesystem sous
-  Windows et Linux.
+- `amk doctor` expose le backend réellement applicable. AMK réutilise le helper
+  sandbox de Codex CLI lorsqu'il peut appliquer le profil complet; sous Windows,
+  `elevated` est requis et `unelevated` est refusé sans fallback silencieux.
 - Une routine dont le workspace n'existe pas sur cette machine reste visible et
   modifiable; elle est signalée au démarrage et par `amk crons list`.
 
@@ -57,8 +63,9 @@ complétude des scopes de contexte.
 - Le RAG n'a jamais été exécuté : aucun document indexé à ce jour.
 - La surface web distribuée dépend encore de Node/npm; elle n'est pas encore
   livrée comme un artefact runtime autonome dans le wheel Python.
-- Windows et Linux n'ont pas encore de backend d'isolation filesystem; les
-  modes safe/limited refusent donc l'exécution native.
+- La distribution n'embarque pas encore son propre helper sandbox. Sans Codex
+  CLI compatible (ou Seatbelt sur macOS), les modes safe/limited refusent
+  l'exécution native.
 - `page.tsx` dépasse 4 000 lignes.
 - `rag.py` utilise le chemin absolu du workspace comme identifiant de projet.
 - `api.py` construit un `Kernel` à l'import, ce qui rend les tests sensibles au

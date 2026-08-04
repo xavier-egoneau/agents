@@ -588,6 +588,8 @@ type SessionSummary = {
   agent_id: string;
   prompt: string;
   workspace: string | null;
+  effective_workspace?: string;
+  workspace_kind?: "project" | "agent_default";
   created_at: string;
   updated_at: string;
   status: string;
@@ -1056,7 +1058,7 @@ export default function Home() {
   );
   const isRoutineInbox = activeSession?.trigger === "routine_inbox";
   const conversationWorkspace = activeSessionId
-    ? activeSession?.workspace
+    ? activeSession?.effective_workspace || activeSession?.workspace
     : activeWorkspace;
 
   const refreshGit = useCallback(async (workspace: string) => {
@@ -3729,7 +3731,7 @@ export default function Home() {
                       }));
                     }}
                     >
-                      <option value="">Aucun (par défaut)</option>
+                      <option value="">Espace personnel de l’agent (par défaut)</option>
                       {workspaces.map((workspace) => (
                         <option value={workspace.path} key={workspace.path}>{workspace.name}</option>
                       ))}
@@ -3748,8 +3750,8 @@ export default function Home() {
                   {cronEditor.workspace
                     && !workspaces.some((item) => item.path === cronEditor.workspace) && (
                     <p className="cron-note field-wide">
-                      Ce dossier n’existe pas sur cette machine. Choisis « Aucun » pour exécuter la
-                      routine sans workspace, ou sélectionne un projet existant.
+                      Ce dossier n’existe pas sur cette machine. Choisis l’espace personnel de
+                      l’agent, ou sélectionne un projet existant.
                     </p>
                   )}
                   <label className="field-wide">
@@ -3954,7 +3956,7 @@ export default function Home() {
                       <span className={`row-status ${job.in_flight ? "running" : job.last_status || ""}`} />
                       <span>
                         <strong>{job.name}</strong>
-                        <small>{describeCron(cronEditorFromJob(job))} · {job.agent_id} · {job.workspace || "sans workspace"}</small>
+                        <small>{describeCron(cronEditorFromJob(job))} · {job.agent_id} · {job.workspace || "espace personnel"}</small>
                         <em>
                           {job.blocked
                             ? "En attente d’autorisation"
@@ -4001,8 +4003,8 @@ export default function Home() {
           <div className="topbar-title">
             <h1>{isRoutineInbox ? "Routines" : activeAgent?.id || "main"}</h1>
             <small title={conversationWorkspace || undefined}>
-              {isRoutineInbox
-                ? "Boîte globale · aucun workspace"
+              {activeSession?.workspace_kind === "agent_default" || isRoutineInbox
+                ? `Espace personnel · ${activeSession?.agent_id || agentId}`
                 : conversationWorkspace || "Aucun workspace associé"}
             </small>
           </div>

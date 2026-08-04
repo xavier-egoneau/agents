@@ -24,6 +24,20 @@ def create_session_router(
     router = APIRouter(prefix="/api/sessions", tags=["sessions"])
     plans = PlanService(state_database)
 
+    def public_session(row: dict[str, object]) -> dict[str, object]:
+        logical_workspace = row.get("workspace")
+        agent_id = str(row.get("agent_id") or "main")
+        effective = kernel.config.resolve_workspace(agent_id, logical_workspace)
+        return {
+            **{
+                key: value
+                for key, value in row.items()
+                if key not in {"errors_json", "last_sequence"}
+            },
+            "effective_workspace": str(effective),
+            "workspace_kind": "project" if logical_workspace else "agent_default",
+        }
+
     def read_event_page(
         session_id: UUID,
         *,
@@ -64,14 +78,7 @@ def create_session_router(
             offset=max(0, offset),
             include_automations=include_automations,
         )
-        return [
-            {
-                key: value
-                for key, value in row.items()
-                if key not in {"errors_json", "last_sequence"}
-            }
-            for row in rows
-        ]
+        return [public_session(row) for row in rows]
 
     @router.get("/{session_id}")
     async def get_session(
@@ -87,11 +94,7 @@ def create_session_router(
         messages = kernel.events.projection.messages(session_id, limit=message_limit)
         events = read_event_page(session_id, limit=event_limit)
         return {
-            **{
-                key: value
-                for key, value in session.items()
-                if key not in {"errors_json", "last_sequence"}
-            },
+            **public_session(session),
             "messages": [
                 {
                     "role": message["role"],

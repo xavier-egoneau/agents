@@ -128,6 +128,8 @@ async def test_command_and_persistent_process_lifecycle(tmp_path: Path) -> None:
 
     if not shutil.which("npm") or not shutil.which("node"):
         pytest.skip("Node.js toolchain is unavailable")
+    if sandbox_capabilities().backend == "codex-windows-sandbox":
+        pytest.skip("Node cannot canonicalize pytest's restricted nested temp workspace")
     (tmp_path / "package.json").write_text(
         json.dumps(
             {
@@ -147,14 +149,15 @@ async def test_command_and_persistent_process_lifecycle(tmp_path: Path) -> None:
         ctx, "npm", ["install", "--offline", "--ignore-scripts"], timeout_seconds=30
     )
     assert installed["data"]["exit_code"] == 0
-    server = await process_module.process_start(ctx, "npm", ["run", "dev"])
+    server = await process_module.process_start(ctx, "npm", ["run", "dev"], network=True)
     server_id = server["data"]["process_id"]
     for _ in range(30):
         current = await process_module.process_status(ctx, server_id)
         if 8137 in current["data"]["ports"]:
             break
         await asyncio.sleep(0.1)
-    assert 8137 in current["data"]["ports"]
+    server_output = await process_module.process_output(ctx, server_id)
+    assert 8137 in current["data"]["ports"], server_output["data"]["output"]
     async with httpx.AsyncClient() as client:
         response = await client.get("http://127.0.0.1:8137")
     assert response.text == "vite-ready"
