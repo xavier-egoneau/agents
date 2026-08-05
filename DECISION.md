@@ -332,3 +332,23 @@ dispose déjà de sa propre mémoire — le contexte et sa compaction. Ce qui do
 survivre est écrit explicitement dans les fichiers, sur demande ou selon la
 consigne portée par la skill `dev`. `knowledge_index` et `knowledge_search`
 restent le moyen de retrouver une information dans un corpus devenu volumineux.
+
+### 34. Une skill s’active par l’agent ou par sa commande, pas par une case
+
+La modale Skills proposait des cases à cocher qui alimentaient
+`RunRequest.skills`. Comme `agent_factory` additionne cette liste à celle de
+l’agent avant de dédoublonner, cocher une skill que l’agent précharge déjà
+n’avait aucun effet — mais l’affichait dans le composer, laissant croire que
+c’était elle qui l’activait. Rien n’indiquait par ailleurs ce que l’agent
+apportait : la modale montrait huit skills sans distinction.
+
+Il reste donc deux voies, chacune avec sa trace. La **configuration de l’agent**
+pour ce qui est permanent, écrit dans son markdown. La **commande slash**
+déclarée sous `amk.commands` pour l’ajout ponctuel, visible dans le fil de
+conversation. Une troisième voie, sans trace et sans durée, rendait un
+comportement de session inexplicable trois jours plus tard.
+
+Le composer affiche désormais l’état réel : les skills de l’agent en pastilles
+neutres, sans croix — elles se changent dans sa configuration — et les skills
+ajoutées par commande en pastilles d’accent, retirables. Conséquence assumée :
+une skill sans commande déclarée ne peut plus être chargée ponctuellement.

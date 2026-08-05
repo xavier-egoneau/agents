@@ -26,6 +26,62 @@ export type GitSnapshot = {
   fingerprint: string;
 };
 
+/** Au-delà, le rendu ligne par ligne fige l'onglet. Le patch reste lisible en
+ *  entier dans le terminal; ici on préfère afficher le début que rien. */
+const MAX_DIFF_LINES = 4_000;
+
+type DiffKind = "meta" | "hunk" | "added" | "removed" | "context";
+
+/**
+ * Un patch unifié se lit à sa première colonne. L'ordre des tests compte :
+ * `+++` et `---` sont des en-têtes de fichier, pas une ligne ajoutée et une
+ * ligne retirée — les tester après `+`/`-` peindrait chaque en-tête en vert et
+ * en rouge.
+ */
+function diffKind(line: string): DiffKind {
+  if (line.startsWith("@@")) return "hunk";
+  if (line.startsWith("+++") || line.startsWith("---")) return "meta";
+  if (line.startsWith("+")) return "added";
+  if (line.startsWith("-")) return "removed";
+  if (
+    line.startsWith("diff ")
+    || line.startsWith("index ")
+    || line.startsWith("new file")
+    || line.startsWith("deleted file")
+    || line.startsWith("old mode")
+    || line.startsWith("new mode")
+    || line.startsWith("similarity ")
+    || line.startsWith("rename ")
+    || line.startsWith("Binary files")
+    || line.startsWith("\\ No newline")
+  ) {
+    return "meta";
+  }
+  return "context";
+}
+
+export function DiffView({ patch }: { patch: string }) {
+  const lines = patch.split("\n");
+  const shown = lines.slice(0, MAX_DIFF_LINES);
+
+  return (
+    <pre className="git-diff">
+      {shown.map((line, index) => (
+        // L'index sert de clé : deux lignes identiques sont fréquentes dans un
+        // patch, et l'ordre ne change jamais une fois le fichier sélectionné.
+        <code key={index} data-diff={diffKind(line)}>
+          {line || " "}
+        </code>
+      ))}
+      {lines.length > shown.length && (
+        <code data-diff="meta">
+          {` \n… ${lines.length - shown.length} lignes non affichées.`}
+        </code>
+      )}
+    </pre>
+  );
+}
+
 export function GitChangeCard({
   snapshot,
   onOpen,
@@ -132,7 +188,9 @@ export function GitReviewBody({
         <h3>{file?.path || "Aucun fichier"}</h3>
         {file?.binary
           ? <p>Fichier binaire — aperçu indisponible.</p>
-          : <pre>{file?.patch || "Aucune différence textuelle."}</pre>}
+          : file?.patch
+            ? <DiffView patch={file.patch} />
+            : <p>Aucune différence textuelle.</p>}
       </section>
     </div>
   );

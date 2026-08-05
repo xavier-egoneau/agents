@@ -484,6 +484,18 @@ def create_app(
                 if module.enabled
                 for tool in module.tools
             ],
+            # Les modules portent le vocabulaire humain : « Browser » plutôt que
+            # les six `browser_*`. La surface groupe par eux; le frontmatter
+            # continue de nommer les tools un par un.
+            "modules": [
+                {
+                    "id": module.id,
+                    "name": module.name,
+                    "description": module.description,
+                }
+                for module in kernel.module_registry.discover().modules
+                if module.enabled
+            ],
             "configurable_modules": [
                 {"id": module.id, "name": module.name}
                 for module in kernel.module_registry.discover().modules

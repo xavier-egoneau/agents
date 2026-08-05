@@ -6,9 +6,14 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
+import base64
+import binascii
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from ..avatars import AvatarError, AvatarStore
 from ..config import ProjectConfig
 from ..errors import ConfigurationError
 from ..models import ProviderRegistry
@@ -22,6 +27,16 @@ class MarkdownResourceBody(BaseModel):
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$")
     content: str = Field(min_length=1)
     telegram: TelegramAgentInput | None = None
+
+
+class AvatarBody(BaseModel):
+    """Image en base64, comme les pièces jointes du composer.
+
+    Évite `python-multipart`, absent des dépendances, pour un surcoût de 33 %
+    sur une image déjà plafonnée à 1 Mo.
+    """
+
+    data_base64: str = Field(min_length=1)
 
 
 class ProviderResourceBody(BaseModel):
@@ -94,19 +109,58 @@ def create_resource_router(
         except (ConfigurationError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    avatars = AvatarStore(project.content_root)
+
     @router.get("/agents")
     async def agents() -> list[dict[str, object]]:
         managed_root = (project.content_root / "agents").resolve()
+        with_avatar = avatars.agents_with_avatar()
         return [
             {
                 "id": agent.id,
                 "description": agent.description,
                 "content": Path(agent.source).read_text(encoding="utf-8"),
                 "telegram": telegram.view(agent.id),
+                "has_avatar": agent.id in with_avatar,
             }
             for agent in project.agents().values()
             if Path(agent.source).resolve().parent == managed_root
         ]
+
+    @router.get("/agents/{agent_id}/avatar")
+    async def get_agent_avatar(agent_id: str) -> FileResponse:
+        stored = avatars.find(agent_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail="Aucun avatar pour cet agent")
+        return FileResponse(
+            stored.path,
+            media_type=stored.media_type,
+            # Le nom de fichier ne change pas quand l'image change : sans
+            # revalidation, le navigateur servirait l'ancienne indéfiniment.
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    @router.put("/agents/{agent_id}/avatar")
+    async def set_agent_avatar(agent_id: str, payload: AvatarBody) -> dict[str, object]:
+        if agent_id not in project.agents():
+            raise HTTPException(status_code=404, detail=f"Agent inconnu : {agent_id}")
+        try:
+            raw = base64.b64decode(payload.data_base64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise HTTPException(status_code=422, detail="Image illisible") from exc
+        try:
+            stored = avatars.save(agent_id, raw)
+        except AvatarError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"id": agent_id, "media_type": stored.media_type}
+
+    @router.delete("/agents/{agent_id}/avatar")
+    async def delete_agent_avatar(agent_id: str) -> dict[str, object]:
+        try:
+            removed = avatars.delete(agent_id)
+        except AvatarError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"id": agent_id, "deleted": removed}
 
     @router.post("/agents")
     async def create_agent(payload: MarkdownResourceBody) -> dict[str, str]:
@@ -174,6 +228,8 @@ def create_resource_router(
             raise HTTPException(status_code=404, detail="Agent introuvable")
         target.unlink()
         telegram.delete(agent_id)
+        # Sans ça, recréer un agent du même nom hériterait de l'ancienne image.
+        avatars.delete(agent_id)
         (project.content_root / "agents" / f"{agent_id}.tools-disabled.json").unlink(
             missing_ok=True
         )

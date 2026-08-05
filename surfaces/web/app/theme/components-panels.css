@@ -340,6 +340,37 @@
   font: var(--text-xs) / var(--leading-normal) var(--font-mono);
   white-space: pre;
 }
+
+/* Chaque ligne est un bloc pour que sa teinte de fond couvre toute la largeur.
+   `min-width: 100%` évite que les lignes courtes s'arrêtent avant le bord droit
+   quand le patch déborde horizontalement. */
+.git-diff code {
+  display: block;
+  min-width: 100%;
+  padding: 0 13px;
+  margin: 0 -13px;
+}
+.git-diff code[data-diff="added"] {
+  background: color-mix(in srgb, var(--diff-added-on-dock) 14%, transparent);
+  color: var(--diff-added-on-dock);
+}
+.git-diff code[data-diff="removed"] {
+  background: color-mix(in srgb, var(--diff-removed-on-dock) 14%, transparent);
+  color: var(--diff-removed-on-dock);
+}
+.git-diff code[data-diff="hunk"] {
+  background: color-mix(in srgb, var(--diff-hunk-on-dock) 10%, transparent);
+  color: var(--diff-hunk-on-dock);
+}
+.git-diff code[data-diff="meta"] { color: var(--text-on-dock-muted); }
+
+/* Les compteurs reprennent les teintes du patch : même code couleur des deux
+   côtés, la liste annonce ce que le diff montrera. La revue est dans le dock,
+   la carte de modifications sur un panneau clair — d'où les deux jeux. */
+.git-review-body nav em b { color: var(--diff-added-on-dock); font-weight: var(--weight-medium); }
+.git-review-body nav em i { color: var(--diff-removed-on-dock); font-style: normal; }
+.git-change-card b { color: var(--diff-added); font-weight: var(--weight-medium); }
+.git-change-card i { color: var(--diff-removed); font-style: normal; }
 .git-review-body section > p { padding: 16px; color: var(--text-on-dock-muted); font-size: var(--text-sm); }
 
 /* --- Contenu du dock : explorateur de fichiers -------------------------------------- */
@@ -493,24 +524,12 @@
 }
 .git-toolbar select:disabled { opacity: 0.45; cursor: default; }
 
-.model-badge {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--surface-panel);
-  color: var(--text-muted);
-  padding: 7px 11px;
-  font: var(--text-sm) var(--font-mono);
-}
-.model-badge span { width: 6px; height: 6px; border-radius: var(--radius-circle); background: var(--accent); }
-
 @media (max-width: 900px) {
   .approval-stack,
   .approval-progress,
   .current-plan { width: calc(100% - 24px); }
   .process-trace { margin-left: 0; }
   .git-toolbar select { max-width: 96px; }
-  .model-badge { display: none; }
+  /* Le nom du projet cède la place avant l'agent, qui identifie la session. */
+  .topbar-chip + .topbar-chip { display: none; }
 }

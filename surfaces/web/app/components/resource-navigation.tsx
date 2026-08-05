@@ -10,7 +10,7 @@ type ResourceNavigationProps = {
   workspaceCount: number;
   agentId?: string;
   agentCount: number;
-  selectedSkillCount: number;
+  activeSkillCount: number;
   availableSkillCount: number;
   providerCount: number;
   defaultProvider?: string;
@@ -32,7 +32,7 @@ export function ResourceNavigation({
   workspaceCount,
   agentId,
   agentCount,
-  selectedSkillCount,
+  activeSkillCount,
   availableSkillCount,
   providerCount,
   defaultProvider,
@@ -71,9 +71,9 @@ export function ResourceNavigation({
       section: "skills",
       icon: "skill",
       title: "Skills",
-      active: selectedSkillCount
-        ? `${selectedSkillCount} sélectionnée${selectedSkillCount > 1 ? "s" : ""}`
-        : "Aucune sélection",
+      active: activeSkillCount
+        ? `${activeSkillCount} active${activeSkillCount > 1 ? "s" : ""}`
+        : "Aucune skill active",
       count: availableSkillCount,
     },
     {

@@ -146,6 +146,13 @@ const PAIRS = [
 
   // Chrome sombre : dock
   ["--text-on-dock", "--surface-dock", 4.5, "texte sur le dock"],
+  // Diff : la teinte porte l'information (ajout / suppression), elle doit donc
+  // rester lisible et pas seulement décorative.
+  ["--diff-added-on-dock", "--surface-dock", 4.5, "lignes ajoutées"],
+  ["--diff-removed-on-dock", "--surface-dock", 4.5, "lignes supprimées"],
+  ["--diff-hunk-on-dock", "--surface-dock", 4.5, "en-tête de section du patch"],
+  ["--diff-added", "--surface-panel-alt", 4.5, "compteur d'ajouts sur la carte"],
+  ["--diff-removed", "--surface-panel-alt", 4.5, "compteur de retraits sur la carte"],
   ["--text-on-dock-muted", "--surface-dock", 4.5, "texte secondaire sur le dock"],
   ["--text-on-dock", "--surface-dock-alt", 4.5, "texte sur la barre d'onglets"],
   ["--code-fg", "--code-bg", 4.5, "code"],
@@ -176,6 +183,10 @@ const DERIVED = [
   ["--ctx-accent", "--ctx-surface", 3, "accent"],
   ["--ctx-border", "--ctx-surface", 1.2, "séparateur"],
   ["--ctx-border-control", "--ctx-surface", 3, "contour de champ"],
+  // Pastille de skill préchargée : le creusé assombrit le fond sous un texte
+  // déjà atténué, cumul que les paires ci-dessus ne couvrent pas.
+  ["--ctx-text-muted", "--ctx-sunken", 4.5, "pastille de skill préchargée"],
+  ["--ctx-border", "--ctx-sunken", 1.2, "contour de la pastille"],
 ];
 
 /* --- Exécution ------------------------------------------------------------- */

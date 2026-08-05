@@ -80,6 +80,7 @@
   place-items: center;
   width: 30px;
   height: 30px;
+  overflow: hidden;
   border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--text-on-accent);
@@ -137,6 +138,50 @@
 @keyframes pulse {
   0%, 70%, 100% { opacity: 0.25; transform: translateY(0); }
   35% { opacity: 1; transform: translateY(-3px); }
+}
+
+/* --- Compaction ---------------------------------------------------------------- */
+
+/* Les pixels se tassent vers la gauche par vagues. `steps()` retire l'interpolation
+   et donne le déplacement saccadé du pixel art; `--pixel` décale chaque colonne
+   pour que la vague traverse la grille au lieu de tout bouger d'un bloc. */
+.compaction-indicator {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding-top: 10px;
+}
+.compaction-grid {
+  display: grid;
+  grid-template-rows: repeat(3, 4px);
+  grid-auto-flow: column;
+  grid-auto-columns: 4px;
+  gap: 2px;
+  /* Le tassement déborde à gauche : sans cette réserve, la vague serait rognée. */
+  padding-left: 9px;
+}
+.compaction-grid i {
+  width: 4px;
+  height: 4px;
+  background: var(--accent);
+  animation: compaction-fold 1.9s steps(3) infinite;
+  animation-delay: calc(var(--pixel) * 0.045s);
+}
+@keyframes compaction-fold {
+  0%, 20% { transform: translateX(0); opacity: 1; }
+  50%, 62% { transform: translateX(-9px); opacity: 0.3; }
+  92%, 100% { transform: translateX(0); opacity: 1; }
+}
+.compaction-label { color: var(--text-muted); font-size: var(--text-sm); }
+
+/* Une animation en boucle est un déclencheur connu de gêne vestibulaire : on
+   garde l'information, on retire le mouvement. */
+@media (prefers-reduced-motion: reduce) {
+  .compaction-grid i { animation: compaction-blink 1.9s steps(2) infinite; }
+  @keyframes compaction-blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0.3; }
+  }
 }
 
 /* --- Markdown ----------------------------------------------------------------- */
@@ -375,17 +420,39 @@
 .stop span { width: 12px; height: 12px; border-radius: 3px; background: currentColor; }
 .stop:disabled { opacity: 0.5; cursor: wait; }
 
+/* Skills chargées dans la session. Deux origines, deux traitements : celles de
+   l'agent ne se retirent pas ici (elles se changent dans sa configuration),
+   celles ajoutées par une commande portent leur croix. */
 .selected-skills { display: flex; flex-wrap: wrap; gap: 5px; padding: 4px 0; }
-.selected-skills button {
+.selected-skills > * {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border: 0;
   border-radius: var(--radius-pill);
+  padding: 5px 8px;
+  font-size: var(--text-sm);
+  line-height: 1;
+}
+.skill-chip {
+  background: var(--ctx-sunken);
+  color: var(--ctx-text-muted);
+  /* `--ctx-border-subtle` est trop proche du creusé pour se voir : les deux se
+     dérivent du texte à 11 % et 6 %. */
+  border: 1px solid var(--ctx-border);
+}
+/* Origine session : couleur d'accent. Le curseur et le survol ne viennent
+   qu'avec `--removable`, réservé au rendu bouton du composer. */
+.skill-chip-session {
   background: var(--accent-soft);
   color: var(--accent-soft-text);
-  padding: 5px 8px;
-  cursor: pointer;
-  font-size: var(--text-sm);
+  border: 1px solid transparent;
 }
-.selected-skills span { margin-left: 5px; }
+.skill-chip-removable { cursor: pointer; }
+.skill-chip-removable:hover {
+  background: color-mix(in srgb, var(--accent-soft-text) 12%, var(--accent-soft));
+}
+.skill-chip-removable:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .attachment-error { display: block; margin: -4px 0 7px 2px; color: var(--danger); font-size: var(--text-xs); }
 
 .image-previews { display: flex; gap: 9px; overflow-x: auto; padding: 2px 0 9px; }

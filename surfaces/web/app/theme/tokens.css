@@ -148,6 +148,17 @@
   --info-text: #1e3a8a;
   --neutral-dot: #a1a1aa;
 
+  /* --- Diff -----------------------------------------------------------------
+     Deux jeux, comme pour l'accent : la carte de modifications vit sur un
+     panneau clair, la revue vit dans le dock sombre. Une seule paire pour les
+     deux rendrait l'une des deux illisible. Même convention de nommage que
+     --accent-on-rail. */
+  --diff-added: var(--success);
+  --diff-removed: var(--danger);
+  --diff-added-on-dock: #6fdca0;
+  --diff-removed-on-dock: #ff9e9e;
+  --diff-hunk-on-dock: #8fb4ff;
+
   /* Diff / git */
   --diff-added: #15803d;
   --diff-removed: #b91c1c;

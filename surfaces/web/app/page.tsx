@@ -64,6 +64,9 @@ import {
 import { usePanels } from "./components/layout/use-panels";
 import { FileExplorer } from "./components/layout/file-explorer";
 import { ThemePicker } from "./components/layout/theme-picker";
+import { AgentAvatar } from "./components/agent-avatar";
+import { CompactionIndicator } from "./components/compaction-indicator";
+import { ToolSelector } from "./components/tool-selector";
 import { Icon } from "./theme/theme-context";
 
 type DockTabId = "git" | "files";
@@ -75,6 +78,7 @@ type Agent = {
   model: string | null;
   skills: string[];
   delegates: string[];
+  has_avatar?: boolean;
 };
 
 type Skill = { name: string; description: string };
@@ -104,6 +108,7 @@ type Catalog = {
     vision: boolean;
   }[];
   tools: { name: string; description: string; module: string; risks: string[] }[];
+  modules: { id: string; name: string; description: string }[];
   configurable_modules: { id: string; name: string }[];
 };
 
@@ -344,6 +349,7 @@ type ManagedResource = {
   description: string;
   content: string;
   telegram?: TelegramAgentConfig;
+  has_avatar?: boolean;
 };
 
 type TelegramAgentConfig = {
@@ -1189,6 +1195,11 @@ export default function Home() {
   const [dockTab, setDockTab] = useState<DockTabId>("git");
   const [explorerFile, setExplorerFile] = useState<{ path: string; content: string } | null>(null);
   const [explorerError, setExplorerError] = useState("");
+  // Incrémenté après un téléversement : l'URL d'avatar est stable, seul ce
+  // paramètre force le navigateur à recharger l'image.
+  const [avatarVersion, setAvatarVersion] = useState(0);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const avatarInput = useRef<HTMLInputElement>(null);
   const railContent = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -1237,18 +1248,58 @@ export default function Home() {
     window.localStorage.setItem(composerPreferencesKey, JSON.stringify(preferences));
   }, [composerPreferencesReady, securityMode, providerId, selectedModel, reasoning]);
 
-  useEffect(() => {
-    fetch("/api/kernel/catalog")
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Kernel indisponible");
-        return response.json();
-      })
-      .then((data: Catalog) => {
-        setCatalog(data);
-        if (data.agents[0]) setAgentId(data.agents[0].id);
-      })
-      .catch(() => setCatalogError("Démarre le kernel avec `amk serve`."));
+  /**
+   * Le catalogue porte les agents, skills, providers, tools et modules : sans
+   * lui, tous les écrans de configuration sont vides. Un échec doit donc être
+   * visible, et le code de statut conservé — un 500 ne se corrige pas comme un
+   * kernel éteint.
+   */
+  const loadCatalog = useCallback(async () => {
+    try {
+      const response = await fetch("/api/kernel/catalog");
+      if (!response.ok) {
+        throw new Error(`Le kernel a répondu ${response.status} sur /api/catalog.`);
+      }
+      const data = (await response.json()) as Catalog;
+      setCatalog(data);
+      setCatalogError("");
+      return data;
+    } catch (error) {
+      setCatalogError(
+        error instanceof Error && error.message.startsWith("Le kernel")
+          ? error.message
+          : "Démarre le kernel avec `amk serve`.",
+      );
+      return null;
+    }
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = async () => {
+      const data = await loadCatalog();
+      if (cancelled) return;
+      if (!data) {
+        // Le kernel démarre souvent après la surface. Sans cette reprise, la
+        // page restait définitivement vide : rien ne relançait la lecture.
+        timer = setTimeout(() => void attempt(), 5000);
+        return;
+      }
+      // `agentId` vaut « main » avant toute lecture : on ne le conserve que si
+      // le catalogue le confirme, sinon on retombe sur le premier agent réel.
+      setAgentId((current) =>
+        data.agents.some((agent) => agent.id === current)
+          ? current
+          : data.agents[0]?.id || current,
+      );
+    };
+    void attempt();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [loadCatalog]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem("amk.workspaces");
@@ -1283,6 +1334,30 @@ export default function Home() {
     () => catalog?.agents.find((agent) => agent.id === agentId),
     [catalog, agentId],
   );
+  // Le kernel additionne les skills de l'agent et celles de la requête
+  // (`agent_factory`), puis dédoublonne. L'affichage suit la même règle : ce que
+  // l'agent apporte est montré sans croix — cela se change dans sa
+  // configuration, pas ici — et seul l'ajout ponctuel est retirable.
+  const agentSkills = useMemo(() => activeAgent?.skills ?? [], [activeAgent]);
+  const extraSkills = useMemo(
+    () => selectedSkills.filter((skill) => !agentSkills.includes(skill)),
+    [selectedSkills, agentSkills],
+  );
+  const activeSkillCount = agentSkills.length + extraSkills.length;
+
+  // Le kernel encadre la compaction de deux événements. On remonte le fil : le
+  // premier des deux rencontré tranche, sans avoir à apparier les paires ni à
+  // filtrer par run — une compaction porte sur la session entière.
+  const compacting = useMemo(() => {
+    if (!running) return false;
+    for (let index = traceEvents.length - 1; index >= 0; index -= 1) {
+      const { type } = traceEvents[index];
+      if (type === "context.compacted") return false;
+      if (type === "context.pre_compaction_snapshot") return true;
+    }
+    return false;
+  }, [running, traceEvents]);
+
   const activeProvider = useMemo(
     () => catalog?.providers.find((provider) => provider.id === providerId),
     [catalog, providerId],
@@ -1737,8 +1812,10 @@ export default function Home() {
   }, [managementModal]);
 
   async function refreshCatalog() {
-    const response = await fetch("/api/kernel/catalog");
-    if (response.ok) setCatalog(await response.json());
+    // `loadCatalog` remonte l'échec dans `catalogError`. L'ancienne version
+    // ignorait une réponse non-ok sans rien dire, et l'écran se vidait sans
+    // qu'aucun message n'explique pourquoi.
+    await loadCatalog();
   }
 
   function createResource(kind: "agents" | "skills") {
@@ -1890,6 +1967,31 @@ export default function Home() {
     );
   }
 
+  /**
+   * Ajoute ou retire plusieurs valeurs en une écriture. Enchaîner
+   * `toggleEditorListField` sur les six outils d'un module ferait six mises à
+   * jour successives, chacune lisant l'état d'avant : seule la dernière
+   * survivrait.
+   */
+  function setEditorListValues(
+    name: string,
+    values: string[],
+    next: boolean,
+    defaults: string[] = [],
+  ) {
+    const hasExplicitValue = resourceEditor
+      ? Object.prototype.hasOwnProperty.call(resourceEditor.frontmatter, name)
+      : false;
+    const current = hasExplicitValue ? resourceList(resourceEditor?.frontmatter[name]) : defaults;
+    const changed = new Set(values);
+    updateEditorField(
+      name,
+      next
+        ? [...current, ...values.filter((value) => !current.includes(value))]
+        : current.filter((value) => !changed.has(value)),
+    );
+  }
+
   function editResource(kind: "agents" | "skills", resource: ManagedResource) {
     const parsed = parseMarkdownResource(resource.content);
     setResourceEditor({
@@ -1901,6 +2003,69 @@ export default function Home() {
       telegram: kind === "agents" ? resource.telegram : undefined,
     });
     setManagementError("");
+  }
+
+  function agentHasAvatar(agentId: string): boolean {
+    return Boolean(managedResources.find((item) => item.id === agentId)?.has_avatar);
+  }
+
+  async function refreshAgentAvatars() {
+    // Recharge la liste pour que `has_avatar` reflète l'état réel, et pousse la
+    // version afin que l'image servie à URL constante soit redemandée.
+    try {
+      const response = await fetch("/api/kernel/admin/agents");
+      setManagedResources(await readApiPayload<ManagedResource[]>(response));
+    } catch {
+      /* la liste sera rafraîchie au prochain chargement de la modale */
+    }
+    setAvatarVersion((value) => value + 1);
+    await refreshCatalog();
+  }
+
+  async function uploadAgentAvatar(agentId: string, file: File) {
+    setAvatarBusy(true);
+    setManagementError("");
+    try {
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      // Par tranches : `String.fromCharCode(...bytes)` dépasse la limite
+      // d'arguments sur une image de quelques centaines de kilooctets.
+      for (let index = 0; index < bytes.length; index += 8192) {
+        binary += String.fromCharCode(...bytes.subarray(index, index + 8192));
+      }
+      const response = await fetch(
+        `/api/kernel/admin/agents/${encodeURIComponent(agentId)}/avatar`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ data_base64: btoa(binary) }),
+        },
+      );
+      await readApiPayload(response);
+      await refreshAgentAvatars();
+    } catch (error) {
+      setManagementError(error instanceof Error ? error.message : "Envoi impossible");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
+  async function removeAgentAvatar(agentId: string) {
+    setAvatarBusy(true);
+    setManagementError("");
+    try {
+      const response = await fetch(
+        `/api/kernel/admin/agents/${encodeURIComponent(agentId)}/avatar`,
+        { method: "DELETE" },
+      );
+      await readApiPayload(response);
+      await refreshAgentAvatars();
+    } catch (error) {
+      setManagementError(error instanceof Error ? error.message : "Suppression impossible");
+    } finally {
+      setAvatarBusy(false);
+    }
   }
 
   async function deleteResource(kind: "agents" | "skills", id: string) {
@@ -2841,7 +3006,7 @@ export default function Home() {
       role: "user",
       content: displayedContent,
       images: submittedImages,
-      meta: `${agentId}${selectedSkills.length ? ` · ${selectedSkills.length} skill${selectedSkills.length > 1 ? "s" : ""}` : ""}`,
+      meta: `${agentId}${activeSkillCount ? ` · ${activeSkillCount} skill${activeSkillCount > 1 ? "s" : ""}` : ""}`,
     };
     const sessionId = activeSessionId || crypto.randomUUID();
     const continuingSession = Boolean(activeSessionId);
@@ -3324,7 +3489,7 @@ export default function Home() {
               workspaceCount={workspaces.length}
               agentId={activeAgent?.id}
               agentCount={catalog?.agents.length || 0}
-              selectedSkillCount={selectedSkills.length}
+              activeSkillCount={activeSkillCount}
               availableSkillCount={catalog?.skills.length || 0}
               providerCount={catalog?.providers.length || 0}
               defaultProvider={catalog?.default_provider}
@@ -3336,17 +3501,8 @@ export default function Home() {
             />
           </SidePanelSection>
 
-          {selectedSkills.length > 0 && (
-            <SidePanelSection title={`Skills actives · ${selectedSkills.length}`}>
-              <div className="selected-skills">
-                {selectedSkills.map((skill) => (
-                  <button key={skill} type="button" onClick={() => openManagement("skills")}>
-                    {skill}
-                  </button>
-                ))}
-              </div>
-            </SidePanelSection>
-          )}
+          {/* Les skills actives ne sont pas répétées ici : le composer les affiche
+              déjà, à l'endroit où elles s'appliquent. */}
 
           {/* L'historique occupe tout l'espace restant et scrolle seul : le
               contexte reste visible quelle que soit la longueur de la liste. */}
@@ -3466,6 +3622,52 @@ export default function Home() {
                       onChange={(event) => updateEditorField("description", event.target.value)}
                     />
                   </label>
+                  {resourceEditor.kind === "agents" && !resourceEditor.creating && (
+                    <div className="avatar-field field-wide">
+                      <AgentAvatar
+                        agentId={resourceEditor.id}
+                        label={resourceEditor.id}
+                        hasAvatar={agentHasAvatar(resourceEditor.id)}
+                        version={avatarVersion}
+                        className="avatar-preview"
+                      />
+                      <div>
+                        <strong>Avatar</strong>
+                        <small>PNG, JPEG, WebP ou GIF, 1 Mo maximum. Affiché dans le fil.</small>
+                        <div className="avatar-actions">
+                          <button
+                            type="button"
+                            className="btn"
+                            disabled={avatarBusy}
+                            onClick={() => avatarInput.current?.click()}
+                          >
+                            {avatarBusy ? "Envoi…" : "Choisir une image"}
+                          </button>
+                          {agentHasAvatar(resourceEditor.id) && (
+                            <button
+                              type="button"
+                              className="btn danger"
+                              disabled={avatarBusy}
+                              onClick={() => void removeAgentAvatar(resourceEditor.id)}
+                            >
+                              Retirer
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <input
+                        ref={avatarInput}
+                        className="composer-file-input"
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          event.target.value = "";
+                          if (file) void uploadAgentAvatar(resourceEditor.id, file);
+                        }}
+                      />
+                    </div>
+                  )}
                   {resourceEditor.kind === "agents" ? (
                     <>
                       <label>
@@ -3566,25 +3768,23 @@ export default function Home() {
                       </fieldset>
                       <fieldset className="field-wide checkbox-field">
                         <legend>Tools actifs</legend>
-                        <div className="checkbox-grid">
-                          {catalog?.tools.map((tool) => (
-                            <label key={tool.name} title={tool.description}>
-                              <input
-                                type="checkbox"
-                                checked={
-                                  !Object.prototype.hasOwnProperty.call(resourceEditor.frontmatter, "tools")
-                                  || resourceList(resourceEditor.frontmatter.tools).includes(tool.name)
-                                }
-                                onChange={() => toggleEditorListField(
-                                  "tools",
-                                  tool.name,
-                                  catalog?.tools.map((item) => item.name) || [],
-                                )}
-                              />
-                              <span><strong>{tool.name}</strong><small>{tool.module}</small></span>
-                            </label>
-                          ))}
-                        </div>
+                        <ToolSelector
+                          tools={catalog?.tools || []}
+                          modules={catalog?.modules || []}
+                          // Absence de clé `tools` = tout est actif. Il faut donc
+                          // matérialiser ce défaut pour que les cases le reflètent.
+                          selected={
+                            Object.prototype.hasOwnProperty.call(resourceEditor.frontmatter, "tools")
+                              ? resourceList(resourceEditor.frontmatter.tools)
+                              : catalog?.tools.map((item) => item.name) || []
+                          }
+                          onToggleTools={(names, next) => setEditorListValues(
+                            "tools",
+                            names,
+                            next,
+                            catalog?.tools.map((item) => item.name) || [],
+                          )}
+                        />
                       </fieldset>
                       <fieldset className="field-wide checkbox-field">
                         <legend>Skills préchargées</legend>
@@ -3636,18 +3836,13 @@ export default function Home() {
                   ) : (
                     <fieldset className="field-wide checkbox-field">
                       <legend>Outils autorisés</legend>
-                      <div className="checkbox-grid">
-                        {catalog?.tools.map((tool) => (
-                          <label key={tool.name} title={tool.description}>
-                            <input
-                              type="checkbox"
-                              checked={resourceList(resourceEditor.frontmatter["allowed-tools"]).includes(tool.name)}
-                              onChange={() => toggleEditorListField("allowed-tools", tool.name)}
-                            />
-                            <span><strong>{tool.name}</strong><small>{tool.module}</small></span>
-                          </label>
-                        ))}
-                      </div>
+                      <ToolSelector
+                        tools={catalog?.tools || []}
+                        modules={catalog?.modules || []}
+                        selected={resourceList(resourceEditor.frontmatter["allowed-tools"])}
+                        onToggleTools={(names, next) =>
+                          setEditorListValues("allowed-tools", names, next)}
+                      />
                     </fieldset>
                   )}
                 </div>
@@ -3755,19 +3950,20 @@ export default function Home() {
 
             {!resourceEditor && managementModal === "skills" && (
               <div className="management-body management-list">
+                {/* Pas d'activation ici : une skill se charge en permanence via la
+                    configuration de l'agent, ou ponctuellement via sa commande.
+                    Une troisième voie sans trace était la source de confusion. */}
                 {managedResources.map((resource) => (
-                  <div className={`resource-row ${selectedSkills.includes(resource.id) ? "active" : ""}`} key={resource.id}>
-                    <label className="resource-select">
-                      <input
-                        type="checkbox"
-                        checked={selectedSkills.includes(resource.id)}
-                        onChange={() => toggleSkill(resource.id)}
-                      />
-                      <span>
-                        <strong>{resource.id}</strong>
-                        <small>{resource.description}</small>
-                      </span>
-                    </label>
+                  <div className="resource-row" key={resource.id}>
+                    <span className="resource-label">
+                      <strong>
+                        {resource.id}
+                        {agentSkills.includes(resource.id) && (
+                          <em className="resource-tag">préchargée par {agentId}</em>
+                        )}
+                      </strong>
+                      <small>{resource.description}</small>
+                    </span>
                     <div className="resource-actions">
                       <button
                         onClick={() => editResource("skills", resource)}
@@ -4575,13 +4771,37 @@ export default function Home() {
         <header className="topbar">
           {/* Pas de bouton d'ouverture ici : quand le panneau est replié, le
               rail d'icônes prend sa place et porte déjà cette action. */}
+          {/* Agent et projet côte à côte plutôt qu'empilés, et cliquables :
+              ce sont deux réglages, pas un titre. Le nom du projet suffit —
+              le chemin complet mangeait la barre et n'apprend rien. */}
           <div className="topbar-title">
-            <h1>{isRoutineInbox ? "Routines" : activeAgent?.id || "main"}</h1>
-            <small title={conversationWorkspace || undefined}>
-              {activeSession?.workspace_kind === "agent_default" || isRoutineInbox
-                ? `Espace personnel · ${activeSession?.agent_id || agentId}`
-                : conversationWorkspace || "Aucun workspace associé"}
-            </small>
+            <button
+              type="button"
+              className="topbar-chip"
+              onClick={() => openManagement("agents")}
+              data-tip="Changer d’agent"
+              data-tip-side="bottom"
+            >
+              <Icon name="agent" size="sm" />
+              <span>{isRoutineInbox ? "Routines" : activeAgent?.id || "main"}</span>
+            </button>
+
+            <button
+              type="button"
+              className="topbar-chip"
+              onClick={() => openManagement("projects")}
+              data-tip={conversationWorkspace || "Aucun projet associé"}
+              data-tip-side="bottom"
+            >
+              <Icon name="project" size="sm" />
+              <span>
+                {activeSession?.workspace_kind === "agent_default" || isRoutineInbox
+                  ? "Espace personnel"
+                  : activeWorkspaceInfo?.name
+                    || (conversationWorkspace ? conversationWorkspace.split(/[\\/]/).pop() : "")
+                    || "Aucun projet"}
+              </span>
+            </button>
           </div>
 
           <div className="topbar-actions">
@@ -4597,11 +4817,8 @@ export default function Home() {
               </div>
             )}
 
-            <div className="model-badge">
-              <span />
-              {selectedModel || activeAgent?.model || "modèle par défaut"}
-            </div>
-
+            {/* Le modèle actif est déjà affiché dans le composer, à l'endroit
+                où il se change. */}
             <button
               type="button"
               className="ibtn"
@@ -4661,7 +4878,16 @@ export default function Home() {
                       />
                     )}
                   <article className={`message ${message.role} ${message.error ? "error" : ""}`}>
-                    <div className="message-avatar">{message.role === "user" ? "X" : "A"}</div>
+                    {message.role === "user" ? (
+                      <div className="message-avatar">X</div>
+                    ) : (
+                      <AgentAvatar
+                        agentId={activeAgent?.id}
+                        label={activeAgent?.id || "Agent"}
+                        hasAvatar={activeAgent?.has_avatar}
+                        version={avatarVersion}
+                      />
+                    )}
                     <div>
                       <div className="message-meta">
                         <strong>{message.role === "user" ? "Toi" : activeAgent?.id || "Agent"}</strong>
@@ -4707,8 +4933,19 @@ export default function Home() {
               )}
               {running && (
                 <article className="message assistant thinking">
-                  <div className="message-avatar">A</div>
-                  <div><div className="pulse"><i /><i /><i /></div></div>
+                  <AgentAvatar
+                    agentId={activeAgent?.id}
+                    label={activeAgent?.id || "Agent"}
+                    hasAvatar={activeAgent?.has_avatar}
+                    version={avatarVersion}
+                  />
+                  <div>
+                    {compacting ? (
+                      <CompactionIndicator />
+                    ) : (
+                      <div className="pulse"><i /><i /><i /></div>
+                    )}
+                  </div>
                 </article>
               )}
             </div>
@@ -4746,11 +4983,26 @@ export default function Home() {
               event.target.value = "";
             }}
           />
-          {selectedSkills.length > 0 && (
+          {activeSkillCount > 0 && (
             <div className="selected-skills">
-              {selectedSkills.map((skill) => (
-                <button type="button" key={skill} onClick={() => toggleSkill(skill)}>
-                  {skill}<span>×</span>
+              {agentSkills.map((skill) => (
+                <span
+                  className="skill-chip"
+                  key={skill}
+                  title={`Fournie par l'agent ${agentId}`}
+                >
+                  {skill}
+                </span>
+              ))}
+              {extraSkills.map((skill) => (
+                <button
+                  type="button"
+                  className="skill-chip skill-chip-session skill-chip-removable"
+                  key={skill}
+                  onClick={() => toggleSkill(skill)}
+                  aria-label={`Retirer la skill ${skill}`}
+                >
+                  {skill}<span aria-hidden="true">×</span>
                 </button>
               ))}
             </div>

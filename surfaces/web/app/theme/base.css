@@ -524,22 +524,41 @@ button { color: inherit; }
   backdrop-filter: var(--blur-overlay);
   padding: 0 14px;
 }
-.topbar-title { min-width: 0; display: grid; gap: 1px; }
-.topbar-title h1 {
-  margin: 0;
-  overflow: hidden;
-  color: var(--text-strong);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font: var(--weight-semibold) var(--text-lg) / 1.3 var(--font-display);
+/* Deux réglages côte à côte, pas un titre : l'agent et le projet s'ouvrent
+   d'un clic sur leur modale respective. */
+.topbar-title { min-width: 0; display: flex; align-items: center; gap: 4px; }
+.topbar-chip {
+  position: relative;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ctx-text);
+  padding: 6px 10px;
+  cursor: pointer;
+  font: var(--weight-medium) var(--text-md) var(--font-sans);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
-.topbar-title small {
-  overflow: hidden;
-  color: var(--text-faint);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font: var(--font-meta);
+.topbar-chip:hover { background: var(--ctx-hover); border-color: var(--ctx-border); }
+.topbar-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar-chip svg { color: var(--ctx-text-faint); }
+.topbar-chip:hover svg { color: var(--ctx-text-muted); }
+/* Séparateur discret entre les deux, sans élément supplémentaire. */
+.topbar-chip + .topbar-chip::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -3px;
+  width: 1px;
+  height: 14px;
+  transform: translateY(-50%);
+  background: var(--ctx-border);
 }
+.topbar-chip:hover::before,
+.topbar-chip:hover + .topbar-chip::before { opacity: 0; }
 .topbar-actions { display: flex; align-items: center; gap: 4px; }
 .topbar-group {
   display: flex;
