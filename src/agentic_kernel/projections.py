@@ -441,9 +441,13 @@ class SessionProjection:
         ).fetchone()
         if row is None or int(row["estimated_history_tokens"]) <= 0:
             return
+        # Le plafond borne une mesure aberrante, pas la réalité : un écart de
+        # 2,4 a été observé sur une session de code, et le plafond précédent de
+        # 2.0 le tronquait — la correction restait insuffisante là où elle était
+        # le plus nécessaire.
         sample = max(
             0.5,
-            min(2.0, observed / int(row["estimated_history_tokens"])),
+            min(4.0, observed / int(row["estimated_history_tokens"])),
         )
         samples = int(row["calibration_samples"])
         factor = (float(row["calibration_factor"]) * samples + sample) / (samples + 1)

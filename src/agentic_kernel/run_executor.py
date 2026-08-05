@@ -39,6 +39,7 @@ class RunExecutor:
         provider_id: str,
         model_name: str | None,
         context_window_tokens: int | None,
+        context_calibration: float = 1.0,
     ) -> RuntimeDeps:
         return RuntimeDeps(
             session_id=session_id,
@@ -54,6 +55,7 @@ class RunExecutor:
             provider_id=provider_id,
             model_name=model_name,
             context_window_tokens=context_window_tokens,
+            context_calibration=context_calibration,
             secret_resolver=self.secrets.resolve,
             secret_redactor=self.secrets.redact,
             snapshot_store=self.snapshots,

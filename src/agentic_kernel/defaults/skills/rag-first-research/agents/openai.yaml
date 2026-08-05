@@ -1,0 +1,4 @@
+interface:
+  display_name: "Recherche avec mémoire"
+  short_description: "Réutiliser les recherches fiables avec le RAG"
+  default_prompt: "Utilise $rag-first-research pour rechercher ce sujet en consultant d’abord la mémoire documentaire."

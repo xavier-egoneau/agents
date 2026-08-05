@@ -37,6 +37,31 @@ def test_local_sampling_settings_are_applied() -> None:
     assert model.settings["max_tokens"] == 2048
 
 
+def test_api_key_provider_applies_the_declared_settings(monkeypatch) -> None:
+    """`num_predict` était accepté, affiché, et jamais transmis.
+
+    Le modèle refusait alors de répondre au-delà de la limite du fournisseur, en
+    conseillant d'augmenter `max_tokens` — le réglage même qui était ignoré.
+    """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "clef")
+    model = ProviderFactory(
+        registry("api_key", temperature=0.2, num_predict=32000, timeout_seconds=600)
+    ).build("provider")
+
+    assert model.settings["max_tokens"] == 32000
+    assert model.settings["timeout"] == 600
+    assert model.settings["temperature"] == 0.2
+
+
+def test_settings_left_unset_are_omitted(monkeypatch) -> None:
+    """Le SDK distingue « non précisé » de « nul » : n'envoyer que le déclaré."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "clef")
+    model = ProviderFactory(registry("api_key")).build("provider")
+
+    assert "max_tokens" not in model.settings
+    assert "temperature" not in model.settings
+
+
 def test_api_key_is_read_from_environment(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "secret-from-environment")
     model = ProviderFactory(registry("api_key")).build("provider")

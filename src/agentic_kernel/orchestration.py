@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic_ai import Agent, FunctionToolset, RunContext
+from pydantic_ai import Agent, FunctionToolset, ModelRetry, RunContext
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
 from pydantic_ai_harness.subagents import SubAgentToolset as HarnessSubAgentToolset
@@ -38,6 +38,12 @@ class RuntimeDeps:
     provider_id: str | None = None
     model_name: str | None = None
     context_window_tokens: int | None = None
+    # Rapport entre les tokens réellement facturés par le fournisseur et notre
+    # estimation, mesuré sur les tours précédents de la session. L'estimateur
+    # compte 3,5 octets par token : sur du code, du JSON ou des identifiants,
+    # c'est deux fois trop optimiste. Sans ce correctif, la compaction décide
+    # sur un chiffre qui n'a plus de rapport avec la fenêtre réelle.
+    context_calibration: float = 1.0
     secret_resolver: Callable[[str], str | None] | None = None
     secret_redactor: Callable[[Any], Any] | None = None
     snapshot_store: Any | None = None
@@ -66,10 +72,73 @@ class TracedSubAgentToolset(HarnessSubAgentToolset[RuntimeDeps]):
         self.parent_agent_id = parent_agent_id
         super().__init__(**kwargs)
 
-    async def delegate_task(self, ctx: RunContext[RuntimeDeps], agent_name: str, task: str) -> str:
+    @staticmethod
+    def _claim_plan_step(
+        deps: RuntimeDeps,
+        agent_name: str,
+        plan_id: str | None,
+        step_id: str | None,
+        child_run_id: UUID,
+    ) -> None:
+        """Réserve la tâche du plan avant de lancer l'agent.
+
+        C'est cette réservation qui autorise le parallélisme : `plan_claim`
+        refuse une tâche parallèle dépourvue de périmètre d'écriture, et refuse
+        celle dont le périmètre recouvre une tâche déjà en cours. Sans elle,
+        deux agents pouvaient écrire au même endroit sans que rien ne
+        l'empêche — le mécanisme n'était atteignable que par l'exécutant neutre.
+        """
+        if not plan_id and not step_id:
+            return
+        if bool(plan_id) != bool(step_id):
+            raise ModelRetry("plan_id et step_id doivent être fournis ensemble.")
+        if deps.state_db is None:
+            raise ModelRetry("La base de plans est indisponible : exécute la tâche sans plan.")
+        try:
+            PlanService(deps.state_db).claim(
+                str(plan_id),
+                str(step_id),
+                session_id=deps.session_id,
+                # `agent:<nom>` se relit; `subagent:<ce que le modèle a tapé>`
+                # dépendait de son humeur du jour.
+                claimed_by=f"agent:{agent_name}",
+                run_id=str(child_run_id),
+                lease_seconds=max(30, int(deps.budgets.child_timeout_seconds)),
+            )
+        except (PlanNotFound, PlanConflict) as exc:
+            # `ModelRetry` plutôt qu'une exception : un conflit de périmètre est
+            # une information exploitable — le modèle doit choisir une autre
+            # tâche, pas interrompre le run.
+            raise ModelRetry(f"Tâche {step_id} non réservable : {exc}") from exc
+
+    async def delegate_task(
+        self,
+        ctx: RunContext[RuntimeDeps],
+        agent_name: str,
+        task: str,
+        plan_id: str | None = None,
+        step_id: str | None = None,
+    ) -> str:
+        """Confie une tâche autonome à un agent configuré et renvoie son résultat.
+
+        L'agent s'exécute dans un contexte neuf et ne voit pas cette
+        conversation : `task` doit contenir tout ce dont il a besoin.
+
+        Args:
+            ctx: contexte d'exécution du parent.
+            agent_name: nom de l'agent, parmi ceux listés dans les instructions.
+            task: consigne complète et autonome.
+            plan_id: plan auquel rattacher l'exécution, avec `step_id`.
+            step_id: tâche du plan à réserver avant de commencer. Fournir les
+                deux fait prendre le bail et vérifier les conflits de périmètre
+                d'écriture, ce qui autorise l'exécution en parallèle.
+        """
         deps: RuntimeDeps = ctx.deps
-        attempt = await deps.reserve_run(agent_name)
         child_run_id = uuid4()
+        # La réservation précède tout événement : échouer après avoir annoncé le
+        # démarrage laisserait la trace d'un travail jamais entrepris.
+        self._claim_plan_step(deps, agent_name, plan_id, step_id, child_run_id)
+        attempt = await deps.reserve_run(agent_name)
         parent_run_id = event_run_id(deps.root_run_id)
         deps.events.append(
             Event(
@@ -79,7 +148,12 @@ class TracedSubAgentToolset(HarnessSubAgentToolset[RuntimeDeps]):
                 parent_run_id=parent_run_id,
                 type="agent.queued",
                 attempt=attempt,
-                payload={"task": task, "delegated_by": self.parent_agent_id},
+                payload={
+                    "task": task,
+                    "delegated_by": self.parent_agent_id,
+                    "plan_id": plan_id,
+                    "step_id": step_id,
+                },
             )
         )
         async with deps.semaphore:

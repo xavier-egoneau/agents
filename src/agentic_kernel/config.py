@@ -249,6 +249,10 @@ class ProjectConfig:
                 "kind": "native",
                 "skill": "",
                 "source": "kernel",
+                # Les natives portent leur consigne dans NATIVE_RPPL_COMMANDS;
+                # la clé reste présente pour que les deux familles aient la même
+                # forme côté appelants.
+                "prompt": definition.get("prompt", ""),
             }
             for command, definition in NATIVE_RPPL_COMMANDS.items()
         }
@@ -262,6 +266,12 @@ class ProjectConfig:
             if isinstance(cody, dict):
                 raw = cody.get("commands", raw)
             descriptions = amk.get("command_descriptions", {}) if isinstance(amk, dict) else {}
+            # Une skill préchargée est du contexte permanent que le modèle peut
+            # interpréter librement. Un `command_prompts` en fait une consigne
+            # ponctuelle et saillante, au même titre qu'une commande native :
+            # sans lui, `/plan` sur un agent qui charge déjà `plan-build`
+            # n'ajoutait strictement rien.
+            prompts = amk.get("command_prompts", {}) if isinstance(amk, dict) else {}
             for value in _string_list(raw):
                 command = "/" + value.strip().lstrip("/").lower()
                 if command == "/":
@@ -272,6 +282,7 @@ class ProjectConfig:
                     "kind": "skill",
                     "skill": skill.name,
                     "source": skill.source,
+                    "prompt": str(prompts.get(command, "")),
                 }
         return [by_command[key] for key in sorted(by_command)]
 

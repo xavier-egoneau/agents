@@ -106,6 +106,33 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
         )
         return self.overhead_tokens + self._estimate_text(encoded)
 
+    @staticmethod
+    def calibration_of(deps: Any) -> float:
+        """Écart mesuré entre les tokens facturés et notre estimation.
+
+        Jamais sous 1.0 : un facteur inférieur ferait croire à plus de marge
+        qu'il n'y en a, et retarderait encore la compaction.
+        """
+        return max(1.0, float(getattr(deps, "context_calibration", 1.0) or 1.0))
+
+    def should_compact(
+        self, estimated: int, context_window: int | None, calibration: float
+    ) -> bool:
+        """Décide sur une estimation ramenée à l'échelle du fournisseur.
+
+        L'estimateur compte 3,5 octets par token; sur du code et du JSON, le
+        fournisseur en facture deux fois plus. Comparer l'estimation brute au
+        seuil revenait à attendre le double du volume voulu — donc à compacter
+        une fois la fenêtre déjà dépassée.
+        """
+        if self.force:
+            return True
+        if context_window is None:
+            return False
+        return math.ceil(estimated * calibration) >= math.floor(
+            context_window * self.trigger_ratio
+        )
+
     async def before_model_request(
         self,
         ctx: RunContext[RuntimeDeps],
@@ -115,10 +142,8 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
         context_window = ctx.deps.context_window_tokens or self.context_window_tokens
         if context_window is None and not self.force:
             return request_context
-        trigger = (
-            math.floor(context_window * self.trigger_ratio) if context_window is not None else None
-        )
-        if not self.force and trigger is not None and before < trigger:
+        calibration = self.calibration_of(ctx.deps)
+        if not self.should_compact(before, context_window, calibration):
             return request_context
 
         if self.force:
@@ -126,8 +151,14 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
             # is already below the automatic 50%-of-window target.
             target = math.floor(max(1, before - self.overhead_tokens) * self.target_ratio)
         else:
+            # La cible est exprimée dans l'unité du compacteur, qui mesure avec
+            # le même estimateur optimiste. Viser 50 % de la fenêtre sans diviser
+            # par le facteur reviendrait à s'arrêter au moment où l'historique
+            # réel occupe encore toute la fenêtre : on déclencherait au bon
+            # moment sans jamais assez réduire.
             target = (
-                math.floor(context_window * self.target_ratio) - self.overhead_tokens
+                math.floor(context_window * self.target_ratio / calibration)
+                - self.overhead_tokens
                 if context_window is not None
                 else math.floor(before * self.target_ratio)
             )
@@ -202,9 +233,19 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
                     "estimated_tokens_before": before,
                     "estimated_tokens_after": after,
                     "context_window_tokens": context_window,
-                    "trigger_tokens": trigger,
+                    "trigger_tokens": (
+                        math.floor(context_window * self.trigger_ratio)
+                        if context_window is not None
+                        else None
+                    ),
                     "target_tokens": target + self.overhead_tokens,
                     "threshold_ratio": self.trigger_ratio,
+                    # Ce que valent réellement `before` et `after` chez le
+                    # fournisseur : sans ce facteur, la trace reproduit
+                    # l'optimisme de l'estimateur.
+                    "calibration_factor": calibration,
+                    "calibrated_tokens_before": math.ceil(before * calibration),
+                    "calibrated_tokens_after": math.ceil(after * calibration),
                     "manual": self.force,
                     "preserves_full_audit": True,
                     "estimator": "utf8_bytes/3.5",

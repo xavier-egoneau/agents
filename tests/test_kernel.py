@@ -10,6 +10,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
+    ThinkingPart,
     ToolCallPart,
     UserPromptPart,
 )
@@ -19,6 +20,7 @@ from pydantic_ai.models.test import TestModel
 from agentic_kernel.errors import ConfigurationError
 from agentic_kernel.kernel import (
     Kernel,
+    _last_model_text,
     _runtime_context_instruction,
     _without_images,
 )
@@ -777,3 +779,204 @@ Complete the delegated task.
     assert child_events[0].parent_run_id is not None
     assert observed_toolsets[0] == {"agent_delegate"}
     assert set() in observed_toolsets[1:]
+
+
+def test_thinking_is_recovered_when_no_text_was_produced() -> None:
+    """Le cas qui a coûté un run entier.
+
+    Quand la limite de tokens tombe pendant la phase de raisonnement, la réponse
+    ne contient que des `ThinkingPart`; pydantic-ai lève alors sans sortie
+    exploitable. Ce raisonnement représente le travail réel du modèle et doit
+    survivre à l'échec.
+    """
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content="Crée l'application")]),
+        ModelResponse(parts=[ThinkingPart(content="Je décompose le problème…")]),
+    ]
+
+    texte, reflexion = _last_model_text(messages)
+
+    assert texte == ""
+    assert reflexion == "Je décompose le problème…"
+
+
+def test_text_wins_over_thinking() -> None:
+    """Un texte est une réponse; un raisonnement n'en est que la trace."""
+    messages = [
+        ModelResponse(parts=[ThinkingPart(content="hésitation"), TextPart("la réponse")]),
+    ]
+
+    texte, reflexion = _last_model_text(messages)
+
+    assert texte == "la réponse"
+    assert reflexion == "hésitation"
+
+
+def test_the_last_response_is_the_one_that_failed() -> None:
+    """On lit à rebours : c'est la dernière réponse qui a buté."""
+    messages = [
+        ModelResponse(parts=[TextPart("un tour précédent")]),
+        ModelRequest(parts=[UserPromptPart(content="continue")]),
+        ModelResponse(parts=[ThinkingPart(content="le tour interrompu")]),
+    ]
+
+    assert _last_model_text(messages) == ("", "le tour interrompu")
+
+
+def test_nothing_to_recover_is_not_an_error() -> None:
+    assert _last_model_text([]) == ("", "")
+    assert _last_model_text([ModelResponse(parts=[])]) == ("", "")
+
+
+async def test_the_run_model_overrides_every_agent_in_the_chain(
+    project: Path, monkeypatch
+) -> None:
+    """Le modèle choisi pour le run vaut pour l'enfant comme pour le parent.
+
+    Le champ `model` d'un agent n'est qu'un défaut. Basculer de modèle en cours
+    de délégation impose un rechargement complet — prohibitif sur un modèle
+    local — et contredit le choix que l'utilisateur vient de faire.
+    """
+    agents = project / "content-agents" / "agents"
+    (agents / "main.md").write_text(
+        """---
+id: main
+description: Supervisor
+provider: test
+model: modele-du-parent
+modules: []
+delegates: [child]
+---
+Delegate the request.
+""",
+        encoding="utf-8",
+    )
+    (agents / "child.md").write_text(
+        """---
+id: child
+description: Child worker
+provider: test
+model: modele-de-l-enfant
+modules: []
+delegates: []
+---
+Complete the delegated task.
+""",
+        encoding="utf-8",
+    )
+    ModuleRegistry(project / "tools").build_index()
+    demandes: list[str | None] = []
+
+    def build(self, provider_id=None, model=None, **kwargs):
+        demandes.append(model)
+        return TestModel(call_tools=[])
+
+    monkeypatch.setattr(ProviderFactory, "build", build)
+    kernel = Kernel(project)
+
+    await kernel.run(RunRequest(prompt="Delegate this", model="choisi-pour-le-run"))
+
+    assert demandes, "aucun modèle n'a été construit"
+    assert set(demandes) == {"choisi-pour-le-run"}, (
+        f"un agent a rebasculé sur son modèle déclaré : {demandes}"
+    )
+
+
+async def test_without_an_override_each_agent_keeps_its_declared_model(
+    project: Path, monkeypatch
+) -> None:
+    """Sans choix explicite, le défaut de chaque agent s'applique."""
+    agents = project / "content-agents" / "agents"
+    (agents / "main.md").write_text(
+        """---
+id: main
+description: Supervisor
+provider: test
+model: modele-du-parent
+modules: []
+delegates: [child]
+---
+Delegate the request.
+""",
+        encoding="utf-8",
+    )
+    (agents / "child.md").write_text(
+        """---
+id: child
+description: Child worker
+provider: test
+model: modele-de-l-enfant
+modules: []
+delegates: []
+---
+Complete the delegated task.
+""",
+        encoding="utf-8",
+    )
+    ModuleRegistry(project / "tools").build_index()
+    demandes: list[str | None] = []
+
+    def build(self, provider_id=None, model=None, **kwargs):
+        demandes.append(model)
+        return TestModel(call_tools=[])
+
+    monkeypatch.setattr(ProviderFactory, "build", build)
+    kernel = Kernel(project)
+
+    await kernel.run(RunRequest(prompt="Delegate this"))
+
+    assert "modele-du-parent" in demandes
+    assert "modele-de-l-enfant" in demandes
+
+
+def test_a_skill_command_carries_its_instruction(project: Path) -> None:
+    """Charger la skill ne suffisait pas.
+
+    Quand l'agent précharge déjà `plan-build`, `/plan` n'ajoutait rien : le
+    protocole restait une suggestion parmi le contexte permanent, et le modèle
+    enchaînait la planification et l'exécution sans laisser de point d'arrêt.
+    """
+    skill = project / "content-agents" / "skills" / "arret"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        """---
+name: arret
+description: Planifier sans exécuter.
+amk:
+  commands:
+    - /plan
+  command_descriptions:
+    /plan: Construire un plan.
+  command_prompts:
+    /plan: Produis un plan et arrête-toi là.
+---
+Corps de la skill.
+""",
+        encoding="utf-8",
+    )
+    from agentic_kernel.config import ProjectConfig
+
+    commande = ProjectConfig(project).resolve_command("/plan crée l'application")
+
+    assert commande is not None
+    assert commande["prompt"] == "Produis un plan et arrête-toi là."
+    assert commande["skill"] == "arret"
+
+
+def test_the_user_request_survives_the_command_prompt() -> None:
+    """La consigne prend la place du préfixe; la demande la suit."""
+    from agentic_kernel.kernel import _expand_skill_command
+
+    expanded = _expand_skill_command(
+        "/plan crée l'application", "/plan", "Produis un plan et arrête-toi là."
+    )
+
+    assert expanded.startswith("Produis un plan et arrête-toi là.")
+    assert "crée l'application" in expanded
+    assert "/plan" not in expanded
+
+
+def test_a_bare_command_needs_no_request() -> None:
+    from agentic_kernel.kernel import _expand_skill_command
+
+    assert _expand_skill_command("/build", "/build", "Exécute le plan.") == "Exécute le plan."

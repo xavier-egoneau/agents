@@ -35,6 +35,29 @@ class CodexResponsesModel(OpenAIResponsesModel):
         return streamed.get()
 
 
+def model_settings(config: ProviderConfig) -> dict[str, object]:
+    """Réglages déclarés dans `providers.json`, dans le vocabulaire du SDK.
+
+    Cette fonction est partagée parce que son absence côté clé d'API a coûté un
+    run complet : `num_predict` et `timeout_seconds` étaient acceptés dans la
+    configuration, affichés dans l'interface, et jamais transmis au modèle. La
+    limite appliquée restait celle du fournisseur, et l'erreur renvoyée invitait
+    à « augmenter max_tokens » — un réglage qui existait déjà et ne servait à
+    rien.
+
+    Les clés absentes sont omises plutôt que mises à None : le SDK distingue
+    « non précisé » de « nul ».
+    """
+    declared = {
+        "temperature": config.temperature,
+        "top_k": config.top_k,
+        "top_p": config.top_p,
+        "max_tokens": config.num_predict,
+        "timeout": config.timeout_seconds,
+    }
+    return {key: value for key, value in declared.items() if value is not None}
+
+
 class ProviderAdapter(Protocol):
     """Internal provider boundary; SDK-specific types never enter the public API."""
 
@@ -60,21 +83,10 @@ class LocalOpenAIAdapter:
         base_url = local_base_url(config)
         if not base_url.endswith("/v1"):
             base_url += "/v1"
-        settings = {
-            key: value
-            for key, value in {
-                "temperature": config.temperature,
-                "top_k": config.top_k,
-                "top_p": config.top_p,
-                "max_tokens": config.num_predict,
-                "timeout": config.timeout_seconds,
-            }.items()
-            if value is not None
-        }
         return OpenAIChatModel(
             model_name,
             provider=OpenAIProvider(base_url=base_url, api_key="local"),
-            settings=settings,
+            settings=model_settings(config),
         )
 
 
@@ -99,6 +111,7 @@ class ApiKeyOpenAIAdapter:
                 base_url=config.base_url or default_base_url(config.kind),
                 api_key=api_key,
             ),
+            settings=model_settings(config),
         )
 
 
@@ -120,7 +133,9 @@ class CodexOAuthAdapter:
         return CodexResponsesModel(
             model_name,
             provider=OpenAIProvider(openai_client=client),
-            settings={"openai_store": False},
+            # `openai_store` est imposé par ce fournisseur; le reste vient de la
+            # configuration et ne doit pas l'écraser.
+            settings={**model_settings(config), "openai_store": False},
         )
 
 
@@ -143,6 +158,7 @@ class ClaudeOAuthAdapter:
         return AnthropicModel(
             model_name,
             provider=AnthropicProvider(anthropic_client=client),
+            settings=model_settings(config),
         )
 
 

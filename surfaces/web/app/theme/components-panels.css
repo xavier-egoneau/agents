@@ -54,16 +54,27 @@
 .plan-step.completed .plan-step-copy { opacity: 0.55; text-decoration: line-through; }
 .plan-step.blocked .plan-step-copy strong,
 .plan-step.failed .plan-step-copy strong { color: var(--danger); }
+/* Une intention, pas un fait : la tâche *peut* être parallélisée. Teinte
+   neutre, pour ne pas annoncer un travail qui n'a peut-être pas eu lieu. */
 .parallel-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  padding: 3px 7px;
+  font: var(--weight-medium) var(--text-sm) var(--font-sans);
+}
+/* Déléguée pour de bon : l'accent ne récompense que le fait accompli. */
+.parallel-badge[data-delegated] {
+  border-color: transparent;
   background: var(--accent-soft);
   color: var(--accent-soft-text);
-  padding: 4px 7px;
-  font: var(--weight-bold) var(--text-2xs) var(--font-sans);
+  font-weight: var(--weight-bold);
+  font-family: var(--font-mono);
 }
 .step-running {
   width: 9px;

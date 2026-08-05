@@ -7,6 +7,7 @@ allowed-tools:
   - plan_ready
   - plan_claim
   - plan_update
+  - agent_delegate
   - subagent_spawn
 amk:
   activation: on-demand
@@ -16,6 +17,26 @@ amk:
   command_descriptions:
     /plan: Construire un plan structuré avec tâches, dépendances et parallélisation.
     /build: Exécuter le plan courant, vérifier et cocher chaque tâche.
+  command_prompts:
+    /plan: >-
+      Produis un plan et arrête-toi là. Tu es en mode planification : appelle
+      `plan_create` puis rends la main. N'exécute aucune tâche, ne modifie aucun
+      fichier du projet, ne lance aucune commande d'installation ou de build,
+      même si le plan te paraît évident et même si l'utilisateur semble pressé.
+      L'utilisateur doit pouvoir relire et corriger le plan avant qu'il ne
+      produise le moindre effet; c'est la seule occasion qu'il en aura.
+      Termine en présentant le plan et en indiquant que `/build` l'exécutera.
+    /build: >-
+      Exécute le plan déjà enregistré, n'en crée pas un nouveau. Charge-le avec
+      `plan_status`, puis appelle `plan_ready` avant chaque vague : seules les
+      tâches qu'il retourne sont exécutables, et lui seul distingue ce qui peut
+      partir en parallèle de ce qui doit attendre. Confie chaque tâche du groupe
+      `parallel` à un agent existant avec `agent_delegate`, en transmettant
+      `plan_id` et `step_id`, et émets ces appels dans le même tour — les
+      enchaîner l'un après l'autre annule tout le bénéfice de la parallélisation
+      déclarée au moment du plan. Choisis l'agent selon la nature de la tâche;
+      ne recours à `subagent_spawn` que si aucun agent ne convient. Ne coche une
+      tâche qu'après avoir vérifié son résultat.
 ---
 # Plan et build
 
@@ -53,15 +74,23 @@ Applique le plan courant, sans en inventer un nouveau.
 4. Exécute et vérifie réellement la tâche, puis passe-la à `validating`, réalise
    les contrôles attendus et passe-la à `completed` avec une
    note factuelle. Utilise `blocked` ou `failed` avec la cause exacte sinon.
-5. Pour une tâche retournée dans `parallel`, tu peux appeler `subagent_spawn`.
-   Transmets obligatoirement son `plan_id` et son `step_id`; le kernel prend le
-   lease et contrôle les conflits de `write_scopes`. Donne-lui à la volée un
-   rôle, une mission, un périmètre et le résultat attendu. Plusieurs appels
-   indépendants peuvent être émis dans le même tour afin que le kernel les
-   exécute en parallèle. Continue les autres tâches prêtes qui n’en dépendent pas.
-6. Ne coche jamais une tâche sur la seule déclaration d’un sous-agent :
-   réintègre son résultat et vérifie les artefacts ou tests attendus.
-7. Termine lorsque toutes les tâches sont terminées ou qu’aucune tâche restante
+5. Confie chaque tâche du groupe `parallel` à un **agent existant** avec
+   `agent_delegate`, en transmettant `plan_id` et `step_id`. Le kernel prend
+   alors le bail et refuse toute tâche dont le périmètre d’écriture recouvre
+   celui d’une tâche déjà en cours — c’est ce qui rend le parallélisme sûr.
+   Émets ces appels **dans le même tour** : les enchaîner l’un après l’autre
+   annule tout le bénéfice de la parallélisation déclarée au moment du plan.
+6. Choisis l’agent d’après la nature de la tâche, pas au hasard. Les agents
+   disponibles sont listés dans tes instructions avec leur description; chacun
+   a des outils et des consignes calibrés pour son rôle. N’emploie
+   `subagent_spawn` que si aucun d’eux ne convient : son exécutant est créé
+   pour l’occasion, sans outillage adapté ni consigne relue.
+7. Rappelle-toi qu’un agent démarre sur un contexte vide et ne voit ni cette
+   conversation ni le plan. Sa consigne doit contenir les chemins, la
+   contrainte et le critère d’acceptation.
+8. Ne coche jamais une tâche sur la seule déclaration d’un agent : réintègre
+   son résultat et vérifie les artefacts ou tests attendus.
+9. Termine lorsque toutes les tâches sont terminées ou qu’aucune tâche restante
    n’est exécutable. Dans ce dernier cas, explique le blocage.
 
 Après chaque changement de statut, le panneau de plan Web se met à jour depuis

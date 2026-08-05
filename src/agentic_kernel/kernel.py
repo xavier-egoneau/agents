@@ -16,6 +16,7 @@ from pydantic_ai import (
     DeferredToolRequests,
     ModelMessagesTypeAdapter,
     ModelSettings,
+    capture_run_messages,
 )
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.tools import DeferredToolResults
@@ -111,8 +112,20 @@ class Kernel:
                     "prompt": self.config.expand_native_command(request.prompt, command["command"])
                 }
             )
-        elif command and command["skill"] not in request.skills:
-            request = request.model_copy(update={"skills": [*request.skills, command["skill"]]})
+        elif command and command["kind"] == "skill":
+            updates: dict[str, Any] = {}
+            if command["skill"] not in request.skills:
+                updates["skills"] = [*request.skills, command["skill"]]
+            if command.get("prompt"):
+                # Charger la skill ne suffit pas : quand l'agent la précharge
+                # déjà, la commande n'ajoutait rien et le protocole restait une
+                # simple suggestion noyée dans le contexte. La consigne prend
+                # ici la place du préfixe, la demande réelle la suit.
+                updates["prompt"] = _expand_skill_command(
+                    request.prompt, command["command"], command["prompt"]
+                )
+            if updates:
+                request = request.model_copy(update=updates)
         provider_factory = ProviderFactory(
             self.config.providers(),
             runtime_dir=self.config.content_root / "runtime" / "providers",
@@ -165,6 +178,7 @@ class Kernel:
             provider_id=active_provider_id,
             model_name=active_model,
             context_window_tokens=context_window_tokens,
+            context_calibration=self._context_calibration(request.session_id),
         )
         self.active_runs[request.session_id] = deps
         self.events.append(
@@ -211,6 +225,11 @@ class Kernel:
             previous="created",
         )
         git_baseline = self._capture_git_baseline(request, run_id, workspace)
+        # Ce que le modèle a produit avant de lever. Rempli par
+        # `capture_run_messages` autour de l'appel, lu par les gestionnaires
+        # d'erreur plus bas : sans cela, une réponse arrêtée en pleine phase de
+        # raisonnement repartirait avec l'exception.
+        exchanged: list[Any] = []
         try:
             archived_images = self._archive_input_images(request, run_id)
             if request.images and not supports_vision:
@@ -243,15 +262,21 @@ class Kernel:
                 ),
                 supports_vision=supports_vision,
             )
-            async with asyncio.timeout(budgets.session_timeout_seconds):
-                result = await self._run_root_with_retries(
-                    root_agent,
-                    request,
-                    deps,
-                    budgets,
-                    run_id,
-                    message_history,
-                )
+            with capture_run_messages() as captured:
+                try:
+                    async with asyncio.timeout(budgets.session_timeout_seconds):
+                        result = await self._run_root_with_retries(
+                            root_agent,
+                            request,
+                            deps,
+                            budgets,
+                            run_id,
+                            message_history,
+                        )
+                finally:
+                    # Copie immédiate : la liste appartient au contexte et n'est
+                    # plus alimentée une fois celui-ci quitté.
+                    exchanged = list(captured)
             if isinstance(result.output, DeferredToolRequests):
                 response = self._persist_pending(request, run_id, deps, result)
                 self.executor.suspend(
@@ -287,11 +312,17 @@ class Kernel:
                 artifacts=self._run_artifacts(request.session_id, run_id),
             )
         except TimeoutError as exc:
-            response = self._failed(request, run_id, RunStatus.TIMEOUT, exc, retryable=True)
+            response = self._failed(
+                request, run_id, RunStatus.TIMEOUT, exc, retryable=True, messages=exchanged
+            )
         except asyncio.CancelledError as exc:
-            response = self._failed(request, run_id, RunStatus.CANCELLED, exc, retryable=False)
+            response = self._failed(
+                request, run_id, RunStatus.CANCELLED, exc, retryable=False, messages=exchanged
+            )
         except UsageLimitExceeded as exc:
-            response = self._failed(request, run_id, RunStatus.PARTIAL, exc, retryable=False)
+            response = self._failed(
+                request, run_id, RunStatus.PARTIAL, exc, retryable=False, messages=exchanged
+            )
         except ModelHTTPError as exc:
             response = self._failed(
                 request,
@@ -299,11 +330,16 @@ class Kernel:
                 RunStatus.FAILED,
                 exc,
                 retryable=_transient_http_status(exc.status_code),
+                messages=exchanged,
             )
         except (AuthenticationError, ConfigurationError, KernelError) as exc:
-            response = self._failed(request, run_id, RunStatus.FAILED, exc, retryable=False)
+            response = self._failed(
+                request, run_id, RunStatus.FAILED, exc, retryable=False, messages=exchanged
+            )
         except Exception as exc:
-            response = self._failed(request, run_id, RunStatus.FAILED, exc, retryable=True)
+            response = self._failed(
+                request, run_id, RunStatus.FAILED, exc, retryable=True, messages=exchanged
+            )
         if not response.artifacts:
             response.artifacts = self._run_artifacts(request.session_id, run_id)
         self._capture_git_snapshot(request, run_id, workspace, git_baseline)
@@ -916,6 +952,20 @@ class Kernel:
             model_name=model_name,
         )
 
+    def _context_calibration(self, session_id) -> float:
+        """Écart mesuré entre les tokens facturés et notre estimation.
+
+        Vaut 1.0 tant qu'aucun tour n'a été observé : on ne corrige pas sur une
+        supposition. La valeur s'affine ensuite à chaque réponse du fournisseur.
+        """
+        try:
+            projected = self.events.projection.context(session_id)
+        except Exception:
+            return 1.0
+        if not projected:
+            return 1.0
+        return max(1.0, float(projected.get("calibration_factor") or 1.0))
+
     def _model_context_window(self, provider_id: str, model_name: str | None) -> int | None:
         return self.context_registry.get(provider_id, model_name)
 
@@ -1048,21 +1098,98 @@ class Kernel:
             force_compaction=force_compaction,
         )
 
-    def _failed(self, request, run_id, status, exc, retryable) -> RunResult:
-        message = self.secrets.redact(str(exc))
+    def _failed(self, request, run_id, status, exc, retryable, messages=None) -> RunResult:
+        """Un run terminé rend toujours un texte, y compris quand il échoue.
+
+        `output` restait vide et le message d'erreur ne vivait que dans le state
+        de la surface : au rechargement de la session, il ne restait qu'une bulle
+        vide. Le diagnostic existait sans jamais atteindre le disque.
+        """
+        message = str(self.secrets.redact(str(exc)))
         return RunResult(
             session_id=request.session_id,
             run_id=run_id,
             agent_id=request.agent_id,
             status=status,
+            output=self._salvaged_output(type(exc).__name__, message, messages),
             errors=[
                 RunError(
                     type=type(exc).__name__,
-                    message=str(message),
+                    message=message,
                     retryable=retryable,
                 )
             ],
         )
+
+    def _salvaged_output(
+        self, error_type: str, message: str, messages: list[Any] | None
+    ) -> str:
+        """Compose une réponse dégradée à partir de ce que le modèle a produit.
+
+        Quand la limite de tokens tombe pendant la phase de raisonnement, la
+        réponse ne contient que des `ThinkingPart` : pydantic-ai considère
+        qu'aucune sortie exploitable n'existe et lève, emportant avec lui un
+        travail qui peut représenter plusieurs minutes. Ce raisonnement reste
+        présent dans les messages capturés, et vaut mieux que rien.
+        """
+        recovered = _last_model_text(messages) if messages else ("", "")
+        texte, reflexion = recovered
+        blocs: list[str] = []
+        if texte.strip():
+            blocs.append(texte.strip())
+        elif reflexion.strip():
+            blocs.append(
+                "*Réponse interrompue. Voici le raisonnement produit avant "
+                "l'interruption.*\n\n" + reflexion.strip()
+            )
+        blocs.append(
+            f"**Le run ne s'est pas terminé — {error_type}.**\n\n{self.secrets.redact(message)}"
+            if message
+            else f"**Le run ne s'est pas terminé — {error_type}.**"
+        )
+        return "\n\n---\n\n".join(blocs)
+
+
+def _expand_skill_command(prompt: str, command: str, instruction: str) -> str:
+    """Remplace le préfixe de commande par la consigne qu'il désigne.
+
+    Même forme que `expand_native_command`, à une différence près : la demande
+    de l'utilisateur suit toujours la consigne, car une commande de skill
+    accompagne un besoin (« /plan crée l'application ») là où une native se
+    suffit à elle-même.
+    """
+    reste = prompt.lstrip()[len(command) :].strip()
+    return instruction + (f"\n\nDemande de l’utilisateur : {reste}" if reste else "")
+
+
+def _last_model_text(messages: list[Any]) -> tuple[str, str]:
+    """Texte et raisonnement de la dernière réponse du modèle.
+
+    Renvoie les deux séparément parce qu'ils ne valent pas la même chose : un
+    texte est la réponse, un raisonnement n'en est que la trace. On lit à
+    rebours pour trouver la dernière réponse, celle sur laquelle le run a buté.
+
+    Les objets viennent du SDK et leur forme n'est pas garantie d'une version à
+    l'autre : on lit par attributs, sans jamais supposer qu'ils existent.
+    """
+    for message in reversed(messages or []):
+        parts = getattr(message, "parts", None)
+        if not parts:
+            continue
+        textes: list[str] = []
+        reflexions: list[str] = []
+        for part in parts:
+            contenu = getattr(part, "content", None)
+            if not isinstance(contenu, str) or not contenu.strip():
+                continue
+            genre = getattr(part, "part_kind", "")
+            if genre == "thinking":
+                reflexions.append(contenu)
+            elif genre == "text":
+                textes.append(contenu)
+        if textes or reflexions:
+            return "\n".join(textes), "\n".join(reflexions)
+    return "", ""
 
 
 def _without_images(messages: list[Any]) -> list[Any]:

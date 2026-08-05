@@ -78,6 +78,11 @@ class AgentFactory:
             raise ConfigurationError(
                 f"agent {agent_id} references unknown skills: {sorted(missing_skills)}"
             )
+        # Le modèle choisi pour le run descend dans toute la chaîne de
+        # délégation. Le champ `model` d'un agent n'est qu'un défaut : basculer
+        # d'un modèle à l'autre au milieu d'un run coûte un rechargement complet
+        # — prohibitif en local — pour un choix que l'utilisateur vient
+        # justement de faire à l'échelle du run.
         child_agents = [
             self.build(
                 child,
@@ -90,6 +95,8 @@ class AgentFactory:
                 tool_allowlist=tool_allowlist,
                 workspace=workspace,
                 security_mode=security_mode,
+                provider_override=provider_override,
+                model_override=model_override,
             )
             for child in config.delegates
         ]

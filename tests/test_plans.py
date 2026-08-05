@@ -229,3 +229,101 @@ def test_plan_schema_adds_validation_column_non_destructively(tmp_path) -> None:
             row["name"] for row in db.execute("PRAGMA table_info(plan_steps)").fetchall()
         }
     assert "validation_json" in columns
+
+
+def _deps(state_db, session_id):
+    """Dépendances minimales pour exercer la délégation hors d'un vrai run."""
+    import asyncio
+
+    from agentic_kernel.events import JsonlEventStore
+    from agentic_kernel.models import BudgetConfig
+    from agentic_kernel.orchestration import RuntimeDeps
+
+    return RuntimeDeps(
+        session_id=session_id,
+        root_run_id=uuid4(),
+        budgets=BudgetConfig(),
+        events=JsonlEventStore(state_db.parent / "sessions"),
+        semaphore=asyncio.Semaphore(4),
+        state_db=state_db,
+    )
+
+
+def _plan_with_two_parallel_steps(state_db, session_id):
+    service = PlanService(state_db)
+    plan = service.create(
+        session_id,
+        "Build",
+        [
+            PlanStepInput(id="T1", title="Socle"),
+            PlanStepInput(
+                id="T2", title="Front", dependencies=["T1"],
+                parallelizable=True, write_scopes=["src/front"],
+            ),
+            PlanStepInput(
+                id="T3", title="Front bis", dependencies=["T1"],
+                parallelizable=True, write_scopes=["src/front"],
+            ),
+        ],
+    )
+    return service, plan["plan_id"]
+
+
+def test_a_named_agent_can_claim_a_plan_step(tmp_path) -> None:
+    """Le mécanisme n'était atteignable que par l'exécutant neutre.
+
+    Les agents configurés — outillés et relus — restaient hors du plan : pour
+    paralléliser, il fallait renoncer à eux.
+    """
+    from agentic_kernel.orchestration import TracedSubAgentToolset
+
+    state_db = tmp_path / "state.db"
+    session_id = uuid4()
+    service, plan_id = _plan_with_two_parallel_steps(state_db, session_id)
+    service.update(plan_id, "T1", "completed", session_id=session_id)
+
+    TracedSubAgentToolset._claim_plan_step(
+        _deps(state_db, session_id), "uifront", plan_id, "T2", uuid4()
+    )
+
+    etape = next(s for s in service.get(plan_id, session_id)["steps"] if s["id"] == "T2")
+    assert etape["status"] == "claimed"
+    assert etape["claimed_by"] == "agent:uifront"
+
+
+def test_overlapping_write_scopes_are_refused(tmp_path) -> None:
+    """Deux agents ne peuvent pas écrire au même endroit en même temps."""
+    from pydantic_ai import ModelRetry
+
+    from agentic_kernel.orchestration import TracedSubAgentToolset
+
+    state_db = tmp_path / "state.db"
+    session_id = uuid4()
+    service, plan_id = _plan_with_two_parallel_steps(state_db, session_id)
+    service.update(plan_id, "T1", "completed", session_id=session_id)
+    deps = _deps(state_db, session_id)
+    TracedSubAgentToolset._claim_plan_step(deps, "uifront", plan_id, "T2", uuid4())
+
+    # T3 écrit dans le même périmètre que T2, déjà réservée.
+    with pytest.raises(ModelRetry, match="T3"):
+        TracedSubAgentToolset._claim_plan_step(deps, "dev", plan_id, "T3", uuid4())
+
+
+def test_delegation_without_a_plan_stays_possible(tmp_path) -> None:
+    """Déléguer hors plan reste le cas courant : aucun identifiant requis."""
+    from agentic_kernel.orchestration import TracedSubAgentToolset
+
+    TracedSubAgentToolset._claim_plan_step(
+        _deps(tmp_path / "state.db", uuid4()), "researcher", None, None, uuid4()
+    )
+
+
+def test_a_half_given_plan_reference_is_reported(tmp_path) -> None:
+    from pydantic_ai import ModelRetry
+
+    from agentic_kernel.orchestration import TracedSubAgentToolset
+
+    with pytest.raises(ModelRetry, match="ensemble"):
+        TracedSubAgentToolset._claim_plan_step(
+            _deps(tmp_path / "state.db", uuid4()), "dev", "plan-1", None, uuid4()
+        )

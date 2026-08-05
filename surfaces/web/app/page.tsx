@@ -793,10 +793,18 @@ const providerKindLabels: Record<string, string> = {
   anthropic: "Anthropic API — clé API",
 };
 
+/**
+ * Le modèle ne figure volontairement pas ici.
+ *
+ * Il appartient à l'agent, qui en fait son défaut; le sélecteur du composer ne
+ * sert qu'à en changer ponctuellement. Persisté, ce choix ponctuel masquait
+ * définitivement le défaut de l'agent — on pouvait lire `deepseek-v4-pro` dans
+ * la configuration de `main` et voir `deepseek-v4-flash` dans le composer, sans
+ * rien pour expliquer l'écart.
+ */
 type ComposerPreferences = {
   securityMode: "safe" | "limited" | "power";
   providerId: string;
-  model: string;
   reasoning: "minimal" | "low" | "medium" | "high" | "xhigh";
 };
 
@@ -1239,7 +1247,6 @@ export default function Home() {
           setSecurityMode(stored.securityMode as ComposerPreferences["securityMode"]);
         }
         if (typeof stored.providerId === "string") setProviderId(stored.providerId);
-        if (typeof stored.model === "string") setSelectedModel(stored.model);
         if (["minimal", "low", "medium", "high", "xhigh"].includes(String(stored.reasoning))) {
           setReasoning(stored.reasoning as ComposerPreferences["reasoning"]);
         }
@@ -1254,12 +1261,10 @@ export default function Home() {
 
   useEffect(() => {
     if (!composerPreferencesReady) return;
-    const preferences: ComposerPreferences = {
-      securityMode, providerId, model: selectedModel, reasoning,
-    };
+    const preferences: ComposerPreferences = { securityMode, providerId, reasoning };
     restoredComposerPreferences.current = preferences;
     window.localStorage.setItem(composerPreferencesKey, JSON.stringify(preferences));
-  }, [composerPreferencesReady, securityMode, providerId, selectedModel, reasoning]);
+  }, [composerPreferencesReady, securityMode, providerId, reasoning]);
 
   /**
    * Le catalogue porte les agents, skills, providers, tools et modules : sans
@@ -1502,26 +1507,26 @@ export default function Home() {
 
   useEffect(() => {
     if (!catalog || !activeAgent || !composerPreferencesReady) return;
-    const restored = restoredComposerPreferences.current;
-    if (!composerPreferencesApplied.current && restored) {
-      const provider = catalog.providers.find((item) => item.id === restored.providerId);
-      if (provider) {
-        setProviderId(provider.id);
-        setSelectedModel(restored.model || provider.model || provider.models[0] || "");
-        composerPreferencesApplied.current = true;
-        lastComposerAgent.current = activeAgent.id;
-        return;
-      }
-    }
+    // Rien à faire tant qu'on reste sur le même agent : un modèle choisi à la
+    // main doit tenir jusqu'à ce qu'on en change.
     if (
       composerPreferencesApplied.current
       && lastComposerAgent.current === activeAgent.id
     ) return;
-    const provider = catalog.providers.find((item) => item.id === activeAgent.provider)
+
+    // Le provider peut venir des préférences; le modèle vient toujours de
+    // l'agent. Persister le modèle revenait à masquer son défaut pour de bon.
+    const restored = restoredComposerPreferences.current;
+    const provider =
+      (!composerPreferencesApplied.current && restored
+        ? catalog.providers.find((item) => item.id === restored.providerId)
+        : undefined)
+      || catalog.providers.find((item) => item.id === activeAgent.provider)
       || catalog.providers[0];
     if (!provider) return;
     setProviderId(provider.id);
     setSelectedModel(
+      // Le modèle de l'agent ne vaut que s'il appartient au provider retenu.
       provider.models.includes(activeAgent.model || "")
         ? activeAgent.model || provider.model || provider.models[0] || ""
         : provider.model || provider.models[0] || "",

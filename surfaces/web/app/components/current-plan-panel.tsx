@@ -21,6 +21,19 @@ export type CurrentPlan = {
   steps: PlanStep[];
 };
 
+/**
+ * Qui a réellement pris la tâche, ou rien si elle n'a été déléguée à personne.
+ *
+ * Le kernel préfixe `claimed_by` : `agent:<nom>` pour un agent configuré,
+ * `subagent:<rôle>` pour un exécutant créé à la volée. Une tâche exécutée par
+ * l'orchestrateur lui-même n'a pas de préfixe — et ce cas-là, précisément,
+ * signifie que la parallélisation déclarée n'a pas eu lieu.
+ */
+function delegatedTo(step: PlanStep): string {
+  const [prefixe, ...reste] = (step.claimed_by || "").split(":");
+  return prefixe === "agent" || prefixe === "subagent" ? reste.join(":") : "";
+}
+
 type CurrentPlanPanelProps = {
   plan: CurrentPlan;
   expanded: boolean;
@@ -81,8 +94,20 @@ export function CurrentPlanPanel({
                 </small>
               </span>
               {step.parallelizable && (
-                <span className="parallel-badge">
-                  <Icon name="git" size="xs" /> parallélisable
+                // `parallélisable` n'est qu'une déclaration faite au moment du
+                // plan; `claimed_by` dit qui l'a réellement prise. Confondre les
+                // deux laissait croire à un parallélisme qui n'avait pas eu lieu.
+                <span
+                  className="parallel-badge"
+                  data-delegated={delegatedTo(step) ? "true" : undefined}
+                  title={
+                    delegatedTo(step)
+                      ? `Exécutée par ${delegatedTo(step)}`
+                      : "Déclarée parallélisable au moment du plan"
+                  }
+                >
+                  <Icon name="git" size="xs" />
+                  {delegatedTo(step) || "parallélisable"}
                 </span>
               )}
               {step.status === "in_progress" && <span className="step-running" />}
