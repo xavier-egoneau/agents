@@ -3,10 +3,11 @@ from __future__ import annotations
 import shutil
 from dataclasses import dataclass
 
-from .managed_tools import discovered_executable
+from .managed_tools import discovered_codegraph_executable, discovered_executable
 from .modules import ModuleRegistry
 from .paths import RuntimeLayout
 from .platform.sandbox import sandbox_capabilities
+from .searxng import SearxngService
 from .vision import LocalVisionService, VisionUnavailable
 
 
@@ -29,6 +30,9 @@ def diagnose(layout: RuntimeLayout) -> list[Diagnostic]:
             "; filesystem isolated, public egress offline, loopback guarded by Guardian"
         )
     ketch = discovered_executable("ketch", "AMK_KETCH_BIN")
+    codegraph = discovered_codegraph_executable()
+    searxng = SearxngService()
+    searxng_installed = searxng.installed()
     try:
         llama, gemma = LocalVisionService(content).installed_assets()
     except VisionUnavailable:
@@ -56,6 +60,16 @@ def diagnose(layout: RuntimeLayout) -> list[Diagnostic]:
             "ketch",
             "ok" if ketch else "missing",
             ketch or "run amk setup",
+        ),
+        Diagnostic(
+            "codegraph",
+            "ok" if codegraph else "missing",
+            codegraph or "run amk setup",
+        ),
+        Diagnostic(
+            "SearXNG",
+            "ok" if searxng_installed else "missing",
+            searxng.base_url if searxng_installed else "installed automatically by amk serve/web",
         ),
         Diagnostic(
             "llama.cpp",

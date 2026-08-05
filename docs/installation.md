@@ -3,8 +3,8 @@
 ## Prérequis
 
 - `uv`, qui installe Python 3.12 sans modifier le Python système;
-- Node.js et npm, encore nécessaires à la surface web distribuée depuis le
-  dépôt;
+- Node.js et npm, nécessaires à la surface web et à l’installation de
+  CodeGraph (`amk setup` s’en charge);
 - facultatif : Codex CLI pour son helper sandbox, et llama.cpp/Gemma pour la
   vision locale.
 
@@ -24,20 +24,27 @@ uv sync --extra dev --python 3.12
 uv run amk setup
 ```
 
-`amk setup` est idempotent. Il matérialise le socle utilisateur, réutilise
-Ketch s’il est déjà accessible, l’installe sinon, puis exécute `npm ci` si les
-dépendances web manquent.
+`amk setup` est idempotent. Il matérialise le socle utilisateur, puis pour
+chaque outil : réutilise ce qui est déjà accessible, l’installe sinon.
+
+- **Ketch** — binaire managé, récupéré depuis ses releases GitHub.
+- **CodeGraph** — CLI d’exploration sémantique de projet (skill `explore`),
+  installée globalement via `npm install --global @colbymchenry/codegraph`.
+- **Dépendances web** — `npm ci` si `surfaces/web/node_modules` manque.
+- **SearXNG** — service de recherche loopback-only, source figée à une
+  révision précise et vérifiée par somme SHA-256.
 
 Variantes :
 
 ```powershell
 uv run amk setup --no-downloads  # socle seulement
-uv run amk setup --full          # ajoute llama.cpp et prépare Gemma
+uv run amk setup --full          # ajoute aussi llama.cpp et prépare Gemma
 ```
 
-Ketch, llama.cpp et Gemma déjà présents sont détectés et réutilisés. Les
-variables `AMK_KETCH_BIN` et la configuration `vision.json` permettent de
-pointer vers des installations non standard.
+Ketch, CodeGraph, SearXNG, llama.cpp et Gemma déjà présents sont détectés et
+réutilisés. Les variables `AMK_KETCH_BIN` et `AMK_CODEGRAPH_BIN` permettent de
+pointer vers des installations non standard de ces deux outils; la
+configuration `vision.json` fait de même pour llama.cpp/Gemma.
 
 ## Configuration initiale
 
@@ -72,8 +79,11 @@ uv run amk agents validate
 uv run amk web
 ```
 
-`doctor` renvoie un code non nul lorsqu’un composant requis manque. Les
-éléments vision sont facultatifs tant qu’aucune image n’est analysée.
+`doctor` renvoie un code non nul lorsqu’un composant requis manque. Ketch,
+CodeGraph et SearXNG apparaissent en `missing` s’ils n’ont pas encore été
+installés (`amk setup` les corrige), sans bloquer le code de sortie : chaque
+capacité se dégrade proprement en leur absence. Les éléments vision restent
+facultatifs tant qu’aucune image n’est analysée.
 
 ## Emplacement des données
 

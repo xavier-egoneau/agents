@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Annotated, Any
@@ -12,6 +11,7 @@ from uuid import uuid4
 from pydantic import Field
 from pydantic_ai import FunctionToolset, RunContext
 
+from agentic_kernel.managed_tools import discovered_codegraph_executable
 from agentic_kernel.models import Event
 
 MAX_OUTPUT_CHARS = 20_000
@@ -28,18 +28,7 @@ def _failure(kind: str, message: str, **metadata: Any) -> dict[str, Any]:
 
 
 def _executable() -> str | None:
-    configured = os.environ.get("AMK_CODEGRAPH_BIN")
-    if configured:
-        candidate = Path(configured).expanduser()
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    discovered = shutil.which("codegraph")
-    if discovered:
-        return discovered
-    user_local = Path.home() / ".local" / "bin" / "codegraph"
-    if user_local.is_file() and os.access(user_local, os.X_OK):
-        return str(user_local)
-    return None
+    return discovered_codegraph_executable()
 
 
 async def _run(

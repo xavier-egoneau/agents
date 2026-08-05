@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import urllib.request
@@ -19,6 +20,10 @@ from .errors import ConfigurationError
 from .installation import data_home
 
 GITHUB_API = "https://api.github.com/repos/{repository}/releases/latest"
+
+# CodeGraph n'a pas de releases GitHub par plateforme : c'est un paquet npm
+# global, installe et decouvert separement du pipeline ToolSpec ci-dessous.
+CODEGRAPH_NPM_PACKAGE = "@colbymchenry/codegraph"
 
 
 @dataclass(frozen=True)
@@ -93,6 +98,31 @@ def discovered_executable(name: str, env_var: str | None = None) -> str | None:
         if candidate.is_file():
             return str(candidate.resolve())
     return managed_executable(name)
+
+
+def discovered_codegraph_executable() -> str | None:
+    """Find an existing CodeGraph CLI, managed by npm rather than AMK."""
+    if configured := os.getenv("AMK_CODEGRAPH_BIN"):
+        candidate = Path(configured).expanduser()
+        return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+    if on_path := shutil.which("codegraph"):
+        return on_path
+    user_local = Path.home() / ".local" / "bin" / "codegraph"
+    if user_local.is_file() and os.access(user_local, os.X_OK):
+        return str(user_local)
+    return None
+
+
+def install_codegraph(npm: str) -> str:
+    """Install the CodeGraph CLI globally via npm and return its resolved path."""
+    subprocess.run([npm, "install", "--global", CODEGRAPH_NPM_PACKAGE], check=True)
+    executable = discovered_codegraph_executable()
+    if executable is None:
+        raise ConfigurationError(
+            f"{CODEGRAPH_NPM_PACKAGE} installe, mais l'executable codegraph reste introuvable "
+            "sur le PATH"
+        )
+    return executable
 
 
 class ManagedToolInstaller:

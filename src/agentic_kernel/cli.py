@@ -15,7 +15,12 @@ from .config import ProjectConfig
 from .doctor import diagnose
 from .errors import KernelError
 from .kernel import Kernel
-from .managed_tools import ManagedToolInstaller, discovered_executable
+from .managed_tools import (
+    ManagedToolInstaller,
+    discovered_codegraph_executable,
+    discovered_executable,
+    install_codegraph,
+)
 from .models import RunRequest, RunStatus, SecurityMode
 from .modules import ModuleRegistry
 from .paths import application_root, runtime_layout
@@ -90,13 +95,34 @@ def setup(
     else:
         typer.echo("Installation de Ketch…")
         typer.echo(f"  {installer.install('ketch')}")
+
+    npm = shutil.which("npm")
+    if npm is None:
+        raise KernelError("npm est requis pour préparer la surface web et CodeGraph")
+
+    codegraph = discovered_codegraph_executable()
+    if codegraph:
+        typer.echo(f"CodeGraph existant réutilisé : {codegraph}")
+    else:
+        typer.echo("Installation de CodeGraph…")
+        typer.echo(f"  {install_codegraph(npm)}")
+
     web_root = layout.application_root / "surfaces" / "web"
     if not (web_root / "node_modules").is_dir():
-        npm = shutil.which("npm")
-        if npm is None:
-            raise KernelError("npm est requis pour préparer la surface web de développement")
         typer.echo("Installation des dépendances de la surface web…")
         subprocess.run([npm, "ci", "--prefix", str(web_root)], check=True)
+
+    typer.echo("Préparation de SearXNG…")
+    searxng = SearxngService()
+    try:
+        installed_searxng = searxng.prepare()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise KernelError(f"impossible de préparer SearXNG : {exc}") from exc
+    if installed_searxng:
+        typer.echo(f"  SearXNG installé et configuré sur {searxng.base_url}")
+    else:
+        typer.echo(f"  SearXNG existant réutilisé sur {searxng.base_url}")
+
     if not full:
         typer.echo("Vision locale optionnelle : amk setup --full")
         return

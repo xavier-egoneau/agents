@@ -84,6 +84,14 @@ class SearxngService:
         self._configure_ketch()
         return True
 
+    def installed(self) -> bool:
+        """Read-only check for diagnostics: no reconfiguration, no side effects."""
+        try:
+            state = json.loads(self.manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return state.get("revision") == SEARXNG_REVISION and self.python.is_file()
+
     def _ready(self) -> bool:
         try:
             state = json.loads(self.manifest.read_text(encoding="utf-8"))
