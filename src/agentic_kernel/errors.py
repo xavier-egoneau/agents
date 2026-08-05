@@ -16,4 +16,3 @@ class ModuleError(KernelError):
 
 class BudgetExceeded(KernelError):
     """A kernel-level orchestration budget was exhausted."""
-

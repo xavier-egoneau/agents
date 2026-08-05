@@ -1,0 +1,4 @@
+interface:
+  display_name: "Workflow Creator"
+  short_description: "Créer des workflows fiables pour les routines"
+  default_prompt: "Utilise $workflow-creator pour transformer cette routine en workflow explicite et vérifiable."

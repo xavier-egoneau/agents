@@ -1,0 +1,83 @@
+/* ============================================================================
+   THEME "midnight" — sombre integral, accent indigo.
+   Montre qu'un theme peut inverser toute la luminosite sans toucher au HTML.
+   ========================================================================== */
+
+[data-theme="midnight"] {
+  color-scheme: dark;
+
+  --surface-app: #0f1115;
+  --surface-panel: #171a20;
+  --surface-panel-alt: #1b1f26;
+  --surface-sunken: #22262e;
+  --surface-overlay: #191d24;
+  --surface-hover: #21262e;
+  --surface-active: #2a2f39;
+  --surface-selected: #1f2a3a;
+  --surface-scrim: #05070acc;
+
+  --surface-rail: #0b0d11;
+  --surface-rail-alt: #12151a;
+  --surface-rail-hover: #1e222a;
+  --surface-rail-active: #282e38;
+  --surface-dock: #0d1014;
+  --surface-dock-alt: #14171d;
+
+  --text-strong: #f2f4f8;
+  --text-default: #d7dbe2;
+  --text-muted: #8b93a1;
+  --text-faint: #666e7c;
+  --text-on-accent: #0b0d11;
+  --text-on-rail: #e8ebf1;
+  --text-on-rail-muted: #767e8c;
+  --text-on-dock: #dfe3ea;
+  --text-on-dock-muted: #7d8593;
+  --text-link: #7dd3fc;
+  --text-link-hover: #bae6fd;
+
+  --border-subtle: #23272f;
+  --border-default: #2e333d;
+  --border-strong: #454c58;
+  --border-rail: #1c2027;
+  --border-dock: #1c2027;
+
+  --accent: #818cf8;
+  --accent-hover: #6f7bf0;
+  --accent-active: #5f6be6;
+  --accent-soft: #262b45;
+  --accent-soft-text: #c3c9ff;
+  --accent-on-rail: #a5b4fc;
+
+  --success: #4ade80;
+  --success-soft: #16281d;
+  --success-text: #86efac;
+  --warning: #fbbf24;
+  --warning-soft: #2b2312;
+  --warning-text: #fcd34d;
+  --danger: #f87171;
+  --danger-hover: #ef4444;
+  --danger-soft: #2c1717;
+  --danger-text: #fca5a5;
+  --info: #60a5fa;
+  --info-soft: #16233a;
+  --info-text: #93c5fd;
+  --neutral-dot: #4b5563;
+
+  --diff-added: #4ade80;
+  --diff-removed: #f87171;
+
+  --btn-send-bg: #818cf8;
+  --btn-send-fg: #0b0d11;
+
+  --shadow-xs: 0 1px 2px #00000066;
+  --shadow-sm: 0 2px 8px #00000073;
+  --shadow-md: 0 8px 24px #00000080;
+  --shadow-lg: 0 18px 45px #00000099;
+  --shadow-xl: 0 28px 80px #000000b3;
+
+  --code-bg: #0c0f13;
+  --code-fg: #dfe3ea;
+  --code-border: #232830;
+  --inline-code-bg: #22262e;
+  --inline-code-fg: #d7dbe2;
+}

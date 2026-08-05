@@ -1,0 +1,20 @@
+{
+  "schema_version": 2,
+  "id": "http",
+  "name": "HTTP",
+  "description": "Appels HTTP(S) structurés, bornés et protégés contre le SSRF.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {
+      "name": "http_request",
+      "description": "Effectuer une requête HTTP(S) structurée avec redirections contrôlées.",
+      "category": "http",
+      "risk_tags": ["network", "external"],
+      "timeout_seconds": 120,
+      "cancellable": true
+    }
+  ],
+  "enabled": true
+}

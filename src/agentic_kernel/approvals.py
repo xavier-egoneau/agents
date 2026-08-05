@@ -3,15 +3,18 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from uuid import UUID
 
 from .models import ApprovalRequest
+from .platform.secure_files import secure_file
 
 
 class ApprovalStore:
     def __init__(self, sessions_root: Path) -> None:
         self.root = sessions_root / "pending"
+        self._lock = Lock()
 
     def save_state(self, approval: ApprovalRequest, state: dict[str, Any]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -21,8 +24,9 @@ class ApprovalStore:
             json.dumps({"approval": approval.model_dump(mode="json"), **state}, ensure_ascii=False),
             encoding="utf-8",
         )
-        temporary.chmod(0o600)
+        secure_file(temporary)
         os.replace(temporary, target)
+        secure_file(target)
 
     def load_state(self, approval_id: UUID) -> dict[str, Any] | None:
         path = self.path_for(approval_id)
@@ -30,16 +34,13 @@ class ApprovalStore:
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def remove(self, approval_id: UUID) -> None:
-        self.path_for(approval_id).unlink(missing_ok=True)
-
     def list_pending(self) -> list[ApprovalRequest]:
         if not self.root.exists():
             return []
         requests = []
         for path in sorted(self.root.glob("*.json")):
             try:
-                state = json.loads(path.read_text())
+                state = json.loads(path.read_text(encoding="utf-8"))
                 if "decision" in state:
                     continue
                 requests.append(ApprovalRequest.model_validate(state["approval"]))
@@ -64,6 +65,9 @@ class ApprovalStore:
     def path_for(self, approval_id: UUID) -> Path:
         return self.root / f"{approval_id}.json"
 
+    def remove(self, approval_id: UUID) -> None:
+        self.path_for(approval_id).unlink(missing_ok=True)
+
     def remove_for_session(self, session_id: UUID) -> None:
         if not self.root.exists():
             return
@@ -75,3 +79,61 @@ class ApprovalStore:
                 continue
             if approval.session_id == session_id:
                 path.unlink(missing_ok=True)
+
+    def resolve_many(self, approval_ids: list[UUID], approved: bool) -> list[dict[str, Any]]:
+        """Persist one batch as a single guarded filesystem transaction."""
+        with self._lock:
+            states: list[dict[str, Any]] = []
+            targets: list[Path] = []
+            for approval_id in approval_ids:
+                target = self.path_for(approval_id)
+                if not target.exists():
+                    raise ValueError(f"unknown pending approval: {approval_id}")
+                state = json.loads(target.read_text(encoding="utf-8"))
+                if "decision" in state:
+                    raise ValueError(f"approval already resolved: {approval_id}")
+                states.append(state)
+                targets.append(target)
+            approvals = [
+                ApprovalRequest.model_validate(state["approval"])
+                for state in states
+            ]
+            current = max(approvals, key=lambda item: item.created_at)
+            for candidate_path in self.root.glob("*.json"):
+                if candidate_path in targets:
+                    continue
+                try:
+                    candidate_state = json.loads(candidate_path.read_text(encoding="utf-8"))
+                    if "decision" in candidate_state:
+                        continue
+                    candidate = ApprovalRequest.model_validate(candidate_state["approval"])
+                except (OSError, ValueError, KeyError):
+                    continue
+                if (
+                    candidate.session_id == current.session_id
+                    and candidate.run_id != current.run_id
+                    and candidate.created_at > current.created_at
+                ):
+                    raise ValueError(
+                        "a newer approval batch exists for this session; reload before deciding"
+                    )
+            temporary: list[Path] = []
+            try:
+                for target, state in zip(targets, states, strict=True):
+                    candidate = target.with_suffix(".batch.tmp")
+                    candidate.write_text(
+                        json.dumps(
+                            {**state, "decision": approved},
+                            ensure_ascii=False,
+                        ),
+                        encoding="utf-8",
+                    )
+                    secure_file(candidate)
+                    temporary.append(candidate)
+                for candidate, target in zip(temporary, targets, strict=True):
+                    os.replace(candidate, target)
+                    secure_file(target)
+            finally:
+                for candidate in temporary:
+                    candidate.unlink(missing_ok=True)
+            return [{**state, "decision": approved} for state in states]

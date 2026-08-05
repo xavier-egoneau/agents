@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+          cache-dependency-path: surfaces/web/package-lock.json
+      - run: uv sync --extra dev --locked
+      - run: npm ci --prefix surfaces/web
+      - run: uv run playwright install chromium
+      - run: npx --prefix surfaces/web playwright install chromium
+      - run: uv run ruff check src tests tools/modules
+      - run: uv run pytest
+      - run: npm --prefix surfaces/web run lint
+      - run: npm --prefix surfaces/web run test:unit
+      - run: npm --prefix surfaces/web run test:e2e

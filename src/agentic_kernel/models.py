@@ -21,7 +21,10 @@ class BudgetConfig(BaseModel):
     max_depth: int = Field(default=5, ge=1, le=20)
     max_agent_runs: int = Field(default=24, ge=1, le=256)
     max_concurrency: int = Field(default=6, ge=1, le=64)
-    max_requests_per_agent: int = Field(default=20, ge=1, le=100)
+    # A tool-heavy implementation run can legitimately require dozens of
+    # model/tool round trips. This limit applies to one run, not to the number
+    # of messages that a durable session may contain.
+    max_requests_per_agent: int = Field(default=100, ge=1, le=500)
     session_timeout_seconds: float = Field(default=1800, gt=0, le=86400)
     child_timeout_seconds: float = Field(default=600, gt=0, le=86400)
     retries: int = Field(default=2, ge=0, le=10)
@@ -43,6 +46,26 @@ class ProviderConfig(BaseModel):
     api_key: str | None = None
     api_key_env: str | None = None
     timeout_seconds: float = Field(default=120, gt=0)
+    vision: bool = False
+
+    # A llama.cpp provider with ``models_dir`` is managed by AMK. Providers
+    # with only ``base_url``/``port`` remain compatible with external servers.
+    models_dir: str | None = None
+    server_binary: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
+    n_gpu_layers: int | None = None
+    num_ctx: int | None = Field(default=None, gt=0)
+    threads: int | None = Field(default=None, gt=0)
+    parallel: int | None = Field(default=None, gt=0)
+    batch_size: int | None = Field(default=None, gt=0)
+    ubatch_size: int | None = Field(default=None, gt=0)
+    flash_attn: bool | None = None
+    startup_timeout_seconds: int | None = Field(default=None, gt=0, le=1800)
+    llama_args: list[str] = Field(default_factory=list)
+    temperature: float | None = Field(default=None, ge=0)
+    top_k: int | None = Field(default=None, ge=0)
+    top_p: float | None = Field(default=None, ge=0, le=1)
+    num_predict: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def infer_connection(self) -> ProviderConfig:
@@ -82,6 +105,7 @@ class AgentConfig(BaseModel):
     model: str | None = None
     modules: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
+    user_memory: bool = False
     declared_tools: list[str] = Field(default_factory=list)
     delegates: list[str] = Field(default_factory=list)
     budgets: BudgetConfig | None = None
@@ -110,6 +134,8 @@ class ToolRisk(StrEnum):
     SECRET = "secret"
     EXTERNAL = "external"
     SYSTEM = "system"
+    EXECUTE = "execute"
+    SCREEN = "screen"
 
 
 class ToolDescriptor(BaseModel):
@@ -117,7 +143,88 @@ class ToolDescriptor(BaseModel):
 
     name: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
     description: str
+    category: str = "general"
     risk_tags: list[ToolRisk] = Field(default_factory=list)
+    path_parameters: list[str] = Field(default_factory=list)
+    url_parameters: list[str] = Field(default_factory=list)
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    cancellable: bool = False
+    persistent: bool = False
+
+
+class ModuleConfigField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    label: str
+    type: Literal[
+        "text", "secret", "file", "directory", "integer", "number",
+        "boolean", "select", "string_list",
+    ]
+    description: str | None = None
+    required: bool = False
+    default: Any = None
+    secret_name: str | None = None
+    options: list[str] = Field(default_factory=list)
+    minimum: float | None = None
+    maximum: float | None = None
+
+    @model_validator(mode="after")
+    def validate_field_contract(self) -> ModuleConfigField:
+        if self.type == "secret" and not self.secret_name:
+            raise ValueError("secret fields require secret_name")
+        if self.type != "secret" and self.secret_name:
+            raise ValueError("secret_name is reserved for secret fields")
+        if self.type == "select" and not self.options:
+            raise ValueError("select fields require options")
+        return self
+
+
+class ModuleConfiguration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    description: str | None = None
+    applies_to: list[str] = Field(default_factory=list)
+    fields: list[ModuleConfigField] = Field(min_length=1)
+    legacy_file: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9._-]+\.json$")
+
+    @model_validator(mode="after")
+    def validate_unique_fields(self) -> ModuleConfiguration:
+        names = [field.name for field in self.fields]
+        if len(names) != len(set(names)):
+            raise ValueError("module configuration field names must be unique")
+        return self
+
+
+class ToolError(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str
+    message: str
+    retryable: bool = False
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolResult(BaseModel):
+    """Framework-independent result contract shared by every executable tool."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    data: Any = None
+    error: ToolError | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_error_state(self) -> ToolResult:
+        if self.ok and self.error is not None:
+            raise ValueError("a successful tool result cannot contain an error")
+        if not self.ok and self.error is None:
+            raise ValueError("a failed tool result must contain an error")
+        return self
 
 
 class ModuleManifest(BaseModel):
@@ -131,13 +238,26 @@ class ModuleManifest(BaseModel):
     entrypoint: str
     capabilities: list[Literal["tools", "instructions", "hooks", "config"]]
     tools: list[ToolDescriptor] = Field(default_factory=list)
+    config: ModuleConfiguration | None = None
     enabled: bool = True
+
+    @model_validator(mode="after")
+    def validate_configuration_capability(self) -> ModuleManifest:
+        configurable = "config" in self.capabilities
+        if configurable != (self.config is not None):
+            raise ValueError("capability `config` and the config schema must be declared together")
+        if self.config:
+            tools = {tool.name for tool in self.tools}
+            unknown = set(self.config.applies_to) - tools
+            if unknown:
+                raise ValueError(f"config applies_to references unknown tools: {sorted(unknown)}")
+        return self
 
 
 class ModuleIndex(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: int = 1
+    schema_version: int = 2
     modules: list[ModuleManifest]
 
 
@@ -184,6 +304,8 @@ class ApprovalRequest(BaseModel):
     action_family: str
     path: str | None = None
     justification: str
+    tool_description: str = ""
+    arguments: dict[str, Any] = Field(default_factory=dict)
     risks: list[ToolRisk] = Field(default_factory=list)
     reason: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -225,6 +347,17 @@ class RunRequest(BaseModel):
     model: str | None = None
     reasoning: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None
     images: list[ImageAttachment] = Field(default_factory=list)
+    trigger: Literal[
+        "user", "resume", "cron", "cron_resume", "cron_test", "telegram"
+    ] = "user"
+    hidden: bool = False
+    cron_job_id: str | None = None
+    cron_occurrence_id: str | None = None
+    workflow: dict[str, Any] | None = None
+    # ``None`` preserves the historical unrestricted tool selection. An empty
+    # list deliberately exposes no module tool, while a non-empty list is an
+    # exact runtime allowlist.
+    tool_allowlist: list[str] | None = None
 
 
 class RunError(BaseModel):
@@ -232,6 +365,14 @@ class RunError(BaseModel):
     message: str
     retryable: bool = False
     attempt: int = 0
+
+
+class RunArtifact(BaseModel):
+    artifact_id: str
+    name: str
+    media_type: str
+    kind: str = "file"
+    bytes: int | None = None
 
 
 class RunResult(BaseModel):
@@ -242,12 +383,14 @@ class RunResult(BaseModel):
     output: str | None = None
     errors: list[RunError] = Field(default_factory=list)
     usage: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[RunArtifact] = Field(default_factory=list)
 
 
 class Event(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = 1
+    event_id: UUID = Field(default_factory=uuid4)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     session_id: UUID
     run_id: UUID

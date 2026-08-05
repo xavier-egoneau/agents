@@ -1,58 +1,42 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-import shutil
-import subprocess
-import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .auth import OAuthManager
 from .config import ProjectConfig
 from .errors import AuthenticationError, ConfigurationError
+from .git_service import GitService
 from .kernel import Kernel
-from .models import (
-    ApprovalRequest,
-    ImageAttachment,
-    ProviderRegistry,
-    RunRequest,
-    RunResult,
-    SecurityMode,
-)
+from .models import Event, RunError, RunRequest, RunResult, RunStatus
+from .platform.dialogs import NativeDialogUnavailable, choose_directory
 from .providers import ProviderFactory
-
-
-class WebRunRequest(BaseModel):
-    prompt: str = Field(min_length=1)
-    agent_id: str = "main"
-    skills: list[str] = Field(default_factory=list)
-    workspace: Path | None = None
-    security_mode: SecurityMode = SecurityMode.LIMITED
-    session_id: UUID = Field(default_factory=uuid4)
-    provider_id: str | None = None
-    model: str | None = None
-    reasoning: str | None = Field(default=None, pattern=r"^(minimal|low|medium|high|xhigh)$")
-    images: list[ImageAttachment] = Field(default_factory=list, max_length=4)
-
-
-class ApprovalResolveBody(BaseModel):
-    approved: bool
-
-
-class ApprovalBatchResolveBody(BaseModel):
-    approval_ids: list[str] = Field(min_length=1)
-    approved: bool
-
-
-class SecurityModeBody(BaseModel):
-    security_mode: SecurityMode
+from .routers.approvals import create_approval_router
+from .routers.artifacts import create_artifact_router
+from .routers.crons import _validate_stored_workflow, create_cron_router
+from .routers.files import create_files_router
+from .routers.git import create_git_router
+from .routers.plans import create_plan_router
+from .routers.resources import create_resource_router
+from .routers.runs import create_run_router
+from .routers.sessions import create_session_router
+from .scheduler import (
+    ROUTINE_INBOX_SESSION_ID,
+    CronJobInput,
+    CronScheduler,
+    CronService,
+    SchedulerError,
+)
+from .searxng import SearxngService
+from .session_lifecycle import SessionLifecycle
+from .telegram import TelegramConfigStore, TelegramSupervisor
+from .workflows import WorkflowProposalService
 
 
 class WorkspaceRequest(BaseModel):
@@ -64,16 +48,6 @@ class WorkspaceInfo(BaseModel):
     name: str
     readable: bool
     writable: bool
-
-
-class MarkdownResourceBody(BaseModel):
-    id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$")
-    content: str = Field(min_length=1)
-
-
-class ProviderResourceBody(BaseModel):
-    id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$")
-    config: dict[str, object]
 
 
 def _message_text(value: object) -> str:
@@ -91,80 +65,328 @@ def _message_text(value: object) -> str:
 
 
 def _session_messages(events: list) -> list[dict[str, object]]:
-    """Return the complete visible conversation from the latest model snapshot."""
-    snapshot_index = -1
-    raw_messages: list[dict[str, object]] = []
-    for index, event in enumerate(events):
-        if event.type == "messages.snapshot":
-            candidate = event.payload.get("messages")
-            if isinstance(candidate, list):
-                snapshot_index = index
-                raw_messages = candidate
+    """Reconstruct visible turns, preserving their root run identity."""
+    starts = [event for event in events if event.type == "session.started"]
+    completions: dict[str, object] = {}
+    artifacts: dict[str, list[dict[str, object]]] = {}
+    for event in events:
+        if event.type == "session.completed":
+            completions[str(event.run_id)] = event
+        elif event.type == "artifact.created":
+            artifacts.setdefault(str(event.run_id), []).append(
+                {
+                    key: event.payload.get(key)
+                    for key in ("artifact_id", "name", "media_type", "kind", "bytes")
+                }
+            )
 
     visible: list[dict[str, object]] = []
-    for raw in raw_messages:
-        if not isinstance(raw, dict):
+    for started in starts:
+        run_id = str(started.run_id)
+        prompt = _message_text(started.payload.get("prompt"))
+        if prompt:
+            visible.append({"role": "user", "content": prompt, "run_id": run_id})
+        completed = completions.get(run_id)
+        if completed is None:
             continue
-        kind = raw.get("kind")
-        for part in raw.get("parts", []):
-            if not isinstance(part, dict):
-                continue
-            part_kind = part.get("part_kind")
-            if kind == "request" and part_kind == "user-prompt":
-                content = _message_text(part.get("content"))
-                if content:
-                    visible.append({"role": "user", "content": content})
-            elif (
-                kind == "response"
-                and part_kind == "text"
-                and raw.get("finish_reason") != "tool_call"
-            ):
-                content = _message_text(part.get("content"))
-                if content:
-                    visible.append({"role": "assistant", "content": content})
-
-    # Preserve turns that failed before Pydantic AI could produce a new snapshot.
-    pending_prompt = False
-    for event in events[snapshot_index + 1 :]:
-        if event.type == "session.started":
-            content = _message_text(event.payload.get("prompt"))
-            if content:
-                visible.append({"role": "user", "content": content})
-                pending_prompt = True
-        elif event.type == "session.completed" and pending_prompt:
-            output = _message_text(event.payload.get("output"))
-            errors = event.payload.get("errors", [])
-            if not output and isinstance(errors, list):
-                output = "\n".join(
-                    str(item.get("message", ""))
-                    for item in errors
-                    if isinstance(item, dict) and item.get("message")
-                )
-            if output:
-                visible.append({
+        output = _message_text(completed.payload.get("output"))
+        errors = completed.payload.get("errors", [])
+        if not output and isinstance(errors, list):
+            output = "\n".join(
+                str(item.get("message", ""))
+                for item in errors
+                if isinstance(item, dict) and item.get("message")
+            )
+        if output:
+            visible.append(
+                {
                     "role": "assistant",
                     "content": output,
-                    "error": event.payload.get("status") in {"failed", "timeout"},
-                })
-            pending_prompt = False
+                    "run_id": run_id,
+                    "error": completed.payload.get("status") in {"failed", "timeout"},
+                    "artifacts": artifacts.get(run_id, []),
+                }
+            )
     return visible
 
 
-def create_app(root: Path | str = ".") -> FastAPI:
+def create_app(
+    root: Path | str = ".",
+    default_workspace: Path | str | None = None,
+    *,
+    local_services: bool = False,
+) -> FastAPI:
     project = ProjectConfig(root)
+    workspace_root = Path(default_workspace or project.root).expanduser().resolve()
     kernel = Kernel(root)
+    git_service = GitService()
     running_tasks: dict[UUID, asyncio.Task[RunResult]] = {}
-    app = FastAPI(title="Agentic Markdown Kernel", version="0.1.0")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-        allow_methods=["GET", "POST"],
-        allow_headers=["content-type"],
+    cron_service = CronService(project.content_root / "state.db")
+    telegram_store = TelegramConfigStore(project.content_root)
+    session_lifecycle = SessionLifecycle(kernel, project.content_root / "state.db")
+    searxng = SearxngService() if local_services else None
+    cron_service.import_legacy_once(
+        project.content_root / "agents" / "crons.json", workspace_root
+    )
+    cron_service.repair_orphaned_blocks(
+        {item.session_id for item in kernel.list_approvals()}
+    )
+    routine_inbox = kernel.events.projection.session(ROUTINE_INBOX_SESSION_ID)
+    if routine_inbox is None or routine_inbox.get("trigger") != "routine_inbox":
+        kernel.events.append(
+            Event(
+                session_id=ROUTINE_INBOX_SESSION_ID,
+                run_id=uuid4(),
+                agent_id="main",
+                type="routine.inbox.created",
+                payload={"prompt": "Routines"},
+            )
+        )
+
+    def deliver_cron_result(request: RunRequest, result: RunResult) -> None:
+        if (
+            request.trigger not in {"cron", "cron_resume"}
+            or not request.cron_job_id
+            or result.status == RunStatus.APPROVAL_PENDING
+        ):
+            return
+        job = cron_service.get(request.cron_job_id)
+        target = job.notification_session_id
+        if kernel.events.projection.session(target) is None:
+            target = ROUTINE_INBOX_SESSION_ID
+        error_text = "\n".join(item.message for item in result.errors)
+        content = result.output or error_text or f"Routine « {job.name} » terminée."
+        kernel.events.append(
+            Event(
+                session_id=target,
+                run_id=result.run_id,
+                agent_id=job.agent_id,
+                type="routine.notification",
+                payload={
+                    "cron_job_id": job.id,
+                    "name": job.name,
+                    "status": result.status.value,
+                    "content": f"{job.name}\n\n{content}",
+                    "execution_session_id": str(result.session_id),
+                },
+            )
+        )
+
+    def validate_cron_request(request: RunRequest) -> None:
+        if request.cron_job_id:
+            _validate_stored_workflow(cron_service.get(request.cron_job_id), kernel)
+
+    def with_routine_conversation(request: RunRequest) -> RunRequest:
+        """Bring replies made in the delivery session back into the next run.
+
+        Routine executions keep their own durable session for approvals and tool
+        traces, while results may be displayed in another conversation. Without
+        this bridge, a reply visible below a routine result was silently absent
+        from the routine's next model context.
+        """
+        if request.trigger not in {"cron", "cron_test"} or not request.cron_job_id:
+            return request
+        job = cron_service.get(request.cron_job_id)
+        if job.notification_session_id == job.session_id:
+            return request
+        events = kernel.events.read(job.notification_session_id)
+        last_delivery = -1
+        for index, event in enumerate(events):
+            if (
+                event.type == "routine.notification"
+                and event.payload.get("cron_job_id") == job.id
+            ):
+                last_delivery = index
+        replies = [
+            _message_text(event.payload.get("prompt"))
+            for event in events[last_delivery + 1 :]
+            if event.type == "session.started"
+            and event.payload.get("trigger", "user") == "user"
+        ]
+        replies = [item for item in replies if item]
+        if not replies:
+            return request
+        context = "\n\n".join(f"Utilisateur : {item}" for item in replies[-8:])
+        return request.model_copy(
+            update={
+                "prompt": (
+                    f"{request.prompt}\n\n"
+                    "Contexte récent de la conversation de destination :\n"
+                    f"{context}"
+                )
+            }
+        )
+
+    async def launch(request: RunRequest) -> RunResult:
+        if request.session_id in running_tasks:
+            raise SchedulerError(f"Un run est déjà actif pour la session {request.session_id}")
+        validate_cron_request(request)
+        request = with_routine_conversation(request)
+        task = asyncio.create_task(kernel.run(request))
+        running_tasks[request.session_id] = task
+        try:
+            result = await task
+            if request.trigger.startswith("cron") and result.status == RunStatus.SUCCESS:
+                tool_failures = [
+                    event
+                    for event in kernel.events.read(request.session_id)
+                    if event.run_id == result.run_id and event.type == "tool.failed"
+                ]
+                if tool_failures:
+                    result = result.model_copy(
+                        update={
+                            "status": RunStatus.PARTIAL,
+                            "errors": [
+                                *result.errors,
+                                RunError(
+                                    type="tool",
+                                    message=(
+                                        f"{len(tool_failures)} outil(s) ont échoué pendant "
+                                        "l’automatisation"
+                                    ),
+                                    retryable=False,
+                                ),
+                            ],
+                        }
+                    )
+            deliver_cron_result(request, result)
+            return result
+        finally:
+            running_tasks.pop(request.session_id, None)
+
+    scheduler = CronScheduler(cron_service, launch)
+
+    async def resolve_telegram_approvals(
+        approval_ids: list[UUID], approved: bool
+    ) -> RunResult:
+        if not approval_ids:
+            raise ConfigurationError("aucune autorisation Telegram à traiter")
+        state = kernel.approvals.load_state(approval_ids[0])
+        if state is None:
+            raise ConfigurationError("autorisation Telegram introuvable ou déjà traitée")
+        request = RunRequest.model_validate(state["request"])
+        if request.trigger != "telegram":
+            raise ConfigurationError("cette autorisation n’appartient pas à Telegram")
+        if request.session_id in running_tasks:
+            raise ConfigurationError("une résolution est déjà en cours")
+        task = asyncio.create_task(kernel.resolve_approval_batch(approval_ids, approved))
+        running_tasks[request.session_id] = task
+        try:
+            return await task
+        finally:
+            running_tasks.pop(request.session_id, None)
+
+    def clear_telegram_session(session_id: UUID) -> bool:
+        if session_id in running_tasks:
+            raise ConfigurationError("un run est encore en cours")
+        session = kernel.events.projection.session(session_id)
+        if session is not None and session.get("trigger") != "telegram":
+            raise ConfigurationError("cette session n’appartient pas à Telegram")
+        return session_lifecycle.delete(session_id)
+
+    telegram = TelegramSupervisor(
+        telegram_store,
+        lambda: set(project.agents()),
+        launch,
+        kernel.list_approvals,
+        resolve_telegram_approvals,
+        clear_telegram_session,
     )
 
+    def workflow_proposal_service(payload: CronJobInput) -> WorkflowProposalService:
+        agents = project.agents()
+        agent = agents.get(payload.agent_id)
+        if agent is None:
+            raise ConfigurationError(f"unknown agent: {payload.agent_id}")
+        skills = project.skills(payload.workspace)
+        creator = skills.get("workflow-creator")
+        if creator is None:
+            raise ConfigurationError(
+                "Le skill workflow-creator doit être installé pour proposer un workflow"
+            )
+        provider_id = payload.provider_id or agent.provider
+        model = ProviderFactory(
+            project.providers(),
+            runtime_dir=project.content_root / "runtime" / "providers",
+        ).build(
+            provider_id,
+            payload.model or agent.model,
+        )
+        return WorkflowProposalService(
+            model,
+            workflow_creator=creator.instructions,
+        )
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        if searxng is not None:
+            await searxng.start()
+        scheduler_task = asyncio.create_task(
+            scheduler.run_forever(),
+            name="amk-cron-scheduler",
+        )
+        telegram_task = asyncio.create_task(
+            telegram.run_forever(),
+            name="amk-telegram-supervisor",
+        )
+        try:
+            yield
+        finally:
+            for task in (scheduler_task, telegram_task):
+                task.cancel()
+            await asyncio.gather(scheduler_task, telegram_task, return_exceptions=True)
+            if searxng is not None:
+                await searxng.stop()
+
+    app = FastAPI(
+        title="Agentic Markdown Kernel",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^http://(?:localhost|127\.0\.0\.1):\d+$",
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        allow_headers=["content-type"],
+    )
+    app.include_router(create_run_router(kernel, running_tasks, launch))
+    app.include_router(
+        create_cron_router(
+            cron_service,
+            scheduler,
+            launch,
+            kernel,
+            workflow_proposal_service,
+        )
+    )
+    app.include_router(create_artifact_router(kernel))
+    app.include_router(create_resource_router(project, telegram_store))
+    app.include_router(create_git_router(project, git_service))
+    app.include_router(create_files_router())
+
     @app.get("/api/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> dict[str, object]:
+        return {"status": "ok", "scheduler": cron_service.scheduler_status()}
+
+    @app.get("/api/context-status")
+    async def context_status(
+        session_id: UUID | None = None,
+        provider_id: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, object]:
+        registry = project.providers()
+        resolved_provider = provider_id or registry.default_provider
+        provider = next(
+            (item for item in registry.providers if item.id == resolved_provider),
+            None,
+        )
+        if provider is None:
+            raise HTTPException(status_code=404, detail="Provider introuvable")
+        return kernel.context_status(
+            session_id=session_id,
+            provider_id=resolved_provider,
+            model_name=model or provider.model,
+        )
 
     def workspace_info(raw_path: str | Path) -> WorkspaceInfo:
         import os
@@ -191,7 +413,7 @@ def create_app(root: Path | str = ".") -> FastAPI:
 
     @app.get("/api/workspaces/current", response_model=WorkspaceInfo)
     async def current_workspace() -> WorkspaceInfo:
-        return workspace_info(project.root)
+        return workspace_info(workspace_root)
 
     @app.post("/api/workspaces/validate", response_model=WorkspaceInfo)
     async def validate_workspace(payload: WorkspaceRequest) -> WorkspaceInfo:
@@ -205,34 +427,13 @@ def create_app(root: Path | str = ".") -> FastAPI:
         local application, so the kernel opens the OS picker and returns the
         selected path instead.
         """
-        if sys.platform != "darwin":
-            raise HTTPException(
-                status_code=501,
-                detail="Le sélecteur natif de dossier est actuellement disponible sur macOS.",
-            )
 
         def choose() -> str:
-            result = subprocess.run(
-                [
-                    "osascript",
-                    "-e",
-                    'POSIX path of (choose folder with prompt "Choisir un projet pour AMK")',
-                ],
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=300,
-            )
-            if result.returncode != 0:
-                # -128 is the normal AppleScript cancellation error.
-                if "User canceled" in result.stderr or "-128" in result.stderr:
-                    return ""
-                raise RuntimeError(result.stderr.strip() or "Sélecteur de dossier indisponible")
-            return result.stdout.strip()
+            return choose_directory("Choisir un projet pour AMK")
 
         try:
             selected = await asyncio.to_thread(choose)
-        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        except (OSError, NativeDialogUnavailable) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         if not selected:
             raise HTTPException(status_code=409, detail="Sélection annulée")
@@ -283,14 +484,29 @@ def create_app(root: Path | str = ".") -> FastAPI:
                 if module.enabled
                 for tool in module.tools
             ],
+            "configurable_modules": [
+                {"id": module.id, "name": module.name}
+                for module in kernel.module_registry.discover().modules
+                if module.enabled and module.config is not None
+            ],
         }
+
+    @app.get("/api/commands")
+    async def commands(workspace: str | None = None) -> list[dict[str, str]]:
+        selected = workspace_info(workspace).path if workspace else str(workspace_root)
+        return project.commands(selected)
+
+    app.include_router(
+        create_plan_router(project.content_root / "state.db", kernel.events)
+    )
 
     @app.get("/api/providers/{provider_id}/models")
     async def provider_models(provider_id: str) -> dict[str, object]:
         try:
-            models, source, error = await ProviderFactory(project.providers()).list_models(
-                provider_id
-            )
+            models, source, error = await ProviderFactory(
+                project.providers(),
+                runtime_dir=project.content_root / "runtime" / "providers",
+            ).list_models(provider_id)
         except ConfigurationError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"provider_id": provider_id, "models": models, "source": source, "error": error}
@@ -325,415 +541,20 @@ def create_app(root: Path | str = ".") -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"provider_id": provider_id, "connected": False}
 
-    def atomic_markdown_write(target: Path, content: str, validate) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        previous = target.read_bytes() if target.exists() else None
-        temporary = target.with_suffix(target.suffix + ".tmp")
-        temporary.write_text(content.rstrip() + "\n", encoding="utf-8")
-        os.replace(temporary, target)
-        try:
-            validate()
-        except Exception:
-            if previous is None:
-                target.unlink(missing_ok=True)
-            else:
-                rollback = target.with_suffix(target.suffix + ".rollback")
-                rollback.write_bytes(previous)
-                os.replace(rollback, target)
-            raise
-
-    @app.get("/api/admin/agents")
-    async def admin_agents() -> list[dict[str, str]]:
-        managed_root = (project.content_root / "agents").resolve()
-        return [
-            {
-                "id": agent.id,
-                "description": agent.description,
-                "content": Path(agent.source).read_text(encoding="utf-8"),
-            }
-            for agent in project.agents().values()
-            if Path(agent.source).resolve().parent == managed_root
-        ]
-
-    @app.post("/api/admin/agents")
-    async def create_agent(payload: MarkdownResourceBody) -> dict[str, str]:
-        target = project.content_root / "agents" / f"{payload.id}.md"
-        if target.exists():
-            raise HTTPException(status_code=409, detail=f"L’agent {payload.id} existe déjà")
-        try:
-            atomic_markdown_write(
-                target,
-                payload.content,
-                lambda: _validate_managed_agent(project, payload.id, target),
-            )
-        except ConfigurationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"id": payload.id, "status": "created"}
-
-    @app.put("/api/admin/agents/{agent_id}")
-    async def update_agent(agent_id: str, payload: MarkdownResourceBody) -> dict[str, str]:
-        if payload.id != agent_id:
-            raise HTTPException(status_code=422, detail="Le renommage d’un agent n’est pas implicite")
-        target = project.content_root / "agents" / f"{agent_id}.md"
-        if not target.exists():
-            raise HTTPException(status_code=404, detail="Agent introuvable")
-        try:
-            atomic_markdown_write(
-                target,
-                payload.content,
-                lambda: _validate_managed_agent(project, agent_id, target),
-            )
-        except ConfigurationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"id": agent_id, "status": "updated"}
-
-    @app.delete("/api/admin/agents/{agent_id}")
-    async def delete_agent(agent_id: str) -> dict[str, str]:
-        if agent_id == "main":
-            raise HTTPException(status_code=403, detail="L’agent main ne peut pas être supprimé")
-        agents = project.agents()
-        references = [agent.id for agent in agents.values() if agent_id in agent.delegates]
-        if references:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Agent encore référencé par : {', '.join(references)}",
-            )
-        target = project.content_root / "agents" / f"{agent_id}.md"
-        if not target.exists():
-            raise HTTPException(status_code=404, detail="Agent introuvable")
-        target.unlink()
-        (project.content_root / "agents" / f"{agent_id}.tools-disabled.json").unlink(
-            missing_ok=True
+    app.include_router(
+        create_session_router(kernel, running_tasks, project.content_root / "state.db")
+    )
+    app.include_router(
+        create_approval_router(
+            kernel,
+            running_tasks,
+            cron_service,
+            deliver_cron_result,
+            validate_cron_request,
         )
-        return {"id": agent_id, "status": "deleted"}
-
-    @app.get("/api/admin/skills")
-    async def admin_skills() -> list[dict[str, str]]:
-        return [
-            {
-                "id": skill.name,
-                "description": skill.description,
-                "content": Path(skill.source).read_text(encoding="utf-8"),
-            }
-            for skill in project.skills().values()
-        ]
-
-    @app.post("/api/admin/skills")
-    async def create_skill(payload: MarkdownResourceBody) -> dict[str, str]:
-        target = project.content_root / "skills" / payload.id / "SKILL.md"
-        if target.exists():
-            raise HTTPException(status_code=409, detail=f"La skill {payload.id} existe déjà")
-        try:
-            atomic_markdown_write(
-                target,
-                payload.content,
-                lambda: _validate_managed_skill(project, payload.id, target),
-            )
-            project.build_skills_index()
-        except ConfigurationError as exc:
-            if target.parent.exists() and not any(target.parent.iterdir()):
-                target.parent.rmdir()
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"id": payload.id, "status": "created"}
-
-    @app.put("/api/admin/skills/{skill_id}")
-    async def update_skill(skill_id: str, payload: MarkdownResourceBody) -> dict[str, str]:
-        if payload.id != skill_id:
-            raise HTTPException(status_code=422, detail="Le renommage d’une skill n’est pas implicite")
-        target = project.content_root / "skills" / skill_id / "SKILL.md"
-        if not target.exists():
-            raise HTTPException(status_code=404, detail="Skill introuvable")
-        try:
-            atomic_markdown_write(
-                target,
-                payload.content,
-                lambda: _validate_managed_skill(project, skill_id, target),
-            )
-            project.build_skills_index()
-        except ConfigurationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"id": skill_id, "status": "updated"}
-
-    @app.delete("/api/admin/skills/{skill_id}")
-    async def delete_skill(skill_id: str) -> dict[str, str]:
-        references = [
-            agent.id for agent in project.agents().values() if skill_id in agent.skills
-        ]
-        if references:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Skill encore référencée par : {', '.join(references)}",
-            )
-        target = project.content_root / "skills" / skill_id
-        if not (target / "SKILL.md").exists():
-            raise HTTPException(status_code=404, detail="Skill introuvable")
-        shutil.rmtree(target)
-        project.build_skills_index()
-        return {"id": skill_id, "status": "deleted"}
-
-    def provider_document() -> dict[str, object]:
-        return json.loads(
-            (project.content_root / "providers.json").read_text(encoding="utf-8")
-        )
-
-    def save_provider_document(document: dict[str, object]) -> None:
-        ProviderRegistry.model_validate(document)
-        target = project.content_root / "providers.json"
-        temporary = target.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(document, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, target)
-
-    @app.get("/api/admin/providers")
-    async def admin_providers() -> dict[str, object]:
-        document = provider_document()
-        sanitized = []
-        for raw in document.get("providers", []):
-            if not isinstance(raw, dict):
-                continue
-            item = dict(raw)
-            item["api_key_configured"] = bool(item.get("api_key"))
-            item["api_key"] = ""
-            sanitized.append(item)
-        return {
-            "default_provider": document.get("default_provider"),
-            "providers": sanitized,
-        }
-
-    @app.post("/api/admin/providers")
-    async def create_provider(payload: ProviderResourceBody) -> dict[str, str]:
-        document = provider_document()
-        providers = document.get("providers", [])
-        if not isinstance(providers, list):
-            raise HTTPException(status_code=422, detail="Registre providers invalide")
-        if any(isinstance(item, dict) and item.get("id") == payload.id for item in providers):
-            raise HTTPException(status_code=409, detail="Provider déjà existant")
-        config = {**payload.config, "id": payload.id}
-        config.pop("api_key_configured", None)
-        providers.append(config)
-        try:
-            save_provider_document(document)
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"id": payload.id, "status": "created"}
-
-    @app.put("/api/admin/providers/{provider_id}")
-    async def update_provider(
-        provider_id: str, payload: ProviderResourceBody
-    ) -> dict[str, str]:
-        if payload.id != provider_id:
-            raise HTTPException(status_code=422, detail="Le renommage n’est pas implicite")
-        document = provider_document()
-        providers = document.get("providers", [])
-        for index, existing in enumerate(providers):
-            if isinstance(existing, dict) and existing.get("id") == provider_id:
-                update = dict(payload.config)
-                update.pop("api_key_configured", None)
-                if not update.get("api_key"):
-                    update["api_key"] = existing.get("api_key")
-                providers[index] = {**existing, **update, "id": provider_id}
-                break
-        else:
-            raise HTTPException(status_code=404, detail="Provider introuvable")
-        try:
-            save_provider_document(document)
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"id": provider_id, "status": "updated"}
-
-    @app.delete("/api/admin/providers/{provider_id}")
-    async def delete_provider(provider_id: str) -> dict[str, str]:
-        document = provider_document()
-        if document.get("default_provider") == provider_id:
-            raise HTTPException(
-                status_code=409, detail="Le provider par défaut ne peut pas être supprimé"
-            )
-        references = [
-            agent.id for agent in project.agents().values() if agent.provider == provider_id
-        ]
-        if references:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Provider encore utilisé par : {', '.join(references)}",
-            )
-        providers = document.get("providers", [])
-        remaining = [
-            item for item in providers
-            if not isinstance(item, dict) or item.get("id") != provider_id
-        ]
-        if len(remaining) == len(providers):
-            raise HTTPException(status_code=404, detail="Provider introuvable")
-        document["providers"] = remaining
-        save_provider_document(document)
-        return {"id": provider_id, "status": "deleted"}
-
-    @app.post("/api/runs", response_model=RunResult)
-    async def run_agent(payload: WebRunRequest) -> RunResult:
-        task = asyncio.create_task(kernel.run(
-            RunRequest(
-                prompt=payload.prompt,
-                agent_id=payload.agent_id,
-                skills=payload.skills,
-                workspace=payload.workspace or project.root,
-                security_mode=payload.security_mode,
-                session_id=payload.session_id,
-                provider_id=payload.provider_id,
-                model=payload.model,
-                reasoning=payload.reasoning,
-                images=payload.images,
-            )
-        ))
-        running_tasks[payload.session_id] = task
-        try:
-            return await task
-        finally:
-            running_tasks.pop(payload.session_id, None)
-
-    @app.post("/api/runs/{session_id}/cancel")
-    async def cancel_run(session_id: UUID) -> dict[str, str]:
-        task = running_tasks.get(session_id)
-        if task is None or task.done():
-            raise HTTPException(status_code=404, detail="Aucun run actif pour cette session")
-        task.cancel()
-        return {"status": "cancelling", "session_id": str(session_id)}
-
-    @app.post("/api/runs/{session_id}/security")
-    async def change_run_security(session_id: UUID, payload: SecurityModeBody) -> dict[str, str]:
-        if not kernel.set_security_mode(session_id, payload.security_mode):
-            raise HTTPException(status_code=404, detail="Aucun run actif pour cette session")
-        return {"status": "updated", "security_mode": payload.security_mode.value}
-
-    def session_payload(session_id: UUID) -> dict[str, object]:
-        events = kernel.events.read(session_id)
-        if not events:
-            raise HTTPException(status_code=404, detail="Session not found")
-        started = next((event for event in events if event.type == "session.started"), events[0])
-        completions = [event for event in events if event.type == "session.completed"]
-        latest = completions[-1].payload if completions else {}
-        messages = _session_messages(events)
-        return {
-            "session_id": str(session_id),
-            "agent_id": started.agent_id,
-            "prompt": started.payload.get("prompt", ""),
-            "workspace": started.payload.get("workspace"),
-            "created_at": started.timestamp.isoformat(),
-            "updated_at": events[-1].timestamp.isoformat(),
-            "status": latest.get("status", "running"),
-            "output": latest.get("output"),
-            "errors": latest.get("errors", []),
-            "event_count": len(events),
-            "messages": messages,
-            "events": [event.model_dump(mode="json") for event in events],
-        }
-
-    @app.get("/api/sessions")
-    async def list_sessions(workspace: str | None = None) -> list[dict[str, object]]:
-        sessions: list[dict[str, object]] = []
-        for session_id in kernel.events.list_session_ids():
-            payload = session_payload(session_id)
-            if workspace is None or payload["workspace"] == str(Path(workspace).expanduser().resolve()):
-                sessions.append({
-                    key: value
-                    for key, value in payload.items()
-                    if key not in {"events", "messages"}
-                })
-        return sessions
-
-    @app.get("/api/sessions/{session_id}")
-    async def get_session(session_id: UUID) -> dict[str, object]:
-        return session_payload(session_id)
-
-    @app.delete("/api/sessions/{session_id}")
-    async def delete_session(session_id: UUID) -> dict[str, str]:
-        if session_id in running_tasks:
-            raise HTTPException(status_code=409, detail="Impossible de supprimer un run actif")
-        if not kernel.events.delete(session_id):
-            raise HTTPException(status_code=404, detail="Session introuvable")
-        kernel.approvals.remove_for_session(session_id)
-        return {"session_id": str(session_id), "status": "deleted"}
-
-    @app.get("/api/sessions/{session_id}/events")
-    async def stream_session_events(session_id: UUID, request: Request) -> StreamingResponse:
-        path = kernel.events.path_for(session_id)
-
-        async def stream():
-            offset = 0
-            idle_ticks = 0
-            while not await request.is_disconnected():
-                if path.exists():
-                    with path.open("r", encoding="utf-8") as source:
-                        source.seek(offset)
-                        lines = source.readlines()
-                        offset = source.tell()
-                    for line in lines:
-                        try:
-                            event = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        yield f"event: trace\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                        idle_ticks = 0
-                idle_ticks += 1
-                if idle_ticks % 15 == 0:
-                    yield ": keepalive\n\n"
-                await asyncio.sleep(0.2)
-
-        return StreamingResponse(
-            stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-
-    @app.get("/api/approvals", response_model=list[ApprovalRequest])
-    async def list_approvals() -> list[ApprovalRequest]:
-        return kernel.list_approvals()
-
-    @app.post("/api/approvals/{approval_id}/resolve", response_model=RunResult)
-    async def resolve_approval(approval_id: str, payload: ApprovalResolveBody) -> RunResult:
-        state = kernel.approvals.load_state(UUID(approval_id))
-        session_id = UUID(str(state["approval"]["session_id"])) if state else None
-        task = asyncio.create_task(kernel.resolve_approval(approval_id, payload.approved))
-        if session_id:
-            running_tasks[session_id] = task
-        try:
-            return await task
-        finally:
-            if session_id:
-                running_tasks.pop(session_id, None)
-
-    @app.post("/api/approvals/resolve-batch", response_model=RunResult)
-    async def resolve_approval_batch(payload: ApprovalBatchResolveBody) -> RunResult:
-        state = kernel.approvals.load_state(UUID(payload.approval_ids[0]))
-        session_id = UUID(str(state["approval"]["session_id"])) if state else None
-        task = asyncio.create_task(
-            kernel.resolve_approval_batch(payload.approval_ids, payload.approved)
-        )
-        if session_id:
-            running_tasks[session_id] = task
-        try:
-            return await task
-        finally:
-            if session_id:
-                running_tasks.pop(session_id, None)
+    )
 
     return app
 
 
 app = create_app()
-
-
-def _validate_managed_agent(project: ProjectConfig, agent_id: str, target: Path) -> None:
-    agent = project.agents().get(agent_id)
-    if agent is None or Path(agent.source).resolve() != target.resolve():
-        raise ConfigurationError(
-            f"Le front matter doit déclarer exactement id: {agent_id}"
-        )
-
-
-def _validate_managed_skill(project: ProjectConfig, skill_id: str, target: Path) -> None:
-    skill = project.skills().get(skill_id)
-    if skill is None or Path(skill.source).resolve() != target.resolve():
-        raise ConfigurationError(
-            f"Le front matter doit déclarer exactement name: {skill_id}"
-        )

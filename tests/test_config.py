@@ -13,6 +13,34 @@ def test_loads_markdown_agent_and_infers_legacy_provider(project: Path) -> None:
     assert config.providers().providers[0].connection_type == ConnectionType.LOCAL
 
 
+def test_user_memory_is_opt_in_and_loaded_from_agent_workspace(project: Path) -> None:
+    agent_path = project / "content-agents" / "agents" / "main.md"
+    content = agent_path.read_text(encoding="utf-8").replace(
+        "provider: test\n",
+        "provider: test\nuser_memory: true\n",
+    )
+    agent_path.write_text(content, encoding="utf-8")
+    config = ProjectConfig(project)
+
+    assert config.agents()["main"].user_memory is True
+    config.user_memory_instruction("main")
+    workspace = project / "content-agents" / "workspaces" / "main"
+    user_path = workspace / "USER.md"
+    decisions_path = workspace / "DECISIONS.md"
+    assert user_path.is_file()
+    assert decisions_path.is_file()
+
+    user_path.write_text("# User profile\n\n- Name: Camille\n", encoding="utf-8")
+    decisions_path.write_text(
+        "# Decisions\n\n- 2026-08-05: Prefer concise answers.\n",
+        encoding="utf-8",
+    )
+    instruction = config.user_memory_instruction("main")
+    assert "Camille" in instruction
+    assert "Prefer concise answers" in instruction
+    assert str(user_path) in instruction
+
+
 def test_rejects_agent_cycle(project: Path) -> None:
     agents = project / "content-agents" / "agents"
     (agents / "main.md").write_text(
@@ -59,11 +87,11 @@ Review carefully.
         encoding="utf-8",
     )
     (codex_agents / "writer.toml").write_text(
-        '''name = "writer"
+        """name = "writer"
 description = "Writes changes"
 model = "gpt-5.2-codex"
 developer_instructions = "Write precise changes."
-''',
+""",
         encoding="utf-8",
     )
     agents = ProjectConfig(project).agents()
@@ -103,3 +131,22 @@ def test_does_not_discover_skills_outside_content_agents(project: Path) -> None:
         encoding="utf-8",
     )
     assert "unrelated" not in ProjectConfig(project).skills()
+
+
+def test_native_reprise_command_is_always_available(project: Path) -> None:
+    config = ProjectConfig(project)
+    command = config.resolve_command("/reprise vérifie d'abord le serveur", project)
+    assert command is not None
+    assert command["kind"] == "native"
+    expanded = config.expand_native_command("/reprise vérifie d'abord le serveur", "/reprise")
+    assert "Ne rejoue pas" in expanded
+    assert "vérifie d'abord le serveur" in expanded
+    commands = {item["command"] for item in config.commands(project)}
+    assert {
+        "/compact",
+        "/context",
+        "/model-context",
+        "/reprise",
+        "/secret",
+        "/secret_list",
+    } <= commands

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,67 @@ from pydantic import ValidationError
 
 from .errors import ConfigurationError
 from .models import AgentConfig, ProviderRegistry, SkillConfig
+from .paths import content_root
+from .platform.secure_files import secure_file
+
+NATIVE_RPPL_COMMANDS: dict[str, dict[str, str]] = {
+    "/compact": {
+        "description": "Compacter manuellement le contexte de la session.",
+        "prompt": (
+            "Le kernel effectue la compaction manuelle avant cette réponse. "
+            "Ne tente pas de compacter ou résumer l’historique toi-même et ne prétends "
+            "pas que cette opération est indisponible."
+        ),
+    },
+    "/context": {
+        "description": "Afficher l’état mesuré du contexte de la session.",
+        "prompt": "",
+    },
+    "/model-context": {
+        "description": "Définir la fenêtre du modèle actif, en tokens.",
+        "prompt": "",
+    },
+    "/reprise": {
+        "description": "Reprendre où l’agent en était dans la session courante.",
+        "prompt": (
+            "Reprends où tu en étais dans cette session. Appuie-toi sur le plan, "
+            "les traces, les artefacts et l’état réel du workspace. Ne rejoue pas "
+            "les actions déjà terminées. Identifie la dernière étape inachevée, "
+            "vérifie ses préconditions puis poursuis jusqu’au prochain résultat "
+            "utile. S’il n’existe rien à reprendre, explique-le clairement."
+        ),
+    },
+    "/secret": {
+        "description": "Enregistrer localement un secret sans l’envoyer au modèle.",
+        "prompt": "",
+    },
+    "/secret_list": {
+        "description": "Lister les noms des secrets disponibles, jamais leurs valeurs.",
+        "prompt": "",
+    },
+}
+
+_AGENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_USER_MEMORY_TEMPLATE = """# User profile
+
+<!--
+Keep only durable, user-confirmed information that improves future conversations.
+Do not infer facts, copy whole conversations, or store secrets.
+-->
+
+## Identity
+
+## Preferences
+
+## Important context
+"""
+_USER_DECISIONS_TEMPLATE = """# Decisions
+
+<!--
+Record durable choices agreed with the user when they affect future conversations.
+For each entry, include the date, decision, brief context and current status.
+-->
+"""
 
 
 def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
@@ -30,8 +92,62 @@ def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
 class ProjectConfig:
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root).resolve()
-        self.content_root = self.root / "content-agents"
+        self.content_root = content_root(self.root)
         self.tools_root = self.root / "tools"
+        for sensitive in ("providers.json", "secrets.json"):
+            path = self.content_root / sensitive
+            if path.exists():
+                secure_file(path)
+
+    def agent_workspace(self, agent_id: str) -> Path:
+        """Return the durable personal workspace owned by an agent.
+
+        A missing logical workspace is not the application source tree.  It is
+        resolved here to a visible directory under the user's content root.
+        """
+        if not _AGENT_ID_PATTERN.fullmatch(agent_id):
+            raise ConfigurationError(f"invalid agent id: {agent_id}")
+        base = (self.content_root / "workspaces").resolve()
+        workspace = (base / agent_id).resolve()
+        try:
+            workspace.relative_to(base)
+        except ValueError as exc:
+            raise ConfigurationError(f"invalid agent workspace: {agent_id}") from exc
+        workspace.mkdir(parents=True, exist_ok=True)
+        return workspace
+
+    def resolve_workspace(self, agent_id: str, workspace: Path | str | None) -> Path:
+        if workspace is None:
+            return self.agent_workspace(agent_id)
+        return Path(workspace).expanduser().resolve()
+
+    def ensure_agent_memory(self, agent_id: str) -> tuple[Path, Path]:
+        workspace = self.agent_workspace(agent_id)
+        user_path = workspace / "USER.md"
+        decisions_path = workspace / "DECISIONS.md"
+        if not user_path.exists():
+            user_path.write_text(_USER_MEMORY_TEMPLATE, encoding="utf-8")
+        if not decisions_path.exists():
+            decisions_path.write_text(_USER_DECISIONS_TEMPLATE, encoding="utf-8")
+        return user_path, decisions_path
+
+    def user_memory_instruction(self, agent_id: str) -> str:
+        user_path, decisions_path = self.ensure_agent_memory(agent_id)
+        user = user_path.read_text(encoding="utf-8", errors="replace").strip()
+        decisions = decisions_path.read_text(encoding="utf-8", errors="replace").strip()
+        return "\n\n".join(
+            [
+                "# Persistent user memory",
+                (
+                    "User memory is enabled. The following files belong to this agent and "
+                    "are loaded on every run. Treat their contents as user-specific context, "
+                    "not as public knowledge. Update them only through the file tools when "
+                    "the user confirms durable information or a lasting decision."
+                ),
+                f"USER.md path: `{user_path}`\n\n{user}",
+                f"DECISIONS.md path: `{decisions_path}`\n\n{decisions}",
+            ]
+        )
 
     def system_instructions(self) -> str:
         path = self.content_root / "system.md"
@@ -67,7 +183,7 @@ class ProjectConfig:
         self._validate_agent_graph(result)
         return result
 
-    def skills(self) -> dict[str, SkillConfig]:
+    def skills(self, workspace: Path | str | None = None) -> dict[str, SkillConfig]:
         """Discover AMK skills from the project's explicit skill directory only.
 
         OpenAI and Claude skill packages remain format-compatible, but must be
@@ -75,31 +191,109 @@ class ProjectConfig:
         This prevents unrelated user-level skills from leaking into a project.
         """
         result: dict[str, SkillConfig] = {}
-        root = self.content_root / "skills"
-        for path in sorted(root.glob("*/SKILL.md")):
-            header, body = split_front_matter(path.read_text(encoding="utf-8"))
-            name = header.get("name") or path.parent.name
-            description = header.get("description")
-            if not description:
-                raise ConfigurationError(f"skill {path} is missing description")
-            raw_tools = header.get("allowed-tools", [])
-            allowed_tools = _string_list(raw_tools)
-            try:
-                skill = SkillConfig.model_validate(
-                    {
-                        **header,
-                        "name": name,
-                        "description": description,
-                        "instructions": body,
-                        "source": str(path),
-                        "root": str(path.parent),
-                        "allowed_tools": allowed_tools,
-                    }
-                )
-            except ValidationError as exc:
-                raise ConfigurationError(f"invalid skill {path}: {exc}") from exc
-            result.setdefault(skill.name, skill)
+        roots = [self.content_root / "skills"]
+        if workspace is not None:
+            local = Path(workspace).expanduser().resolve()
+            roots.extend(
+                [
+                    local / "content-agents" / "skills",
+                    local / ".amk" / "skills",
+                    local / ".agents" / "skills",
+                    local / ".claude" / "skills",
+                    local / ".codex" / "skills",
+                ]
+            )
+        seen_roots: set[Path] = set()
+        for root in roots:
+            resolved_root = root.resolve()
+            if resolved_root in seen_roots:
+                continue
+            seen_roots.add(resolved_root)
+            for path in sorted(root.glob("*/SKILL.md")):
+                skill = self._skill_from_markdown(path)
+                # Global skills load first; a project-local definition with the
+                # same name deliberately shadows it for that workspace.
+                result[skill.name] = skill
         return result
+
+    def _skill_from_markdown(self, path: Path) -> SkillConfig:
+        header, body = split_front_matter(path.read_text(encoding="utf-8"))
+        name = header.get("name") or path.parent.name
+        description = header.get("description")
+        if not description:
+            raise ConfigurationError(f"skill {path} is missing description")
+        raw_tools = header.get("allowed-tools", [])
+        allowed_tools = _string_list(raw_tools)
+        try:
+            skill = SkillConfig.model_validate(
+                {
+                    **header,
+                    "name": name,
+                    "description": description,
+                    "instructions": body,
+                    "source": str(path),
+                    "root": str(path.parent),
+                    "allowed_tools": allowed_tools,
+                }
+            )
+        except ValidationError as exc:
+            raise ConfigurationError(f"invalid skill {path}: {exc}") from exc
+        return skill
+
+    def commands(self, workspace: Path | str | None = None) -> list[dict[str, str]]:
+        """Discover global then project-local slash/RPPL commands."""
+        by_command: dict[str, dict[str, str]] = {
+            command: {
+                "command": command,
+                "description": definition["description"],
+                "kind": "native",
+                "skill": "",
+                "source": "kernel",
+            }
+            for command, definition in NATIVE_RPPL_COMMANDS.items()
+        }
+        for skill in self.skills(workspace).values():
+            metadata = skill.model_extra or {}
+            amk = metadata.get("amk")
+            cody = metadata.get("cody")
+            raw = metadata.get("commands")
+            if isinstance(amk, dict):
+                raw = amk.get("commands", raw)
+            if isinstance(cody, dict):
+                raw = cody.get("commands", raw)
+            descriptions = amk.get("command_descriptions", {}) if isinstance(amk, dict) else {}
+            for value in _string_list(raw):
+                command = "/" + value.strip().lstrip("/").lower()
+                if command == "/":
+                    continue
+                by_command[command] = {
+                    "command": command,
+                    "description": str(descriptions.get(command, skill.description)),
+                    "kind": "skill",
+                    "skill": skill.name,
+                    "source": skill.source,
+                }
+        return [by_command[key] for key in sorted(by_command)]
+
+    def resolve_command(
+        self, prompt: str, workspace: Path | str | None = None
+    ) -> dict[str, str] | None:
+        prefix = prompt.lstrip().split(maxsplit=1)[0].lower() if prompt.strip() else ""
+        return next(
+            (item for item in self.commands(workspace) if item["command"] == prefix),
+            None,
+        )
+
+    @staticmethod
+    def expand_native_command(prompt: str, command: str) -> str:
+        definition = NATIVE_RPPL_COMMANDS.get(command)
+        if definition is None:
+            return prompt
+        stripped = prompt.lstrip()
+        suffix = stripped[len(command) :].strip()
+        return definition["prompt"] + (
+            f"\n\nPrécision de l’utilisateur : {suffix}" if suffix else ""
+        )
 
     def build_skills_index(self) -> dict[str, Any]:
         skills = self.skills()
@@ -110,9 +304,7 @@ class ProjectConfig:
                     "id": skill.name,
                     "description": skill.description,
                     "source": str(Path(skill.source).relative_to(self.root)),
-                    "sha256": hashlib.sha256(
-                        Path(skill.source).read_bytes()
-                    ).hexdigest(),
+                    "sha256": hashlib.sha256(Path(skill.source).read_bytes()).hexdigest(),
                 }
                 for skill in sorted(skills.values(), key=lambda item: item.name)
             ],
@@ -137,7 +329,7 @@ class ProjectConfig:
             raise ConfigurationError(f"invalid disabled-tools file {path}: {exc}") from exc
         values = data.get("tools") if isinstance(data, dict) else data
         if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
-            raise ConfigurationError(f"{path} must contain a string list or {{\"tools\": [...]}}")
+            raise ConfigurationError(f'{path} must contain a string list or {{"tools": [...]}}')
         return set(values)
 
     def _markdown_agent(self, path: Path, default_provider: str) -> AgentConfig:
@@ -147,9 +339,7 @@ class ProjectConfig:
         provider = header.get("provider") or _provider_for_model(model, default_provider)
         description = header.get("description") or f"Agent loaded from {path.name}"
         declared_tools = _string_list(header.get("tools", []))
-        disallowed = _string_list(
-            header.get("disallowedTools", header.get("disallowed-tools", []))
-        )
+        disallowed = _string_list(header.get("disallowedTools", header.get("disallowed-tools", [])))
         compatibility_notes = []
         if declared_tools:
             compatibility_notes.append(
@@ -160,9 +350,7 @@ class ProjectConfig:
                 "Tools disallowed by the imported agent: " + ", ".join(disallowed) + "."
             )
         if header.get("permissionMode"):
-            compatibility_notes.append(
-                f"Imported permission mode: {header['permissionMode']}."
-            )
+            compatibility_notes.append(f"Imported permission mode: {header['permissionMode']}.")
         instructions = "\n\n".join([body, *compatibility_notes])
         data = {
             "id": agent_id,
@@ -171,6 +359,7 @@ class ProjectConfig:
             "model": _normalize_model(model),
             "modules": _string_list(header.get("modules", [])),
             "skills": _string_list(header.get("skills", [])),
+            "user_memory": bool(header.get("user_memory", False)),
             "declared_tools": declared_tools,
             "delegates": _string_list(header.get("delegates", [])),
             "budgets": header.get("budgets"),
@@ -195,6 +384,7 @@ class ProjectConfig:
             "model": _normalize_model(model),
             "modules": _string_list(data.get("modules", [])),
             "skills": _string_list(data.get("skills", [])),
+            "user_memory": bool(data.get("user_memory", False)),
             "declared_tools": [],
             "delegates": _string_list(data.get("delegates", [])),
             "budgets": data.get("budgets"),

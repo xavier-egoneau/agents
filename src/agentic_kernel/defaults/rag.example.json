@@ -1,0 +1,14 @@
+{
+  "embedding_backend": "openai_compatible",
+  "embedding_base_url": "http://127.0.0.1:8082/v1",
+  "embedding_model": "nomic-embed-text-v1.5",
+  "embedding_dimensions": 768,
+  "credential_ref": null,
+  "allow_private_endpoint": true,
+  "chunk_size_chars": 2400,
+  "chunk_overlap_chars": 300,
+  "batch_size": 32,
+  "min_vector_score": 0.15,
+  "max_files": 5000,
+  "max_file_bytes": 1000000
+}

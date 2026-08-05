@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dev minimaliste"
+  short_description: "Coder moins, mieux, et toujours verifier"
+  default_prompt: "Utilise $dev pour resoudre cette tache avec le changement correct le plus simple."

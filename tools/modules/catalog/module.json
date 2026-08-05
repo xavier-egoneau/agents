@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "id": "catalog",
+  "name": "Tool catalog",
+  "description": "Discover and inspect autonomous tools without loading their full schemas up front.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {
+      "name": "tool_search",
+      "description": "Search the indexed tool catalog by intent, name, category, or risk.",
+      "category": "discovery",
+      "risk_tags": ["read"],
+      "timeout_seconds": 5,
+      "cancellable": false,
+      "persistent": false
+    },
+    {
+      "name": "tool_describe",
+      "description": "Return the complete indexed contract for one tool.",
+      "category": "discovery",
+      "risk_tags": ["read"],
+      "timeout_seconds": 5,
+      "cancellable": false,
+      "persistent": false
+    }
+  ],
+  "enabled": true
+}

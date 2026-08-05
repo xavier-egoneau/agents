@@ -1,28 +1,97 @@
 # Mémoire du projet
 
-## État initial
+État courant du dépôt. Le journal des choix et de leurs raisons est dans
+`DECISION.md` : ce fichier ne décrit que ce qui est vrai aujourd'hui.
 
-- Le projet démarre avec une architecture orientée Markdown.
-- Une base minimale de gouvernance a été établie.
-- Le système est pensé autour d’un prompt système, d’un kernel et d’une modularité progressive.
+## Ce que fait le kernel
 
-## Décisions en cours
+- `agentic_kernel` expose `Kernel.run(RunRequest) -> RunResult`.
+- Agents et skills en Markdown, modules manifestés dans `tools/modules/`,
+  journal JSONL append-only, projections SQLite reconstructibles.
+- Adaptateurs providers réels : llama.cpp, DeepSeek, OpenAI Codex OAuth,
+  Claude OAuth. L'agent principal utilise `deepseek-v4-flash`, la clé de
+  `providers.json` primant sur `DEEPSEEK_API_KEY`.
+- Les agents et skills de Claude, Codex et du standard `.agents` sont découverts
+  directement, avec chargement progressif des skills.
+- Guardian, sandbox d'exécution et politique réseau encadrent les outils
+  sensibles; les valeurs de secrets connues sont masquées par valeur.
+- Compaction du contexte à 70 % de la fenêtre connue, snapshot exact compressé
+  écrit avant réduction.
+- Routines planifiées avec workflow optionnel, prévalidées avant activation.
+  Leur cron reste évalué dans le fuseau du workflow après chaque occurrence;
+  les métadonnées de sécurité Guardian font partie du contrat versionné.
 
-- Priorité donnée à la clarté et à la traçabilité.
-- Choix d’un modèle de projet simple avant toute implémentation technique lourde.
+## Installation
 
-## État du kernel
+- `amk setup` prépare le socle, Ketch et les dépendances web; il réutilise les
+  installations existantes. `--full` complète seulement les éléments llama.cpp
+  ou Gemma absents, `--no-downloads` reste purement local.
+- La racine applicative ne dépend plus du CWD. Un checkout existant garde son
+  `content-agents/`; une installation neuve utilise la racine de données OS.
+- Le workspace est une donnée explicite du run, pas la racine de l'application :
+  `amk web -w` le fixe; hors dépôt Git, le fallback est un dossier neutre sous
+  les données AMK plutôt que le dossier utilisateur. Une valeur logique `null`
+  est conservée en base et résolue à l’exécution vers l’espace personnel durable
+  `content-agents/workspaces/<agent_id>/`.
+- Le manifeste `.amk-defaults.json` met à jour uniquement les fichiers livrés
+  que l'utilisateur n'a pas modifiés.
+- `amk doctor` expose le backend réellement applicable. AMK réutilise le helper
+  sandbox de Codex CLI lorsqu'il peut appliquer le profil complet; sous Windows,
+  `elevated` est requis et `unelevated` est refusé sans fallback silencieux.
+- Une routine dont le workspace n'existe pas sur cette machine reste visible et
+  modifiable; elle est signalée au démarrage et par `amk crons list`.
 
-- Le package `agentic_kernel` expose `Kernel.run(RunRequest) -> RunResult`.
-- Les agents Markdown, modules manifestés, journaux JSONL et budgets multi-agents sont implémentés.
-- llama.cpp, DeepSeek, OpenAI Codex OAuth et Claude OAuth disposent d’adaptateurs réels.
-- La CLI `amk` valide les agents et modules, contrôle les providers, gère OAuth et lance les sessions.
-- Les agents et skills existants de Claude, Codex et du standard `.agents` sont découverts directement, avec chargement progressif des skills.
-- L’agent principal utilise `deepseek-v4-flash`; la clé de `providers.json` est prioritaire, avec `DEEPSEEK_API_KEY` comme secours.
-- Une première surface de chat existe sous `surfaces/web/`; elle utilise l’API `amk serve`, sélectionne agents et skills, puis affiche résultats, sessions et erreurs.
+## Mémoire
 
-## Prochaines étapes
+- Session : contexte et compaction, rien ne survit à la fermeture.
+- Projet : `DECISION.md` et `MEMORY.md`, versionnés avec le dépôt.
+- Bibliothèque : `content-agents/knowledge/library/`, markdown ingérés depuis
+  des URL ou des documents déposés dans `incoming/`. Locale au poste, ouvrable
+  dans Obsidian.
+- Transverse : `content-agents/system.md` et les définitions d'agents.
+- Recherche : `knowledge_index` puis `knowledge_search`, avec `scope` valant
+  `project` ou `library`. Index reconstructible.
 
-- Faire évoluer les modules réels à partir du module datetime de démonstration.
-- Ajouter des agents spécialisés et leurs relations de délégation dans `content-agents/agents/`.
-- Exécuter les tests d’intégration réseau avec les comptes et serveurs locaux disponibles.
+## Surface web
+
+`surfaces/web/` — Next.js et React, servie par `amk web`. Shell à rail
+d'icônes, panneau latéral et dock redimensionnables. Le CSS sépare un contrat de
+tokens (`app/theme/tokens.css`), une structure fixe et des thèmes
+interchangeables; `npm run check:contrast` vérifie les ratios WCAG et la
+complétude des scopes de contexte.
+
+## Documentation
+
+- `README.md` est la porte d’entrée; les procédures utilisateur sont séparées
+  sous `docs/` : installation, configuration, workspaces, sandbox, routines,
+  dépannage et développement.
+- `DECISION.md` reste le journal des raisons; une décision remplacée n’est pas
+  une description du comportement courant.
+
+## Dette connue
+
+- Le RAG n'a jamais été exécuté : aucun document indexé à ce jour.
+- La surface web distribuée dépend encore de Node/npm; elle n'est pas encore
+  livrée comme un artefact runtime autonome dans le wheel Python.
+- La distribution n'embarque pas encore son propre helper sandbox. Sans Codex
+  CLI compatible (ou Seatbelt sur macOS), les modes safe/limited refusent
+  l’exécution native.
+- Un provider `llama-cpp` doté de `models_dir` est géré par AMK : démarrage au
+  premier usage, réutilisation persistante, changement de GGUF par redémarrage,
+  état et logs sous `content-agents/runtime/providers/`. Sans `models_dir`, il
+  reste un simple endpoint OpenAI-compatible externe.
+- La page Paramètres est générée depuis les modules déclarant la capacité
+  `config`. Les valeurs ordinaires sont regroupées dans `tool-settings.json`;
+  les secrets restent write-only dans `secrets.json`. CalDAV et la vision locale
+  utilisent ce contrat, avec lecture rétrocompatible de `vision.json`.
+- Un agent peut exposer un canal Telegram configuré depuis son formulaire. Le
+  token et l’unique id utilisateur autorisé sont write-only; tout autre
+  `message.from.id` est ignoré, y compris en groupe. Les sessions sont durables
+  par agent/chat et peuvent être exclues de la liste sans modifier leur
+  workspace effectif, celui de l’agent lorsque la valeur logique reste `null`.
+  Les approvals sont résolus par boutons inline avec reprise du run et contrôle
+  strict du même utilisateur; `/clear` purge nativement la session Telegram.
+- `page.tsx` dépasse 4 000 lignes.
+- `rag.py` utilise le chemin absolu du workspace comme identifiant de projet.
+- `api.py` construit un `Kernel` à l'import, ce qui rend les tests sensibles au
+  répertoire courant.

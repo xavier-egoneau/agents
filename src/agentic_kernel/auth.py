@@ -195,9 +195,7 @@ class OAuthManager:
         if result is None and allow_manual:
             result = _parse_manual(input("Paste the callback URL or authorization code: "))
         if result is None:
-            raise AuthenticationError(
-                "OAuth callback not received; start the connection again"
-            )
+            raise AuthenticationError("OAuth callback not received; start the connection again")
         if result.get("state") and result["state"] != state:
             raise AuthenticationError("OAuth state mismatch")
         code = result.get("code")
@@ -232,9 +230,7 @@ class OAuthManager:
         except KeyError as exc:
             raise AuthenticationError(f"unsupported OAuth provider: {provider_id}") from exc
 
-    def _exchange(
-        self, spec: OAuthSpec, code: str, verifier: str, state: str
-    ) -> OAuthCredential:
+    def _exchange(self, spec: OAuthSpec, code: str, verifier: str, state: str) -> OAuthCredential:
         payload = {
             "grant_type": "authorization_code",
             "client_id": spec.client_id,

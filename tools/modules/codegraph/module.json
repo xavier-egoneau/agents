@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "id": "codegraph",
+  "name": "CodeGraph",
+  "description": "Cartographie sémantique locale des symboles, appels et impacts.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {"name": "codegraph_explore", "description": "Explorer sémantiquement une architecture ou un flux.", "category": "code-intelligence", "risk_tags": ["read"], "timeout_seconds": 180, "cancellable": true},
+    {"name": "codegraph_query", "description": "Rechercher des symboles indexés.", "category": "code-intelligence", "risk_tags": ["read"], "timeout_seconds": 120, "cancellable": true},
+    {"name": "codegraph_node", "description": "Lire un symbole ou fichier indexé et ses relations.", "category": "code-intelligence", "risk_tags": ["read"], "timeout_seconds": 120, "cancellable": true},
+    {"name": "codegraph_callers", "description": "Lister les appelants d'un symbole.", "category": "code-intelligence", "risk_tags": ["read"], "timeout_seconds": 120, "cancellable": true},
+    {"name": "codegraph_callees", "description": "Lister les symboles appelés.", "category": "code-intelligence", "risk_tags": ["read"], "timeout_seconds": 120, "cancellable": true},
+    {"name": "codegraph_impact", "description": "Calculer le rayon d'impact d'un symbole.", "category": "code-intelligence", "risk_tags": ["read"], "timeout_seconds": 120, "cancellable": true},
+    {"name": "codegraph_affected", "description": "Trouver les tests affectés par des fichiers modifiés.", "category": "code-intelligence", "risk_tags": ["read"], "timeout_seconds": 120, "cancellable": true},
+    {"name": "codegraph_status", "description": "Lire l'état et la fraîcheur de l'index.", "category": "code-intelligence", "risk_tags": ["read"], "timeout_seconds": 30},
+    {"name": "codegraph_sync", "description": "Synchroniser le cache technique CodeGraph.", "category": "code-intelligence", "risk_tags": ["read"], "timeout_seconds": 180, "cancellable": true, "persistent": true}
+  ],
+  "enabled": true
+}

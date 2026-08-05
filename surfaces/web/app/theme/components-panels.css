@@ -1,0 +1,516 @@
+/* ============================================================================
+   COMPOSANTS — plan, trace, approbations, dock git, explorateur de fichiers.
+   ========================================================================== */
+
+/* --- Plan courant ------------------------------------------------------------ */
+
+.current-plan {
+  --ctx-surface: var(--surface-panel);
+  --ctx-text: var(--text-default);
+  --ctx-accent: var(--accent);
+  width: min(var(--reading-width), calc(100% - 48px));
+  margin: 0 auto 10px;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--surface-panel) 94%, transparent);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: var(--blur-overlay);
+}
+.current-plan header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; }
+.current-plan header .eyebrow { margin: 0 0 2px; }
+.current-plan header strong { display: block; color: var(--text-strong); font-size: var(--text-lg); }
+.current-plan header small { display: block; margin-top: 2px; color: var(--text-muted); }
+.plan-actions { display: flex; gap: 4px; }
+.plan-actions button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: var(--radius-circle);
+  background: transparent;
+  color: var(--ctx-text-muted);
+  cursor: pointer;
+}
+.plan-actions button:hover { background: var(--ctx-hover); color: var(--ctx-text); }
+.current-plan.expanded .plan-actions button:last-child svg { transform: rotate(180deg); }
+.plan-steps { max-height: 310px; overflow-y: auto; border-top: 1px solid var(--border-subtle); padding: 8px 10px 12px; }
+.plan-step {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 44px;
+  padding: 7px 8px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.plan-step:hover { background: var(--ctx-hover); }
+.plan-step input { width: 17px; height: 17px; flex: 0 0 auto; accent-color: var(--accent); }
+.plan-step-copy { min-width: 0; flex: 1; }
+.plan-step-copy strong { display: block; color: var(--text-strong); font-size: var(--text-base); }
+.plan-step-copy small { display: block; margin-top: 3px; color: var(--text-muted); font-size: var(--text-xs); }
+.plan-step.completed .plan-step-copy { opacity: 0.55; text-decoration: line-through; }
+.plan-step.blocked .plan-step-copy strong,
+.plan-step.failed .plan-step-copy strong { color: var(--danger); }
+.parallel-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  padding: 4px 7px;
+  font: var(--weight-bold) var(--text-2xs) var(--font-sans);
+}
+.step-running {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-circle);
+  background: var(--accent);
+  animation: trace-status-pulse 1.2s ease-out infinite;
+}
+
+/* --- Trace d'execution --------------------------------------------------------- */
+
+.process-trace {
+  --ctx-surface: var(--surface-panel-alt);
+  --ctx-text: var(--text-default);
+  --ctx-accent: var(--accent);
+  grid-column: 1 / -1;
+  margin: 2px 0 4px 43px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-panel-alt);
+}
+.trace-toggle {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  padding: 12px 15px;
+  text-align: left;
+  cursor: pointer;
+}
+.process-trace.expanded .trace-toggle { border-bottom: 1px solid var(--border-subtle); }
+.trace-toggle:hover { background: var(--ctx-hover); }
+.trace-toggle > strong { color: var(--text-strong); font-size: var(--text-base); }
+.trace-summary { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font: var(--text-xs) var(--font-mono); }
+.trace-summary b {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-circle);
+  color: var(--text-muted);
+  font: var(--weight-semibold) var(--text-lg) var(--font-sans);
+}
+.trace-live-indicator {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-circle);
+  background: var(--accent);
+  animation: trace-status-pulse 1.2s ease-out infinite;
+}
+.process-trace ol { list-style: none; margin: 0; padding: 8px 15px 12px; }
+.process-trace li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 0;
+}
+.process-trace li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 25px;
+  bottom: -8px;
+  left: 5px;
+  width: 1px;
+  background: var(--border-default);
+}
+.trace-dot {
+  position: relative;
+  z-index: 1;
+  width: 11px;
+  height: 11px;
+  margin-top: 3px;
+  border: 2px solid var(--border-strong);
+  border-radius: var(--radius-circle);
+  background: var(--surface-panel-alt);
+}
+.process-trace li.active .trace-dot { border-color: var(--accent); background: var(--accent); }
+.process-trace li.active .trace-dot::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-circle);
+  animation: trace-ring 1.15s ease-out infinite;
+}
+.process-trace li.done .trace-dot { border-color: var(--success); background: var(--success-soft); }
+.process-trace li.failed .trace-dot { border-color: var(--danger); background: var(--danger-soft); }
+.process-trace li.blocked .trace-dot { border-color: var(--warning); background: var(--warning-soft); }
+.process-trace li strong { display: inline-block; color: var(--text-strong); font-size: var(--text-base); }
+.process-trace li small { margin-left: 8px; color: var(--text-faint); font: var(--font-meta); }
+.process-trace li p { margin: 4px 0 0; color: var(--text-muted); font-size: var(--text-sm); line-height: var(--leading-snug); }
+@keyframes trace-ring {
+  0% { opacity: 0.8; transform: scale(0.45); }
+  100% { opacity: 0; transform: scale(1.45); }
+}
+@keyframes trace-status-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent); }
+  100% { box-shadow: 0 0 0 7px transparent; }
+}
+
+/* --- Approbations ---------------------------------------------------------------- */
+
+.approval-stack { width: min(var(--reading-width), calc(100% - 48px)); margin: 0 auto 12px; display: grid; gap: 10px; }
+.approval-card {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-lg);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  padding: 14px 16px;
+}
+.approval-card .eyebrow { color: var(--warning-text); }
+.approval-card strong { display: block; margin: 4px 0; }
+.approval-card code { display: block; max-width: 620px; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-sm); }
+.approval-card p:not(.eyebrow) { margin: 8px 0 2px; }
+.approval-card small { opacity: 0.85; }
+.approval-disclosure { display: grid; gap: 6px; min-width: 0; }
+.approval-disclosure p { margin: 0; }
+.approval-disclosure details { margin-top: 2px; }
+.approval-disclosure summary { cursor: pointer; color: var(--text-muted); }
+.approval-disclosure pre {
+  max-width: 620px;
+  max-height: 220px;
+  margin: 7px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+}
+.approval-batch ul { margin: 10px 0; padding-left: 20px; display: grid; gap: 5px; }
+.approval-batch li { line-height: var(--leading-snug); }
+.approval-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.approval-actions button {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  color: var(--text-default);
+  padding: 8px 11px;
+  cursor: pointer;
+}
+.approval-actions .approve { border-color: var(--accent); background: var(--accent); color: var(--text-on-accent); }
+.approval-actions button:disabled { opacity: 0.48; cursor: wait; }
+
+.approval-progress {
+  width: min(var(--reading-width), calc(100% - 48px));
+  margin: 0 auto 12px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  padding: 12px 15px;
+}
+.approval-progress strong { font-size: var(--text-base); }
+.approval-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: var(--radius-circle);
+  animation: approval-spin 0.75s linear infinite;
+}
+@keyframes approval-spin { to { transform: rotate(360deg); } }
+
+/* --- Carte de changements git dans le fil ------------------------------------------ */
+
+.git-change-card {
+  --ctx-surface: var(--surface-panel-alt);
+  --ctx-text: var(--text-default);
+  --ctx-accent: var(--accent);
+  margin: 16px 0 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-panel-alt);
+}
+.git-change-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 11px 13px;
+}
+.git-change-card header strong,
+.git-change-card header span { display: block; }
+.git-change-card header strong { color: var(--text-strong); font-size: var(--text-base); }
+.git-change-card header span { margin-top: 3px; color: var(--text-muted); font: var(--text-xs) var(--font-mono); }
+.git-change-card b,
+.git-review-panel b { color: var(--diff-added); font-style: normal; }
+.git-change-card i,
+.git-review-panel i { color: var(--diff-removed); font-style: normal; }
+.git-change-card header button {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  padding: 7px 10px;
+  cursor: pointer;
+  font-size: var(--text-xs);
+}
+.git-change-card > div { display: grid; }
+.git-change-card > div button {
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  background: transparent;
+  padding: 9px 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.git-change-card > div button:first-child { border-top: 0; }
+.git-change-card > div button:hover { background: var(--ctx-hover); }
+.git-change-card button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--text-xs) var(--font-mono); }
+.git-change-card button em { flex: 0 0 auto; font: normal var(--text-2xs) var(--font-mono); }
+
+/* --- Contenu du dock : revue git ---------------------------------------------------- */
+
+.git-review-body { min-height: 0; height: 100%; display: grid; grid-template-columns: minmax(140px, 36%) minmax(0, 1fr); }
+.git-review-body nav { min-width: 0; overflow: auto; border-right: 1px solid var(--border-dock); padding: 8px; }
+.git-review-body nav button {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-on-dock-muted);
+  padding: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+.git-review-body nav button:hover { background: var(--ctx-hover); color: var(--ctx-text); }
+.git-review-body nav button.active { background: var(--ctx-active); color: var(--ctx-text); }
+.git-review-body nav span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--text-2xs) var(--font-mono); }
+.git-review-body nav em { font: normal var(--text-3xs) var(--font-mono); }
+.git-review-body > section { min-width: 0; overflow: auto; }
+.git-review-body h3 {
+  position: sticky;
+  top: 0;
+  margin: 0;
+  border-bottom: 1px solid var(--border-dock);
+  background: var(--surface-dock-alt);
+  color: var(--text-on-dock);
+  padding: 11px 12px;
+  font: var(--text-xs) var(--font-mono);
+}
+.git-review-body pre {
+  min-width: max-content;
+  margin: 0;
+  padding: 13px;
+  color: var(--text-on-dock);
+  font: var(--text-xs) / var(--leading-normal) var(--font-mono);
+  white-space: pre;
+}
+.git-review-body section > p { padding: 16px; color: var(--text-on-dock-muted); font-size: var(--text-sm); }
+
+/* --- Contenu du dock : explorateur de fichiers -------------------------------------- */
+
+.file-explorer { min-height: 0; height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.file-explorer-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--border-dock);
+  padding: 8px 8px 8px 12px;
+}
+.file-explorer-toolbar input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--ctx-border-control);
+  border-radius: var(--radius-sm);
+  background: var(--ctx-sunken);
+  color: var(--ctx-text);
+  padding: 7px 9px;
+  outline: 0;
+  font-size: var(--text-sm);
+}
+.file-explorer-toolbar input::placeholder { color: var(--ctx-text-faint); }
+.file-explorer-toolbar input:focus { border-color: var(--ctx-accent); box-shadow: var(--focus-ring); }
+.file-tree { min-height: 0; overflow: auto; padding: 6px 8px 16px; }
+.file-node {
+  --depth: 0;
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-on-dock-muted);
+  padding: 5px 7px 5px calc(7px + var(--depth) * 13px);
+  text-align: left;
+  cursor: pointer;
+}
+.file-node:hover { background: var(--ctx-hover); color: var(--ctx-text); }
+.file-node[aria-selected="true"] { background: var(--ctx-active); color: var(--ctx-text); }
+.file-node > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); }
+.file-node em { font: normal var(--text-3xs) var(--font-mono); opacity: 0.7; }
+.file-node .twist { transition: transform var(--dur-fast) var(--ease); }
+.file-node[aria-expanded="true"] .twist { transform: rotate(90deg); }
+.file-node[data-status="modified"] > span { color: var(--warning); }
+.file-node[data-status="added"] > span { color: var(--diff-added); }
+.file-node[data-status="deleted"] > span { color: var(--diff-removed); text-decoration: line-through; }
+
+/* --- Dialogue de commit et toast ------------------------------------------------------ */
+
+.git-dialog-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--surface-scrim);
+  padding: 20px;
+  backdrop-filter: blur(4px);
+}
+.git-dialog {
+  --ctx-surface: var(--surface-overlay);
+  --ctx-text: var(--text-default);
+  --ctx-accent: var(--accent);
+  width: min(560px, 100%);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  background: var(--surface-overlay);
+  padding: 20px;
+  box-shadow: var(--shadow-xl);
+}
+.git-dialog > header { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
+.git-dialog h2 { margin: 4px 0 0; color: var(--text-strong); font-size: var(--text-2xl); }
+.git-dialog header small,
+.git-dialog > small { color: var(--text-muted); font-size: var(--text-xs); }
+.git-dialog header button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-circle);
+  background: var(--ctx-hover);
+  color: var(--ctx-text-muted);
+  cursor: pointer;
+}
+.git-dialog header button:hover:not(:disabled) { background: var(--ctx-active); color: var(--ctx-text); }
+.git-dialog > p { color: var(--text-muted); font-size: var(--text-sm); line-height: var(--leading-normal); }
+.git-dialog label { display: grid; gap: 7px; color: var(--text-muted); font: var(--weight-semibold) var(--text-sm) var(--font-sans); }
+.git-dialog textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
+  color: var(--control-text);
+  padding: 11px;
+  font: var(--font-code);
+}
+.git-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.git-dialog footer button {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  padding: 9px 13px;
+  cursor: pointer;
+}
+.git-dialog footer .primary { border-color: var(--accent); background: var(--accent); color: var(--text-on-accent); }
+.git-dialog-error {
+  margin-top: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  padding: 9px;
+  font-size: var(--text-xs);
+}
+.git-toast {
+  position: fixed;
+  z-index: 90;
+  right: 20px;
+  bottom: 20px;
+  max-width: 420px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  padding: 11px 14px;
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+
+/* --- Barre d'outils git dans la topbar ----------------------------------------------- */
+
+.git-toolbar { display: flex; align-items: center; gap: 4px; }
+.git-toolbar select {
+  max-width: 150px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 6px 3px;
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+.git-toolbar select:disabled { opacity: 0.45; cursor: default; }
+
+.model-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-panel);
+  color: var(--text-muted);
+  padding: 7px 11px;
+  font: var(--text-sm) var(--font-mono);
+}
+.model-badge span { width: 6px; height: 6px; border-radius: var(--radius-circle); background: var(--accent); }
+
+@media (max-width: 900px) {
+  .approval-stack,
+  .approval-progress,
+  .current-plan { width: calc(100% - 24px); }
+  .process-trace { margin-left: 0; }
+  .git-toolbar select { max-width: 96px; }
+  .model-badge { display: none; }
+}

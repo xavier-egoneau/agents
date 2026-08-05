@@ -1,0 +1,78 @@
+/* ============================================================================
+   THEME "editorial" — demontre qu'un theme peut aussi changer la typographie,
+   la geometrie (rayons quasi nuls) et les graisses, pas seulement les couleurs.
+   ========================================================================== */
+
+[data-theme="editorial"] {
+  color-scheme: light;
+
+  /* Typographie : serif pour les titres, sans plus large pour le corps. */
+  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-sans: var(--font-geist-sans), "Helvetica Neue", Arial, sans-serif;
+
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 15px;
+  --text-display: clamp(34px, 4.4vw, 54px);
+  --tracking-tight: -0.03em;
+  --tracking-wider: 0.18em;
+  --leading-relaxed: 1.75;
+  --reading-width: 700px;
+
+  /* Geometrie anguleuse */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 5px;
+  --radius-xl: 6px;
+  --radius-2xl: 8px;
+
+  --surface-app: #fbfbf9;
+  --surface-panel: #ffffff;
+  --surface-panel-alt: #f6f6f3;
+  --surface-sunken: #eeeee9;
+  --surface-overlay: #ffffff;
+  --surface-hover: #f2f2ee;
+  --surface-active: #e8e8e2;
+  --surface-selected: #f4efe6;
+  --surface-scrim: #1a1815a6;
+
+  --surface-rail: #1a1917;
+  --surface-rail-alt: #21201d;
+  --surface-rail-hover: #2c2a27;
+  --surface-rail-active: #383530;
+  --surface-dock: #171614;
+  --surface-dock-alt: #1e1d1a;
+
+  --text-strong: #17150f;
+  --text-default: #2b2823;
+  --text-muted: #6d675c;
+  --text-faint: #9a9488;
+  --text-on-rail: #f4f2ec;
+  --text-on-rail-muted: #948d80;
+  --text-on-dock: #ebe8e1;
+  --text-on-dock-muted: #8a8377;
+
+  --border-subtle: #e9e7e0;
+  --border-default: #d8d5cb;
+  --border-strong: #b6b1a4;
+  --border-rail: #302d29;
+  --border-dock: #2a2724;
+
+  --accent: #9a3412;
+  --accent-hover: #7c2d12;
+  --accent-active: #642510;
+  --accent-soft: #fbe8dd;
+  --accent-soft-text: #7c2d12;
+  --accent-on-rail: #fb923c;
+
+  --shadow-sm: 0 1px 3px #1a181510;
+  --shadow-md: 0 4px 14px #1a181518;
+  --shadow-lg: 0 12px 34px #1a18151f;
+
+  --code-bg: #1e1d1a;
+  --code-fg: #ebe8e1;
+  --code-border: #302d29;
+  --inline-code-bg: #eeeee9;
+  --inline-code-fg: #2b2823;
+}

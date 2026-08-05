@@ -1,0 +1,63 @@
+schema: amk.workflow/v1
+id: routine-example-v1
+title: Routine exemple
+status: draft
+
+execution:
+  mode: agent_guided
+  deviation: stop_and_report
+  timezone: Europe/Paris
+
+parameters:
+  topic:
+    type: string
+    default: actualité
+
+variables:
+  today:
+    from: runtime.local_date
+
+permissions:
+  authority: kernel_guardian
+  unlisted: stop_and_report
+  declarations:
+    - tool: web_search
+      fixed_args:
+        scrape_results: false
+
+missing_dependencies: []
+
+steps:
+  - id: search
+    kind: tool
+    tool: web_search
+    args:
+      query: "${parameters.topic} ${variables.today}"
+      limit: 5
+      scrape_results: false
+      justification: Rechercher les informations nécessaires à la routine.
+    save_as: search_results
+    retry:
+      attempts: 2
+      on: [retryable]
+    fallback:
+      action: fail_partial
+    evidence:
+      required: true
+      capture: [data]
+
+  - id: synthesis
+    kind: synthesize
+    needs: [search]
+    instructions: Résumer uniquement les informations soutenues par les résultats capturés.
+    evidence:
+      from_steps: [search]
+
+output:
+  format: markdown
+  language: fr
+  sections:
+    - Résultat
+    - Sources et incertitudes
+  evidence_policy: cite_or_mark_uncertain
+  on_incomplete: partial_with_warnings

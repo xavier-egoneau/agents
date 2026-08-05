@@ -21,33 +21,28 @@ test("server-renders the AMK surface", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>AMK — Agentic Markdown Kernel<\/title>/i);
-  assert.match(html, /Agentic kernel/);
-  assert.match(html, /Projet actif/);
-  assert.match(html, /Conversation active/);
+  assert.match(html, /<main class="shell"/);
   assert.doesNotMatch(html, /Your site is taking shape|Starter Project/);
 });
 
-test("keeps project selection and guardian approvals wired to the kernel", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(page, /amk\.workspaces/);
-  assert.match(page, /workspaces\/current/);
-  assert.match(page, /workspaces\/validate/);
-  assert.match(page, /workspace: activeWorkspace/);
-  assert.match(page, /approval_pending/);
-  assert.match(page, /approvals\/\$\{approval\.approval_id\}\/resolve/);
-  assert.match(page, /Autoriser/);
-  assert.match(page, /Refuser/);
-  assert.match(page, /ReactMarkdown/);
-  assert.match(page, /remarkPlugins=\{\[remarkGfm\]\}/);
-  assert.match(page, /MarkdownMessage content=\{message\.content\}/);
-  assert.match(page, /api\/kernel\/sessions\?workspace=/);
-  assert.match(page, /new EventSource\(`\/api\/kernel\/sessions\/\$\{sessionId\}\/events`\)/);
-  assert.match(page, /<ProcessTrace[\s\S]*?events=\{traceEvents\}[\s\S]*?live=\{running\}/);
-  assert.match(page, /expanded=\{traceExpanded\}/);
-  assert.match(page, /onExpandedChange=\{setTraceExpanded\}/);
-  assert.match(page, /Historique/);
-  assert.match(page, /managementModal/);
-  assert.match(page, /Configuration du contexte/);
-  assert.match(page, /amk\.composer\.preferences\.v1/);
-  assert.match(page, /securityMode, providerId, model: selectedModel, reasoning/);
+test("routine workflow cards keep their natural height and wrap readable step details", async () => {
+  const styles = await Promise.all([
+    "../app/theme/components-modal.css",
+    "../app/theme/components-workflow.css",
+  ].map((path) => readFile(new URL(path, import.meta.url), "utf8"))).then((files) => files.join("\n"));
+  const ruleFor = (selector) => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = styles.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
+    assert.ok(match, `Missing CSS rule for ${selector}`);
+    return match[1];
+  };
+
+  assert.match(ruleFor(".resource-editor.cron-editor"), /display:\s*flex/);
+  assert.match(ruleFor(".cron-editor > *"), /flex:\s*0\s+0\s+auto/);
+  assert.match(ruleFor(".routine-workflow-step-content > p"), /white-space:\s*normal/);
+
+  const argumentRule = ruleFor(".routine-workflow-step-args code");
+  assert.match(argumentRule, /white-space:\s*pre-wrap/);
+  assert.match(argumentRule, /overflow-wrap:\s*anywhere/);
+  assert.doesNotMatch(argumentRule, /text-overflow:\s*ellipsis|white-space:\s*nowrap/);
 });

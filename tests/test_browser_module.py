@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
+
+from agentic_kernel.events import JsonlEventStore
+
+
+def load_browser_module():
+    source = Path(__file__).parents[1] / "tools/modules/browser/module.py"
+    spec = importlib.util.spec_from_file_location("test_browser_tool_module", source)
+    assert spec and spec.loader
+    browser_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(browser_module)
+    return browser_module
+
+
+async def test_playwright_browser_snapshot_and_screenshot(tmp_path: Path) -> None:
+    async def serve(reader, writer):
+        await reader.read(4096)
+        body = b"<html><title>AMK test</title><button>Bonjour</button></html>"
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\nConnection: close\r\n\r\n"
+            + body
+        )
+        await writer.drain()
+        writer.close()
+
+    import asyncio
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    browser_module = load_browser_module()
+
+    session_id, run_id = uuid4(), uuid4()
+    events = JsonlEventStore(tmp_path / "sessions")
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            session_id=session_id,
+            root_run_id=run_id,
+            events=events,
+            approved_scopes={("browser_open", "network", f"http://127.0.0.1:{port}")},
+        ),
+        tool_call_approved=False,
+    )
+    try:
+        opened = await browser_module.browser_open(ctx, f"http://127.0.0.1:{port}")
+        page_id = opened["data"]["page_id"]
+        snapshot = await browser_module.browser_snapshot(ctx, page_id)
+        screenshot = await browser_module.browser_screenshot(ctx, page_id)
+        assert snapshot["data"]["title"] == "AMK test"
+        assert snapshot["data"]["elements"][0]["text"] == "Bonjour"
+        assert Path(screenshot["data"]["path"]).is_file()
+        artifact = next(
+            event for event in events.read(session_id) if event.type == "artifact.created"
+        )
+        assert artifact.run_id == run_id
+        assert artifact.payload["media_type"] == "image/png"
+    finally:
+        await browser_module.browser_close(ctx)
+        server.close()
+        await server.wait_closed()
+
+
+async def test_redirect_guard_requires_exact_browser_open_scope(monkeypatch) -> None:
+    browser_module = load_browser_module()
+    initial_url = "http://127.0.0.1:8000/start"
+    redirected_url = "http://127.0.0.1:8001/redirected"
+    redirected_scope = browser_module.network_scope(redirected_url)
+
+    async def validate_target(url: str, *, allow_private: bool = False) -> None:
+        if not allow_private:
+            raise browser_module.NetworkTargetError("private target denied")
+
+    class FakeContext:
+        handler = None
+
+        async def route(self, pattern: str, handler) -> None:
+            self.handler = handler
+
+    class FakeRoute:
+        def __init__(self, url: str) -> None:
+            self.request = SimpleNamespace(url=url)
+            self.aborted: str | None = None
+            self.continued = False
+
+        async def abort(self, reason: str) -> None:
+            self.aborted = reason
+
+        async def continue_(self) -> None:
+            self.continued = True
+
+    monkeypatch.setattr(browser_module, "validate_http_target", validate_target)
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            approved_scopes={("browser_open", "network", redirected_scope)},
+        ),
+        tool_call_approved=False,
+    )
+    context = FakeContext()
+    await browser_module._guard_requests(
+        context,
+        ctx,
+        initial_scope=browser_module.network_scope(initial_url),
+    )
+    assert context.handler is not None
+
+    exact_route = FakeRoute(redirected_url)
+    await context.handler(exact_route)
+    assert exact_route.continued is True
+    assert exact_route.aborted is None
+
+    ctx.deps.approved_scopes = {("*", "network", None)}
+    wildcard_route = FakeRoute(redirected_url)
+    await context.handler(wildcard_route)
+    assert wildcard_route.continued is False
+    assert wildcard_route.aborted == "blockedbyclient"

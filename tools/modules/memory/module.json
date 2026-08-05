@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "id": "memory",
+  "name": "Knowledge",
+  "description": "Bibliothèque de documents en markdown et recherche hybride sur le projet ou la bibliothèque.",
+  "version": "3.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {"name": "knowledge_ingest", "description": "Convertir une URL ou un document local en markdown et le classer dans la bibliothèque.", "category": "knowledge", "risk_tags": ["read", "network", "write"], "path_parameters": ["source"], "url_parameters": ["source"], "timeout_seconds": 180, "cancellable": true},
+    {"name": "knowledge_sync", "description": "Convertir les documents déposés dans incoming/, puis réindexer la bibliothèque.", "category": "knowledge", "risk_tags": ["read", "write", "destructive"], "timeout_seconds": 300, "cancellable": true, "persistent": true},
+    {"name": "knowledge_index", "description": "Découper et indexer incrémentalement les fichiers d'une portée avec FTS5 et embeddings.", "category": "knowledge", "risk_tags": ["read", "write"], "timeout_seconds": 120, "cancellable": true, "persistent": true},
+    {"name": "knowledge_search", "description": "Recherche hybride lexicale/vectorielle avec citations de lignes, sur le projet ou la bibliothèque.", "category": "knowledge", "risk_tags": ["read"], "timeout_seconds": 30}
+  ],
+  "enabled": true
+}

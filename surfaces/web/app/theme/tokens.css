@@ -1,0 +1,244 @@
+/* ============================================================================
+   CONTRAT DE TOKENS — ne pas modifier pour changer l'apparence.
+   ----------------------------------------------------------------------------
+   Ce fichier declare LA LISTE des variables qu'un theme peut redefinir, avec
+   des valeurs de repli neutres. C'est l'interface entre :
+
+     base.css      (structure fixe : jamais de couleur/police en dur)
+     themes/*.css  (surcouche : redefinit ces tokens sous [data-theme="..."])
+
+   Regle : si une valeur visuelle n'existe pas ici, elle n'a rien a faire dans
+   base.css. Ajouter le token ici d'abord, puis l'utiliser.
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* --- Familles typographiques ------------------------------------------ */
+  --font-sans: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SFMono-Regular", monospace;
+  --font-display: var(--font-sans);
+
+  /* --- Echelle typographique -------------------------------------------- */
+  --text-3xs: 8px;
+  --text-2xs: 9px;
+  --text-xs: 10px;
+  --text-sm: 11px;
+  --text-base: 12px;
+  --text-md: 13px;
+  --text-lg: 14px;
+  --text-xl: 16px;
+  --text-2xl: 20px;
+  --text-3xl: 22px;
+  --text-display: clamp(30px, 4vw, 46px);
+
+  --leading-tight: 1.25;
+  --leading-snug: 1.4;
+  --leading-normal: 1.55;
+  --leading-relaxed: 1.7;
+
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.08em;
+  --tracking-wider: 0.14em;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* Styles composes reutilisables (un theme peut changer la famille entiere) */
+  --font-eyebrow: var(--weight-semibold) var(--text-sm) / 1.2 var(--font-mono);
+  --font-code: var(--text-sm) / var(--leading-normal) var(--font-mono);
+  --font-meta: var(--text-2xs) var(--font-mono);
+
+  /* --- Surfaces ---------------------------------------------------------- */
+  --surface-app: #f4f4f5;          /* fond de page */
+  --surface-panel: #ffffff;        /* cartes, panneaux */
+  --surface-panel-alt: #fafafa;    /* alternance discrete */
+  --surface-sunken: #ececee;       /* champs, zones en creux */
+  --surface-overlay: #ffffff;      /* modales, popovers */
+  --surface-hover: #f0f0f1;
+  --surface-active: #e6e6e8;
+  --surface-selected: #eaeff0;
+  --surface-scrim: #10121466;      /* voile derriere les modales */
+
+  /* Rails et docks : surfaces "chrome" pouvant contraster avec l'app */
+  --surface-rail: #1c1e21;
+  --surface-rail-alt: #26292d;
+  --surface-rail-hover: #2f3237;
+  --surface-rail-active: #383c42;
+  --surface-dock: #17191b;
+  --surface-dock-alt: #202325;
+
+  /* --- Texte -------------------------------------------------------------- */
+  --text-strong: #101214;
+  --text-default: #24272b;
+  --text-muted: #6b7280;
+  --text-faint: #9aa1a9;
+  --text-on-accent: #ffffff;
+  --text-on-rail: #f2f3f4;
+  --text-on-rail-muted: #9aa1a8;
+  --text-on-dock: #e6e9ea;
+  --text-on-dock-muted: #8c9496;
+  --text-link: #0f766e;
+  --text-link-hover: #115e59;
+
+  /* --- CONTEXTE DE SURFACE -------------------------------------------------
+     Le mecanisme qui garantit le contraste dans tous les themes.
+
+     Un composant "portable" (bouton icone, champ, ligne de liste) peut vivre
+     sur le rail sombre ET dans une modale claire. S'il code en dur
+     `color: var(--text-on-rail)`, il devient blanc sur blanc des qu'on le
+     deplace ou qu'on change de theme.
+
+     Solution : il n'utilise que les tokens --ctx-*. Un conteneur declare son
+     contexte avec DEUX valeurs seulement (--ctx-surface et --ctx-text) ; tout
+     le reste est derive par melange entre ces deux couleurs. Le contraste est
+     donc structurel, pas une valeur a maintenir a la main.
+
+     Voir les scopes .ctx-chrome / .ctx-dock / .ctx-panel dans base.css.
+     Verification automatisee : npm run check:contrast
+
+     ATTENTION — les DERIVATIONS ne sont pas ici mais dans base.css, section
+     "SCOPES DE CONTEXTE". Une custom property herite sa valeur *calculee* :
+     les var() qu'elle contient sont resolus la ou elle est declaree, pas la ou
+     elle est utilisee. Declarees une seule fois dans :root, elles resteraient
+     figees sur la surface claire meme a l'interieur du rail sombre. Elles
+     doivent donc etre repetees dans chaque scope.
+
+     Ici on ne declare que les trois valeurs d'entree du contexte par defaut.
+     ---------------------------------------------------------------------- */
+  --ctx-surface: var(--surface-panel);
+  --ctx-text: var(--text-default);
+  /* Accent lisible sur le fond du contexte : les rails sombres le remplacent
+     par --accent-on-rail, les surfaces claires gardent --accent. */
+  --ctx-accent: var(--accent);
+
+  /* --- Bordures et focus --------------------------------------------------- */
+  --border-subtle: #e7e7e9;
+  --border-default: #d9d9dd;
+  --border-strong: #b9bcc1;
+  --border-rail: #33373c;
+  --border-dock: #2c3033;
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+  --focus-outline: 2px solid var(--accent);
+
+  /* --- Accent -------------------------------------------------------------- */
+  --accent: #0f766e;
+  --accent-hover: #0d635c;
+  --accent-active: #0b524c;
+  --accent-soft: #d7eceb;
+  --accent-soft-text: #0b524c;
+  --accent-on-rail: #4fd1c5;
+
+  /* --- Statuts ------------------------------------------------------------- */
+  --success: #15803d;
+  --success-soft: #dcfce7;
+  --success-text: #14532d;
+  --warning: #b45309;
+  --warning-soft: #fef3c7;
+  --warning-text: #78350f;
+  --danger: #b91c1c;
+  --danger-hover: #991b1b;
+  --danger-soft: #fee2e2;
+  --danger-text: #7f1d1d;
+  --info: #1d4ed8;
+  --info-soft: #dbeafe;
+  --info-text: #1e3a8a;
+  --neutral-dot: #a1a1aa;
+
+  /* Diff / git */
+  --diff-added: #15803d;
+  --diff-removed: #b91c1c;
+
+  /* --- Rayons -------------------------------------------------------------- */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-2xl: 24px;
+  --radius-pill: 999px;
+  --radius-circle: 50%;
+
+  /* --- Elevation ----------------------------------------------------------- */
+  --shadow-xs: 0 1px 2px #0000000f;
+  --shadow-sm: 0 2px 8px #00000014;
+  --shadow-md: 0 8px 24px #0000001a;
+  --shadow-lg: 0 18px 45px #00000024;
+  --shadow-xl: 0 28px 80px #00000033;
+  --blur-overlay: blur(16px);
+
+  /* --- Mouvement ----------------------------------------------------------- */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+
+  /* --- Icones -------------------------------------------------------------- */
+  --icon-size-xs: 13px;
+  --icon-size-sm: 15px;
+  --icon-size-md: 18px;
+  --icon-size-lg: 22px;
+  --icon-size-xl: 26px;
+  --icon-stroke: 1.75;
+  --icon-stroke-bold: 2.1;
+
+  /* --- Controles ----------------------------------------------------------- */
+  --control-height-sm: 30px;
+  --control-height: 36px;
+  --control-height-lg: 44px;
+  --control-radius: var(--radius-md);
+  --control-bg: var(--surface-panel);
+  /* Contour de champ : doit rester perceptible (3:1), donc plus marque que le
+     simple separateur --border-default. Derive pour suivre n'importe quel
+     theme sans avoir a le maintenir a la main. */
+  --control-border: color-mix(in srgb, var(--text-default) 55%, var(--surface-panel));
+  --control-text: var(--text-default);
+  --control-placeholder: var(--text-faint);
+
+  --btn-radius: var(--radius-md);
+  --btn-font: var(--weight-medium) var(--text-base) / 1 var(--font-sans);
+
+  --btn-primary-bg: var(--accent);
+  --btn-primary-bg-hover: var(--accent-hover);
+  --btn-primary-fg: var(--text-on-accent);
+  --btn-primary-border: var(--accent);
+
+  --btn-secondary-bg: var(--surface-panel);
+  --btn-secondary-bg-hover: var(--surface-hover);
+  --btn-secondary-fg: var(--text-default);
+  --btn-secondary-border: var(--border-default);
+
+  /* Pas de --btn-ghost-* : un bouton discret n'a pas de couleur propre, il
+     prend celles de la surface qui le porte (--ctx-text-muted / --ctx-hover).
+     Figer un fond de survol ici le rendrait invisible sur le rail sombre. */
+
+  --btn-danger-bg: var(--surface-panel);
+  --btn-danger-bg-hover: var(--danger-soft);
+  --btn-danger-fg: var(--danger);
+  --btn-danger-border: var(--danger-soft);
+
+  --btn-send-bg: var(--text-strong);
+  --btn-send-fg: var(--surface-panel);
+
+  /* --- Geometrie du shell --------------------------------------------------- */
+  --iconrail-width: 56px;
+  --sidepanel-default: 288px;
+  --sidepanel-min: 208px;
+  --sidepanel-max: 460px;
+  --dock-default: 520px;
+  --dock-min: 300px;
+  --dock-max: 900px;
+  --topbar-height: 60px;
+  --resizer-hit: 10px;
+
+  /* --- Rendu de la conversation ---------------------------------------------- */
+  --reading-width: 780px;
+  --code-bg: #16191c;
+  --code-fg: #e4e9ea;
+  --code-border: #2b3034;
+  --inline-code-bg: #ececee;
+  --inline-code-fg: #24272b;
+}

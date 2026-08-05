@@ -1,0 +1,631 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+
+from agentic_kernel.models import RunError, RunRequest, RunResult, RunStatus, SecurityMode
+from agentic_kernel.scheduler import (
+    ROUTINE_INBOX_SESSION_ID,
+    CronJobInput,
+    CronScheduler,
+    CronService,
+    SchedulerError,
+)
+
+
+def payload(workspace: Path, **updates) -> CronJobInput:
+    values = {
+        "name": "Daily review",
+        "schedule": "0 9 * * *",
+        "prompt": "Review the project",
+        "workspace": workspace,
+        "security_mode": SecurityMode.LIMITED,
+    }
+    values.update(updates)
+    return CronJobInput(**values)
+
+
+def workflow_definition(tool: str | None = "utc_now") -> dict:
+    steps: list[dict] = []
+    if tool:
+        steps.append({"id": "source", "kind": "tool", "tool": tool, "args": {}})
+    steps.append(
+        {
+            "id": "summary",
+            "kind": "synthesize",
+            "needs": ["source"] if tool else [],
+            "instructions": "Résumer les résultats disponibles.",
+        }
+    )
+    return {
+        "schema": "amk.workflow/v1",
+        "id": "routine-test-v1",
+        "title": "Routine test",
+        "status": "ready",
+        "execution": {
+            "mode": "agent_guided",
+            "deviation": "stop_and_report",
+            "timezone": "Europe/Paris",
+        },
+        "permissions": {
+            "authority": "kernel_guardian",
+            "unlisted": "stop_and_report",
+            "declarations": [{"tool": tool}] if tool else [],
+        },
+        "missing_dependencies": [],
+        "steps": steps,
+        "output": {"sections": ["Résultat"]},
+    }
+
+
+def test_cron_crud_and_schedule_validation(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+    assert job.workspace == workspace.resolve()
+    assert job.notification_session_id == ROUTINE_INBOX_SESSION_ID
+    assert job.next_run_at is not None
+    assert service.list()[0].id == job.id
+
+    updated = service.update(job.id, payload(workspace, enabled=False))
+    assert not updated.enabled
+    service.delete(job.id)
+    assert service.list() == []
+    with pytest.raises(SchedulerError):
+        service.create(payload(workspace, schedule="not a cron"))
+
+
+def test_disappeared_workspace_still_allows_updating_the_routine(tmp_path: Path) -> None:
+    """Une routine dont le dossier a disparu doit rester désactivable.
+
+    L'interface renvoie le workspace enregistré tel quel à chaque mise à jour :
+    revalider un champ inchangé rendait la routine impossible à désactiver ou à
+    corriger dès que son dossier était déplacé ou hérité d'une autre machine.
+    """
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+
+    workspace.rmdir()
+
+    updated = service.update(job.id, payload(workspace, enabled=False))
+    assert not updated.enabled
+    assert updated.workspace == workspace.resolve()
+
+
+def test_workspace_from_another_operating_system_is_left_untouched(tmp_path: Path) -> None:
+    """Une base déplacée entre systèmes contient des chemins d'un autre OS.
+
+    Résoudre un tel chemin fabrique une valeur différente de celle enregistrée
+    — sous Windows, `resolve()` préfixe un chemin POSIX absolu par la lettre du
+    lecteur courant. Comparer après résolution faisait passer un champ inchangé
+    pour une modification, et bloquait toute mise à jour de la routine.
+    """
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+    foreign = Path("/Users/quelquun/projets/agents")
+    with sqlite3.connect(tmp_path / "state.db") as connection:
+        connection.execute(
+            "UPDATE cron_jobs SET workspace = ? WHERE id = ?", (str(foreign), job.id)
+        )
+
+    reloaded = service.get(job.id)
+    updated = service.update(job.id, payload(reloaded.workspace, enabled=False))
+
+    assert not updated.enabled
+    assert updated.workspace == reloaded.workspace
+
+
+@pytest.mark.skipif(os.name != "nt", reason="normcase n'ignore la casse que sous Windows")
+def test_workspace_comparison_ignores_case_on_windows(tmp_path: Path) -> None:
+    """Le chemin relu depuis SQLite n'est pas passé par ``resolve()``.
+
+    Sous Windows une simple différence de casse suffisait à le faire considérer
+    comme modifié, donc à le revalider — et à rejeter la mise à jour d'une
+    routine dont le dossier n'existe plus.
+    """
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "Project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+    workspace.rename(tmp_path / "Project-renamed")
+
+    variant = Path(str(job.workspace).swapcase())
+    updated = service.update(job.id, payload(variant, enabled=False))
+
+    assert not updated.enabled
+
+
+def test_moving_a_routine_to_a_missing_workspace_is_still_rejected(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+
+    with pytest.raises(SchedulerError, match="Workspace introuvable"):
+        service.update(job.id, payload(tmp_path / "ailleurs"))
+
+
+def test_cron_can_run_without_an_associated_workspace(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+
+    job = service.create(payload(tmp_path).model_copy(update={"workspace": None}))
+
+    assert job.workspace is None
+    assert CronScheduler.request_for(job).workspace is None
+
+
+def test_next_run_stays_in_the_workflow_timezone_after_a_utc_claim(
+    tmp_path: Path,
+) -> None:
+    service = CronService(tmp_path / "state.db")
+    job = service.create(
+        payload(tmp_path).model_copy(update={"workspace": None}),
+        workflow=workflow_definition(),
+        workflow_basis_hash="sha256:basis",
+    )
+    summer_morning_utc = datetime(2026, 8, 4, 8, 0, tzinfo=UTC)
+
+    claimed = service.claim(job.id, summer_morning_utc, scheduled_for=summer_morning_utc)
+
+    assert claimed is not None
+    following = service.get(job.id).next_run_at
+    assert following is not None
+    assert following.isoformat() == "2026-08-05T09:00:00+02:00"
+
+
+def test_cron_workflow_is_optional_persistent_and_independently_removable(
+    tmp_path: Path,
+) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    workflow = workflow_definition()
+
+    free_job = service.create(payload(workspace, name="Free", skills=["review"]))
+    assert free_job.workflow is None
+    assert free_job.workflow_revision == 0
+    free_request = CronScheduler.request_for(free_job)
+    assert free_request.workflow is None
+    assert free_request.tool_allowlist is None
+
+    guided = service.create(
+        payload(workspace, name="Guided", skills=["review"]),
+        workflow=workflow,
+        workflow_basis_hash="sha256:basis",
+    )
+    assert guided.workflow == workflow
+    assert guided.workflow_revision == 1
+    assert guided.workflow_basis_hash == "sha256:basis"
+    assert guided.workflow_updated_at is not None
+    request = CronScheduler.request_for(guided)
+    assert request.skills == ["review"]
+    assert request.workflow == workflow
+    assert request.tool_allowlist == ["utc_now"]
+
+    updated = service.update(
+        guided.id,
+        payload(
+            workspace,
+            name="Renamed",
+            prompt="Keep the accepted workflow",
+            skills=["review"],
+        ),
+    )
+    assert updated.workflow == workflow
+    assert updated.workflow_revision == 1
+
+    cleared = service.clear_workflow(guided.id)
+    assert cleared.id == guided.id
+    assert cleared.prompt == "Keep the accepted workflow"
+    assert cleared.skills == ["review"]
+    assert cleared.workflow is None
+    assert cleared.workflow_revision == 2
+    assert CronScheduler.request_for(cleared).tool_allowlist is None
+
+
+def test_synthesis_only_workflow_explicitly_allows_no_tools(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(
+        payload(workspace),
+        workflow=workflow_definition(None),
+        workflow_basis_hash="sha256:basis",
+    )
+
+    assert CronScheduler.request_for(job).tool_allowlist == []
+
+
+def test_non_ready_workflow_exposes_no_tools_as_a_runtime_backstop(
+    tmp_path: Path,
+) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    workflow = workflow_definition()
+    workflow["status"] = "blocked"
+    workflow["missing_dependencies"] = [
+        {"capability": "calendar.events.list", "reason": "Connecteur absent"}
+    ]
+    job = service.create(
+        payload(workspace, enabled=False),
+        workflow=workflow,
+        workflow_basis_hash="sha256:basis",
+    )
+
+    assert CronScheduler.request_for(job).tool_allowlist == []
+
+
+def test_workflow_cannot_change_while_job_is_in_flight(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+    claimed = service.claim(job.id)
+    assert claimed is not None
+
+    with pytest.raises(SchedulerError, match="pendant une exécution"):
+        service.set_workflow(
+            job.id,
+            workflow_definition(),
+            "sha256:basis",
+        )
+    with pytest.raises(SchedulerError, match="pendant une exécution"):
+        service.clear_workflow(job.id)
+
+
+def test_cron_can_deliver_to_a_selected_session(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    destination = uuid4()
+    job = service.create(payload(workspace, notification_session_id=destination))
+    claimed = service.claim(job.id)
+    assert claimed is not None
+    occurrence = service.list_runs()[0]
+    assert occurrence.session_id == job.session_id
+    assert occurrence.notification_session_id == destination
+
+
+def test_existing_nullable_notification_columns_are_always_backfilled(tmp_path: Path) -> None:
+    database = tmp_path / "state.db"
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    service = CronService(database)
+    job = service.create(payload(workspace))
+    claimed = service.claim(job.id)
+    assert claimed is not None
+
+    with service._connect() as connection:
+        connection.execute(
+            "UPDATE cron_jobs SET notification_session_id=NULL WHERE id=?",
+            (job.id,),
+        )
+        connection.execute(
+            "UPDATE cron_runs SET notification_session_id=NULL WHERE cron_job_id=?",
+            (job.id,),
+        )
+
+    repaired = CronService(database)
+    assert repaired.get(job.id).notification_session_id == ROUTINE_INBOX_SESSION_ID
+    assert repaired.list_runs()[0].notification_session_id == ROUTINE_INBOX_SESSION_ID
+
+
+def test_legacy_crons_are_imported_only_once(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    source = tmp_path / "crons.json"
+    source.write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "name": "Legacy",
+                        "schedule": "0 8 * * *",
+                        "message": "Hello",
+                        "enabled": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert service.import_legacy_once(source, workspace) == 1
+    assert service.import_legacy_once(source, workspace) == 0
+    assert [job.name for job in service.list()] == ["Legacy"]
+
+
+def test_cron_test_reuses_durable_session_without_mutating_schedule(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace, enabled=False))
+    next_run_at = job.next_run_at
+
+    request = CronScheduler.request_for(job, trigger="cron_test")
+
+    assert request.trigger == "cron_test"
+    assert request.session_id == job.session_id
+    assert request.security_mode == SecurityMode.LIMITED
+    assert service.get(job.id).next_run_at == next_run_at
+
+
+def test_successful_test_clears_an_obsolete_cron_error(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+    next_run_at = job.next_run_at
+    failed = RunResult(
+        session_id=job.session_id,
+        run_id=uuid4(),
+        agent_id="main",
+        status=RunStatus.FAILED,
+        errors=[RunError(type="module", message="stale index")],
+    )
+    service.finish(job.id, failed)
+    assert service.get(job.id).last_error == "stale index"
+
+    succeeded = RunResult(
+        session_id=job.session_id,
+        run_id=uuid4(),
+        agent_id="main",
+        status=RunStatus.SUCCESS,
+    )
+    service.record_test_result(job.id, succeeded)
+
+    refreshed = service.get(job.id)
+    assert refreshed.last_status == "success"
+    assert refreshed.last_error is None
+    assert refreshed.next_run_at == next_run_at
+
+
+def test_pending_test_does_not_block_the_schedule(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+    pending = RunResult(
+        session_id=job.session_id,
+        run_id=uuid4(),
+        agent_id="main",
+        status=RunStatus.APPROVAL_PENDING,
+    )
+
+    service.record_test_result(job.id, pending)
+
+    refreshed = service.get(job.id)
+    assert refreshed.last_status == "approval_pending"
+    assert not refreshed.blocked
+
+
+def test_legacy_test_only_block_is_repaired_on_startup(tmp_path: Path) -> None:
+    database = tmp_path / "state.db"
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    service = CronService(database)
+    job = service.create(payload(workspace))
+    with service._connect() as connection:
+        connection.execute("UPDATE cron_jobs SET blocked=1 WHERE id=?", (job.id,))
+
+    repaired = CronService(database)
+
+    assert not repaired.get(job.id).blocked
+
+
+def test_occurrences_are_durable_idempotent_and_deliverable(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+    scheduled_for = datetime.now(UTC).replace(microsecond=0)
+
+    claimed = service.claim(job.id, scheduled_for, scheduled_for=scheduled_for)
+    assert claimed is not None
+    assert claimed.occurrence_id
+    service.mark_started(claimed.occurrence_id)
+    result = RunResult(
+        session_id=job.session_id,
+        run_id=uuid4(),
+        agent_id="main",
+        status=RunStatus.SUCCESS,
+        output="Résultat livré",
+    )
+    service.finish(job.id, result, occurrence_id=claimed.occurrence_id)
+
+    occurrence = service.list_runs()[0]
+    assert occurrence.execution_status == "success"
+    assert occurrence.output_preview == "Résultat livré"
+    assert occurrence.delivery_status == "unread"
+    assert service.mark_run_read(occurrence.id).delivery_status == "read"
+
+    # The same scheduled occurrence cannot be claimed twice.
+    assert service.claim(job.id, scheduled_for, scheduled_for=scheduled_for) is None
+
+
+def test_approval_pending_blocks_future_occurrences_until_resume(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+    scheduled_for = datetime.now(UTC)
+    claimed = service.claim(job.id, scheduled_for, scheduled_for=scheduled_for)
+    assert claimed and claimed.occurrence_id
+    pending = RunResult(
+        session_id=job.session_id,
+        run_id=uuid4(),
+        agent_id="main",
+        status=RunStatus.APPROVAL_PENDING,
+    )
+    service.finish(job.id, pending, occurrence_id=claimed.occurrence_id)
+
+    assert service.get(job.id).blocked
+    assert service.due(scheduled_for + timedelta(days=1)) == []
+    assert service.claim(job.id, scheduled_for + timedelta(minutes=1)) is None
+
+    resumed = pending.model_copy(
+        update={"status": RunStatus.SUCCESS, "output": "Après autorisation"}
+    )
+    service.resume_for_session(job.session_id, resumed)
+    assert not service.get(job.id).blocked
+    assert service.list_runs()[0].execution_status == "success"
+
+
+def test_resume_occurrence_finishes_only_the_linked_occurrence_with_a_child_run(
+    tmp_path: Path,
+) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    first_job = service.create(payload(workspace, name="First"))
+    second_job = service.create(payload(workspace, name="Second"))
+
+    # Put both routines on the same durable execution session. This makes the
+    # assertion stronger than merely separating them by session id.
+    with service._connect() as connection:
+        connection.execute(
+            "UPDATE cron_jobs SET session_id=? WHERE id=?",
+            (str(first_job.session_id), second_job.id),
+        )
+    second_job = service.get(second_job.id)
+
+    now = datetime.now(UTC)
+    first_claim = service.claim(first_job.id, now, scheduled_for=now)
+    second_claim = service.claim(
+        second_job.id,
+        now + timedelta(minutes=1),
+        scheduled_for=now + timedelta(minutes=1),
+    )
+    assert first_claim and first_claim.occurrence_id
+    assert second_claim and second_claim.occurrence_id
+    first_root_run = uuid4()
+    second_root_run = uuid4()
+    service.finish(
+        first_job.id,
+        RunResult(
+            session_id=first_job.session_id,
+            run_id=first_root_run,
+            agent_id="main",
+            status=RunStatus.APPROVAL_PENDING,
+        ),
+        occurrence_id=first_claim.occurrence_id,
+    )
+    service.finish(
+        second_job.id,
+        RunResult(
+            session_id=first_job.session_id,
+            run_id=second_root_run,
+            agent_id="main",
+            status=RunStatus.APPROVAL_PENDING,
+        ),
+        occurrence_id=second_claim.occurrence_id,
+    )
+
+    child_run = uuid4()
+    service.resume_occurrence(
+        first_claim.occurrence_id,
+        RunResult(
+            session_id=first_job.session_id,
+            run_id=child_run,
+            agent_id="main",
+            status=RunStatus.SUCCESS,
+            output="Approved child run",
+        ),
+    )
+
+    assert not service.get(first_job.id).blocked
+    assert service.get(second_job.id).blocked
+    occurrences = {item.id: item for item in service.list_runs(limit=10)}
+    assert occurrences[first_claim.occurrence_id].execution_status == "success"
+    assert occurrences[first_claim.occurrence_id].run_id == child_run
+    assert occurrences[second_claim.occurrence_id].execution_status == "blocked"
+    assert occurrences[second_claim.occurrence_id].run_id == second_root_run
+
+
+def test_repair_orphaned_blocks_preserves_sessions_with_pending_approvals(
+    tmp_path: Path,
+) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    orphan = service.create(payload(workspace, name="Orphan"))
+    pending = service.create(payload(workspace, name="Still pending"))
+    now = datetime.now(UTC)
+    orphan_claim = service.claim(orphan.id, now, scheduled_for=now)
+    pending_claim = service.claim(
+        pending.id,
+        now + timedelta(minutes=1),
+        scheduled_for=now + timedelta(minutes=1),
+    )
+    assert orphan_claim and orphan_claim.occurrence_id
+    assert pending_claim and pending_claim.occurrence_id
+    for job, claimed in ((orphan, orphan_claim), (pending, pending_claim)):
+        service.finish(
+            job.id,
+            RunResult(
+                session_id=job.session_id,
+                run_id=uuid4(),
+                agent_id="main",
+                status=RunStatus.APPROVAL_PENDING,
+            ),
+            occurrence_id=claimed.occurrence_id,
+        )
+
+    repaired = service.repair_orphaned_blocks({pending.session_id})
+
+    assert repaired == 1
+    assert not service.get(orphan.id).blocked
+    assert service.get(pending.id).blocked
+    occurrences = {item.id: item for item in service.list_runs(limit=10)}
+    repaired_occurrence = occurrences[orphan_claim.occurrence_id]
+    assert repaired_occurrence.execution_status == "cancelled"
+    assert repaired_occurrence.task_status == "cancelled"
+    assert repaired_occurrence.completed_at is not None
+    assert occurrences[pending_claim.occurrence_id].execution_status == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_uses_one_session_and_resumes_failed_job(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace, schedule="* * * * *"))
+    calls: list[RunRequest] = []
+
+    async def launch(request: RunRequest) -> RunResult:
+        calls.append(request)
+        return RunResult(
+            session_id=request.session_id,
+            run_id=uuid4(),
+            agent_id=request.agent_id,
+            status=RunStatus.FAILED if len(calls) == 1 else RunStatus.SUCCESS,
+            errors=[RunError(type="provider", message="temporary", retryable=True)]
+            if len(calls) == 1
+            else [],
+        )
+
+    scheduler = CronScheduler(service, launch)
+    first = service.claim(job.id, datetime.now(UTC))
+    assert first is not None
+    await scheduler._execute(first)
+    second = service.claim(job.id, datetime.now(UTC) + timedelta(minutes=1))
+    assert second is not None
+    await scheduler._execute(second)
+
+    assert len(calls) == 2
+    assert calls[0].session_id == calls[1].session_id == job.session_id
+    assert calls[0].trigger == "cron"
+    assert calls[1].trigger == "cron_resume"
+    assert "Ne rejoue pas" in calls[1].prompt

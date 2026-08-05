@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "paths": [],
+  "notes": "Chemins que les outils sensibles peuvent atteindre. Preferer des chemins absolus explicites. Cette liste est propre a la machine : elle n'a pas de sens sur un autre poste."
+}

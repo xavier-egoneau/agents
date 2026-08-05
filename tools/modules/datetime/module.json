@@ -7,7 +7,12 @@
   "entrypoint": "module.py:module",
   "capabilities": ["tools"],
   "tools": [
-    {"name": "utc_now", "description": "Retourner la date et l'heure UTC.", "risk_tags": ["read"]}
+    {
+      "name": "utc_now",
+      "description": "Retourner la date et l'heure UTC.",
+      "risk_tags": ["read"],
+      "timeout_seconds": 5
+    }
   ],
   "enabled": true
 }

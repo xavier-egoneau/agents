@@ -23,9 +23,7 @@ class MemoryStore:
 
 def _jwt(account_id: str) -> str:
     payload = base64.urlsafe_b64encode(
-        json.dumps(
-            {"https://api.openai.com/auth": {"chatgpt_account_id": account_id}}
-        ).encode()
+        json.dumps({"https://api.openai.com/auth": {"chatgpt_account_id": account_id}}).encode()
     ).rstrip(b"=")
     return f"x.{payload.decode()}.x"
 
@@ -65,7 +63,5 @@ def test_token_exchange_uses_pkce_payload(monkeypatch) -> None:
         "Client",
         lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs),
     )
-    credential = OAuthManager(MemoryStore())._exchange(
-        OPENAI_CODEX, "code", "verifier", "state"
-    )
+    credential = OAuthManager(MemoryStore())._exchange(OPENAI_CODEX, "code", "verifier", "state")
     assert credential["account_id"] == "account"

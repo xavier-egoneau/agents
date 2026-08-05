@@ -1,0 +1,84 @@
+/* ============================================================================
+   COMPOSANTS — selecteur de theme et statut kernel du rail.
+   ========================================================================== */
+
+.theme-menu {
+  --ctx-surface: var(--surface-rail-alt);
+  --ctx-text: var(--text-on-rail);
+  --ctx-accent: var(--accent-on-rail);
+  position: absolute;
+  z-index: 80;
+  width: 244px;
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--border-rail);
+  border-radius: var(--radius-lg);
+  background: var(--surface-rail-alt);
+  padding: 6px;
+  box-shadow: var(--shadow-xl);
+}
+/* Ouvert a droite du rail etroit… */
+.theme-menu.rail { bottom: 0; left: calc(100% + 10px); }
+/* …ou au-dessus et aligne a droite dans le pied du panneau, qui clippe. */
+.theme-menu.panel { right: 0; bottom: calc(100% + 8px); }
+.theme-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-on-rail);
+  padding: 8px 9px;
+  text-align: left;
+  cursor: pointer;
+}
+.theme-option:hover { background: var(--ctx-hover); }
+.theme-option[aria-checked="true"] { background: var(--ctx-active); }
+.theme-option > span:nth-child(2) { min-width: 0; }
+.theme-option strong { display: block; font: var(--weight-medium) var(--text-base) var(--font-sans); }
+.theme-option small { display: block; margin-top: 2px; color: var(--text-on-rail-muted); font-size: var(--text-2xs); }
+.theme-swatch {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  width: 34px;
+  height: 20px;
+  overflow: hidden;
+  border: 1px solid var(--border-rail);
+  border-radius: var(--radius-xs);
+}
+.theme-swatch i { display: block; }
+
+/* Popover generique du rail (statut kernel) */
+.rail-popover {
+  --ctx-surface: var(--surface-rail-alt);
+  --ctx-text: var(--text-on-rail);
+  --ctx-accent: var(--accent-on-rail);
+  position: absolute;
+  z-index: 80;
+  bottom: 0;
+  left: calc(100% + 10px);
+  width: 240px;
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border-rail);
+  border-radius: var(--radius-lg);
+  background: var(--surface-rail-alt);
+  color: var(--text-on-rail);
+  padding: 12px;
+  box-shadow: var(--shadow-xl);
+}
+.rail-popover .eyebrow { color: var(--text-on-rail-muted); }
+.rail-popover strong { font-size: var(--text-base); }
+.rail-popover small { color: var(--text-on-rail-muted); font-size: var(--text-sm); line-height: var(--leading-snug); }
+.rail-popover code {
+  overflow: hidden;
+  border-radius: var(--radius-xs);
+  background: var(--surface-rail);
+  color: var(--text-on-rail-muted);
+  padding: 6px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--text-2xs) var(--font-mono);
+}
