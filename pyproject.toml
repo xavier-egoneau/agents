@@ -32,6 +32,9 @@ dev = [
 ]
 
 [project.scripts]
+# Deux noms, un seul programme. `agents` est le nom d'usage; `amk` reste en
+# place pour les scripts et les habitudes déjà prises.
+agents = "agentic_kernel.cli:app"
 amk = "agentic_kernel.cli:app"
 
 [build-system]

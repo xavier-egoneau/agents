@@ -424,18 +424,33 @@ def serve(
     uvicorn.run(create_api(_root(), workspace), host=host, port=port)
 
 
+@app.command("start")
 @app.command("web")
 def web(
     host: str = typer.Option("127.0.0.1", help="Bind address for both services"),
     api_port: int = typer.Option(8765, help="Kernel API port"),
     web_port: int = typer.Option(3000, help="Web surface port"),
     workspace: Annotated[Path | None, typer.Option("--workspace", "-w")] = None,
+    check: bool = typer.Option(
+        True,
+        "--check/--no-check",
+        help="Vérifier lint, types et contraste en arrière-plan pendant l'exécution",
+    ),
 ) -> None:
-    """Restart and run the AMK API and web surface together."""
+    """Démarre l'API AMK et la surface web ensemble.
+
+    `agents start` et `amk web` désignent la même commande : la seconde reste
+    en place pour ne pas casser les habitudes et les scripts existants.
+    """
     _bootstrap_on_start()
     try:
         status = run_web(
-            _root(), _default_web_workspace(workspace), host, api_port, web_port
+            _root(),
+            _default_web_workspace(workspace),
+            host,
+            api_port,
+            web_port,
+            check=check,
         )
     except KernelError as exc:
         typer.echo(f"error: {exc}", err=True)

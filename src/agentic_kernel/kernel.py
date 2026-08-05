@@ -345,25 +345,33 @@ class Kernel:
 
     def _capture_git_baseline(
         self, request: RunRequest, run_id: UUID, workspace: Path
-    ) -> dict[str, str]:
+    ) -> dict[str, str] | None:
+        """État du dépôt avant le run, ou None si on n'a pas pu le lire.
+
+        La distinction porte tout le mécanisme : un dictionnaire vide signifie
+        « le dépôt était propre », donc tout ce qu'on trouvera ensuite vient de
+        l'agent. `None` signifie « on ne sait pas », et on ne peut alors rien
+        attribuer à l'agent.
+        """
         if request.workspace is None:
-            return {}
+            return None
         try:
             snapshot = self.git.snapshot(workspace, include_patches=False)
+            if not snapshot.available:
+                return None
             baseline = {item.path: item.fingerprint for item in snapshot.files}
-            if snapshot.available:
-                self.events.append(
-                    Event(
-                        session_id=request.session_id,
-                        run_id=run_id,
-                        agent_id="kernel",
-                        type="git.baseline",
-                        payload={"files": baseline},
-                    )
+            self.events.append(
+                Event(
+                    session_id=request.session_id,
+                    run_id=run_id,
+                    agent_id="kernel",
+                    type="git.baseline",
+                    payload={"files": baseline},
                 )
+            )
             return baseline
         except Exception:
-            return {}
+            return None
 
     def _capture_git_snapshot(
         self,
@@ -384,7 +392,13 @@ class Kernel:
                     ),
                     None,
                 )
-                baseline = dict(baseline_event.payload.get("files", {})) if baseline_event else {}
+                if baseline_event is None:
+                    # Sans point de comparaison, tout fichier déjà modifié avant
+                    # le run passerait pour une modification de l'agent : la
+                    # carte présenterait l'état entier du dépôt comme son
+                    # travail. Ne rien montrer est le seul repli honnête.
+                    return
+                baseline = dict(baseline_event.payload.get("files", {}))
             snapshot = self.git.snapshot(workspace)
             changed = [
                 item for item in snapshot.files if baseline.get(item.path) != item.fingerprint

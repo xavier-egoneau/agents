@@ -339,6 +339,19 @@ type ComposerImage = {
   dataUrl: string;
 };
 
+const SUPPORTED_IMAGE_TYPES = [
+  "image/png", "image/jpeg", "image/webp", "image/gif",
+] as const satisfies readonly ComposerImage["mediaType"][];
+
+/**
+ * Le type déclaré par un artefact vient du serveur : c'est une chaîne libre.
+ * L'affecter directement au type restreint revenait à affirmer une garantie que
+ * personne ne vérifie. On retombe sur le PNG, que tous les navigateurs affichent.
+ */
+function toImageMediaType(value: string): ComposerImage["mediaType"] {
+  return SUPPORTED_IMAGE_TYPES.find((item) => item === value) ?? "image/png";
+}
+
 type ImagePreview = {
   source: string;
   name: string;
@@ -1374,6 +1387,15 @@ export default function Home() {
   const conversationWorkspace = activeSessionId
     ? activeSession?.effective_workspace || activeSession?.workspace
     : activeWorkspace;
+  const conversationWorkspaceInfo = useMemo(
+    () => workspaces.find((workspace) => workspace.path === conversationWorkspace),
+    [workspaces, conversationWorkspace],
+  );
+
+  // L'historique est déjà filtré sur le projet à la source : `refreshSessions`
+  // passe `workspace`, et la projection ne conserve en plus que ce qui
+  // n'appartient à aucun projet — routines, espace personnel de l'agent et
+  // canaux Telegram. Refiltrer ici masquerait précisément ces trois-là.
 
   const refreshGit = useCallback(async (workspace: string) => {
     try {
@@ -2880,7 +2902,7 @@ export default function Home() {
               .map((artifact) => ({
                 id: artifact.artifact_id,
                 name: artifact.name,
-                mediaType: artifact.media_type,
+                mediaType: toImageMediaType(artifact.media_type),
                 dataUrl: `/api/kernel/artifacts/${encodeURIComponent(sessionId)}/${encodeURIComponent(artifact.artifact_id)}`,
               }))
             : undefined,
@@ -2930,8 +2952,15 @@ export default function Home() {
   }
 
   function chooseWorkspace(path: string) {
+    const changed = path !== activeWorkspace;
     setActiveWorkspace(path);
     window.localStorage.setItem("amk.activeWorkspace", path);
+    // Une session reste rattachée au projet où elle a commencé : son historique,
+    // ses diffs et ses chemins s'y réfèrent. La déplacer la rendrait incohérente.
+    // Changer de projet ouvre donc une conversation neuve — sans quoi le
+    // changement n'avait aucun effet, la session continuant sur l'ancien projet
+    // pendant que l'en-tête annonçait le nouveau.
+    if (changed && activeSessionId && !running) newConversation();
   }
 
   function registerWorkspace(workspace: Workspace) {
@@ -4797,7 +4826,10 @@ export default function Home() {
               <span>
                 {activeSession?.workspace_kind === "agent_default" || isRoutineInbox
                   ? "Espace personnel"
-                  : activeWorkspaceInfo?.name
+                  // Le projet de la conversation prime sur celui sélectionné :
+                  // rouvrir une session de l'historique ne doit pas afficher le
+                  // projet courant à la place du sien.
+                  : conversationWorkspaceInfo?.name
                     || (conversationWorkspace ? conversationWorkspace.split(/[\\/]/).pop() : "")
                     || "Aucun projet"}
               </span>

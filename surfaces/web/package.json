@@ -13,11 +13,11 @@
     "test:unit": "npm run build && node --test tests/rendered-html.test.mjs",
     "test:e2e": "playwright test",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "check:contrast": "node scripts/check-contrast.mjs",
-    "db:generate": "drizzle-kit generate"
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run lint && npm run typecheck && npm run check:contrast",
+    "check:contrast": "node scripts/check-contrast.mjs"
   },
   "dependencies": {
-    "drizzle-orm": "0.45.2",
     "lucide-react": "^1.26.0",
     "next": "^16.2.11",
     "react": "19.2.6",
@@ -36,7 +36,6 @@
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
     "cross-env": "10.0.0",
-    "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
     "react-server-dom-webpack": "19.2.6",

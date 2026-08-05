@@ -441,11 +441,13 @@ label.resource-select { cursor: pointer; }
 .tool-group input { width: 15px; height: 15px; padding: 0; accent-color: var(--accent); }
 .tool-group strong,
 .tool-group small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tool-group strong { color: var(--text-strong); font-size: var(--text-sm); }
+/* Même échelle que .checkbox-grid : le nom du module reste le titre de la ligne,
+   il ne peut pas être plus petit que les outils qu'il contient. */
+.tool-group strong { color: var(--text-strong); font-size: var(--text-md); }
 .tool-group small {
   margin-top: 2px;
   color: var(--text-muted);
-  font-size: var(--text-2xs);
+  font-size: var(--text-sm);
   font-weight: var(--weight-normal);
 }
 .tool-group-toggle {
@@ -474,17 +476,19 @@ label.resource-select { cursor: pointer; }
   align-items: center;
   gap: 8px;
   border-radius: var(--radius-xs);
-  padding: 4px 3px;
+  padding: 5px 3px;
   cursor: pointer;
 }
 .tool-group-detail label:hover { background: var(--ctx-hover); }
+/* Un nom d'outil est un identifiant qu'on lit caractère par caractère : ni le
+   9px des libellés secondaires, ni la teinte atténuée ne conviennent ici. */
 .tool-group-detail span {
   overflow: hidden;
-  color: var(--text-muted);
+  color: var(--text-default);
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: var(--text-2xs);
+  font-size: var(--text-base);
 }
 
 @media (max-width: 720px) {

@@ -104,3 +104,34 @@ def test_response_snapshot_only_contains_files_changed_during_run(project: Path)
         event for event in kernel.events.read(session_id) if event.type == "git.snapshot"
     )
     assert [item["path"] for item in snapshot.payload["files"]] == ["tracked.txt"]
+    assert preexisting.exists()  # présent dans le dépôt, absent de la carte
+
+
+def test_no_snapshot_without_a_baseline_to_compare_with(project: Path) -> None:
+    """Sans point de comparaison, tout fichier déjà sale passerait pour une
+    modification de l'agent : la carte annoncerait le dépôt entier comme son
+    travail. Mieux vaut ne rien afficher."""
+    repository = project / "customer-project"
+    repository.mkdir()
+    git(repository, "init")
+    git(repository, "config", "user.email", "test@example.com")
+    git(repository, "config", "user.name", "Test")
+    (repository / "tracked.txt").write_text("avant\n", encoding="utf-8")
+    git(repository, "add", "tracked.txt")
+    git(repository, "commit", "-m", "Initial")
+    (repository / "sale-avant-le-run.txt").write_text("modifié hors AMK\n", encoding="utf-8")
+    kernel = Kernel(project)
+    session_id, run_id = uuid4(), uuid4()
+    request = RunRequest(
+        session_id=session_id,
+        prompt="Ne touche à rien",
+        workspace=repository,
+    )
+
+    # Aucun `git.baseline` n'a été émis pour ce run : reprise après approbation,
+    # lecture du dépôt en échec, ou événement absent de l'historique.
+    kernel._capture_git_snapshot(request, run_id, repository)
+
+    assert not [
+        event for event in kernel.events.read(session_id) if event.type == "git.snapshot"
+    ]

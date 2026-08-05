@@ -95,8 +95,47 @@ def _terminate(pid: int) -> None:
     terminate_tree(pid, 4)
 
 
+def start_verification(npm: str, web_root: Path) -> subprocess.Popen[bytes] | None:
+    """Lance lint, types et contraste en parallèle du serveur de développement.
+
+    Bloquer le démarrage sur une vérification complète coûterait une minute à
+    chaque lancement, y compris quand rien n'a changé. Le serveur démarre donc
+    tout de suite et le verdict arrive quand il est prêt : on ne perd que la
+    latence de l'information, jamais celle de l'application.
+    """
+    try:
+        return subprocess.Popen(
+            [npm, "run", "verify"],
+            cwd=web_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            **subprocess_group_kwargs(),
+        )
+    except OSError:
+        # La vérification est un confort : son échec ne doit pas empêcher de
+        # travailler.
+        return None
+
+
+def report_verification(process: subprocess.Popen[bytes]) -> None:
+    output = (process.communicate()[0] or b"").decode("utf-8", "replace")
+    if process.returncode == 0:
+        print("Vérification du front : lint, types et contraste — OK", flush=True)
+        return
+    print("\nVérification du front — problèmes détectés :", flush=True)
+    # Seulement la fin : npm empile ses propres bannières avant l'erreur utile.
+    lines = [line for line in output.splitlines() if line.strip()]
+    print("\n".join(lines[-40:]), flush=True)
+    print("Détail complet : npm run verify (depuis surfaces/web)\n", flush=True)
+
+
 def run_web(
-    root: Path, workspace: Path, host: str, api_port: int, web_port: int
+    root: Path,
+    workspace: Path,
+    host: str,
+    api_port: int,
+    web_port: int,
+    check: bool = True,
 ) -> int:
     root = root.resolve()
     workspace = workspace.resolve()
@@ -151,6 +190,7 @@ def run_web(
     )
     print(f"AMK API: http://{host}:{api_port}", flush=True)
     print(f"AMK Web: http://{host}:{web_port}", flush=True)
+    verification = start_verification(npm, web_root) if check else None
     try:
         while True:
             backend_status = backend.poll()
@@ -159,10 +199,15 @@ def run_web(
                 return backend_status
             if frontend_status is not None:
                 return frontend_status
+            if verification is not None and verification.poll() is not None:
+                report_verification(verification)
+                verification = None
             time.sleep(0.25)
     except KeyboardInterrupt:
         return 0
     finally:
+        if verification is not None:
+            _stop_group(verification)
         _stop_group(frontend)
         _stop_group(backend)
 
