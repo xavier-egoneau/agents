@@ -5124,16 +5124,34 @@ export default function Home() {
             : activeWorkspaceInfo?.name
         }
         actions={
-          <button
-            type="button"
-            className="ibtn sm"
-            data-tip="Fermer"
-            data-tip-side="left"
-            aria-label="Fermer le panneau droit"
-            onClick={() => panels.setOpen("right", false)}
-          >
-            <Icon name="close" size="sm" />
-          </button>
+          <>
+            {/* Le commit se décide en lisant les diffs : le bouton doit être là,
+                pas seulement dans la barre du haut. Le message est proposé par
+                le modèle depuis le patch, puis relu avant validation. */}
+            {dockTab === "git" && (gitReviewSnapshot || gitSnapshot)?.files.length ? (
+              <button
+                type="button"
+                className="dock-commit"
+                disabled={running || gitBusy}
+                data-tip="Rédige un message à partir des modifications"
+                data-tip-side="left"
+                onClick={() => void proposeGitCommit()}
+              >
+                <Icon name="git" size="sm" />
+                {gitBusy ? "Rédaction…" : "Commit"}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="ibtn sm"
+              data-tip="Fermer"
+              data-tip-side="left"
+              aria-label="Fermer le panneau droit"
+              onClick={() => panels.setOpen("right", false)}
+            >
+              <Icon name="close" size="sm" />
+            </button>
+          </>
         }
         resizer={
           <Resizer

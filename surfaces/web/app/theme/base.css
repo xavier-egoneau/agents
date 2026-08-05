@@ -612,6 +612,26 @@ button { color: inherit; }
 .dock-head-title small { color: var(--text-on-dock-muted); font: var(--font-meta); }
 .dock-content { min-height: 0; overflow: hidden; }
 
+/* Action de l'en-tête du dock. Contour plutôt que fond plein : le commit se
+   valide dans une boîte de dialogue, ce bouton ne fait que l'ouvrir. */
+.dock-commit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  border: 1px solid var(--ctx-border-control);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ctx-text);
+  padding: 0 10px;
+  white-space: nowrap;
+  cursor: pointer;
+  font: var(--weight-medium) var(--text-sm) var(--font-sans);
+}
+.dock-commit:hover:not(:disabled) { background: var(--ctx-hover); border-color: var(--ctx-text); }
+.dock-commit:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.dock-commit:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .dock-tabs {
   /* Fond distinct du dock : redeclare son contexte pour que le survol des
      onglets se derive de LA surface sur laquelle ils sont posés. */
