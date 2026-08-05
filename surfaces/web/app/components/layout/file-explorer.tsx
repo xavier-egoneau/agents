@@ -73,12 +73,21 @@ export function FileExplorer({
     [workspace, kernelUrl],
   );
 
+  // `load` change d'identite a chaque rendu du parent (kernelUrl est souvent
+  // recree inline). On passe par une ref pour ne re-declencher le chargement
+  // que sur un vrai changement de workspace, sinon l'arbre se reinitialise et
+  // clignote a chaque re-rendu du composant parent.
+  const loadRef = useRef(load);
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
   // Recharge la racine des qu'on change de workspace.
   useEffect(() => {
     setLevels({});
     setExpanded(new Set());
-    if (workspace) void load("");
-  }, [workspace, load]);
+    if (workspace) void loadRef.current("");
+  }, [workspace]);
 
   const toggle = useCallback(
     (node: Node) => {

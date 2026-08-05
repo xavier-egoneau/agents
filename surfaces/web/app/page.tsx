@@ -653,6 +653,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// Fonction pure et sans dependances : definie au niveau module (et non inline
+// dans le JSX) pour garder une identite stable entre les rendus. Sinon
+// `FileExplorer` la voit changer a chaque rendu de `Home` et recharge son
+// arborescence en boucle.
+function fileExplorerKernelUrl(path: string): string {
+  return `/api/kernel${path.replace("/api", "")}`;
+}
+
 class WorkflowProposalDisplayError extends Error {}
 
 /**
@@ -4914,7 +4922,7 @@ export default function Home() {
         ) : (
           <FileExplorer
             workspace={conversationWorkspace || undefined}
-            kernelUrl={(path) => `/api/kernel${path.replace("/api", "")}`}
+            kernelUrl={fileExplorerKernelUrl}
             changedPaths={changedPaths}
             onOpenFile={(path) => void openExplorerFile(path)}
           />
