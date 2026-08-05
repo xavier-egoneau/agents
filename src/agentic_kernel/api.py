@@ -33,6 +33,7 @@ from .scheduler import (
     CronService,
     SchedulerError,
 )
+from .searxng import SearxngService
 from .session_lifecycle import SessionLifecycle
 from .telegram import TelegramConfigStore, TelegramSupervisor
 from .workflows import WorkflowProposalService
@@ -110,7 +111,10 @@ def _session_messages(events: list) -> list[dict[str, object]]:
 
 
 def create_app(
-    root: Path | str = ".", default_workspace: Path | str | None = None
+    root: Path | str = ".",
+    default_workspace: Path | str | None = None,
+    *,
+    local_services: bool = False,
 ) -> FastAPI:
     project = ProjectConfig(root)
     workspace_root = Path(default_workspace or project.root).expanduser().resolve()
@@ -120,6 +124,7 @@ def create_app(
     cron_service = CronService(project.content_root / "state.db")
     telegram_store = TelegramConfigStore(project.content_root)
     session_lifecycle = SessionLifecycle(kernel, project.content_root / "state.db")
+    searxng = SearxngService() if local_services else None
     cron_service.import_legacy_once(
         project.content_root / "agents" / "crons.json", workspace_root
     )
@@ -314,6 +319,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        if searxng is not None:
+            await searxng.start()
         scheduler_task = asyncio.create_task(
             scheduler.run_forever(),
             name="amk-cron-scheduler",
@@ -328,6 +335,8 @@ def create_app(
             for task in (scheduler_task, telegram_task):
                 task.cancel()
             await asyncio.gather(scheduler_task, telegram_task, return_exceptions=True)
+            if searxng is not None:
+                await searxng.stop()
 
     app = FastAPI(
         title="Agentic Markdown Kernel",

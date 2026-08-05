@@ -500,6 +500,56 @@ Answer with concise prose.
     assert "Requested tools: read." in rendered
 
 
+async def test_enabled_user_memory_and_implicit_skill_are_injected(
+    project: Path, monkeypatch
+) -> None:
+    agent_path = project / "content-agents" / "agents" / "main.md"
+    agent_path.write_text(
+        agent_path.read_text(encoding="utf-8").replace(
+            "provider: test\n",
+            "provider: test\nuser_memory: true\n",
+        ),
+        encoding="utf-8",
+    )
+    skill_dir = project / "content-agents" / "skills" / "user-memory"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: user-memory
+description: Maintain durable user memory.
+---
+Update confirmed durable facts carefully.
+""",
+        encoding="utf-8",
+    )
+    workspace = project / "content-agents" / "workspaces" / "main"
+    workspace.mkdir(parents=True)
+    (workspace / "USER.md").write_text(
+        "# User profile\n\n- Name: Camille\n",
+        encoding="utf-8",
+    )
+    (workspace / "DECISIONS.md").write_text(
+        "# Decisions\n\n- Prefer concise answers.\n",
+        encoding="utf-8",
+    )
+    ModuleRegistry(project / "tools").build_index()
+    observed_instructions: list[str] = []
+
+    def respond(_messages, info):
+        observed_instructions.append(info.instructions or "")
+        return ModelResponse(parts=[TextPart("done")])
+
+    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(respond))
+
+    result = await Kernel(project).run(RunRequest(prompt="Bonjour"))
+
+    assert result.status == RunStatus.SUCCESS
+    rendered = "\n".join(observed_instructions)
+    assert "Camille" in rendered
+    assert "Prefer concise answers" in rendered
+    assert "Update confirmed durable facts carefully." in rendered
+
+
 async def test_workflow_is_injected_after_skills_and_enforces_exact_tool_allowlist(
     project: Path, monkeypatch
 ) -> None:

@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import uuid4, uuid5
@@ -13,6 +14,8 @@ from agentic_kernel.telegram import (
     TelegramSupervisor,
     _approval_callback,
     _approval_fingerprint,
+    _markdown_to_telegram_html,
+    _telegram_html_chunks,
 )
 
 TOKEN = "123456:abcdefghijklmnopqrstuvwxyz_ABCD"
@@ -133,6 +136,93 @@ async def test_telegram_rejects_every_sender_except_exact_allowed_user(tmp_path:
     assert requests[0].trigger == "telegram"
     assert requests[0].hidden is True
     supervisor._send_message.assert_awaited_once()
+    assert supervisor._send_message.await_args.kwargs["parse_mode"] == "HTML"
+
+
+def test_telegram_converts_commonmark_to_supported_html() -> None:
+    rendered = _markdown_to_telegram_html(
+        """## Les faits disponibles
+
+Du **gras**, de l'*italique* et `<code & sûr>`.
+
+- Premier élément
+- [Une source](https://example.com/?a=1&b=2)
+
+```python
+print("<ok>")
+```
+"""
+    )
+
+    assert rendered.startswith("<b>Les faits disponibles</b>")
+    assert "<b>gras</b>" in rendered
+    assert "<i>italique</i>" in rendered
+    assert "<code>&lt;code &amp; sûr&gt;</code>" in rendered
+    assert "• Premier élément" in rendered
+    assert '<a href="https://example.com/?a=1&amp;b=2">Une source</a>' in rendered
+    assert (
+        '<pre><code class="language-python">print(&quot;&lt;ok&gt;&quot;)\n</code></pre>'
+        in rendered
+    )
+    assert all(tag not in rendered for tag in ("<h2>", "<p>", "<ul>", "<li>"))
+
+
+def test_telegram_html_chunks_keep_formatting_balanced() -> None:
+    chunks = _telegram_html_chunks(f"**{'🙂' * 125}**", limit=100)
+
+    assert len(chunks) == 3
+    assert all(chunk.startswith("<b>") and chunk.endswith("</b>") for chunk in chunks)
+    assert all(chunk.count("🙂") <= 50 for chunk in chunks)
+    assert sum(chunk.count("🙂") for chunk in chunks) == 125
+
+
+@pytest.mark.asyncio
+async def test_telegram_refreshes_typing_action_until_run_finishes(tmp_path: Path) -> None:
+    supervisor = TelegramSupervisor(
+        TelegramConfigStore(tmp_path),
+        lambda: {"helper"},
+        AsyncMock(),
+        lambda: [],
+        AsyncMock(),
+        lambda _session_id: True,
+    )
+    refreshed = asyncio.Event()
+    calls = 0
+
+    async def send_action(*_args) -> None:
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            refreshed.set()
+
+    supervisor._send_chat_action = AsyncMock(side_effect=send_action)  # type: ignore[method-assign]
+    expected = RunResult(
+        session_id=uuid4(),
+        run_id=uuid4(),
+        agent_id="helper",
+        status=RunStatus.SUCCESS,
+        output="Terminé",
+    )
+
+    async def operation() -> RunResult:
+        await asyncio.wait_for(refreshed.wait(), timeout=1)
+        return expected
+
+    client = object()
+    result = await supervisor._run_with_chat_action(
+        client,  # type: ignore[arg-type]
+        TOKEN,
+        123,
+        operation(),
+        interval=0,
+    )
+    calls_after_run = calls
+    await asyncio.sleep(0)
+
+    assert result is expected
+    assert calls_after_run >= 2
+    assert calls == calls_after_run
+    supervisor._send_chat_action.assert_any_await(client, TOKEN, 123, "typing")
 
 
 @pytest.mark.asyncio
@@ -180,15 +270,19 @@ async def test_telegram_renders_pending_approval_as_inline_keyboard(tmp_path: Pa
 
     call = supervisor._send_message.await_args
     message = call.args[3]
-    assert "Action demandée : Lancer la commande demandée" in message
+    assert "🔐 Autoriser cette action ?" in message
+    assert "📌 Action\nLancer la commande demandée" in message
+    assert "🎯 Cible\nC:/workspace" in message
     assert "Outil : shell_command" in message
-    assert "Fonction : Exécute une commande locale." in message
-    assert '"program": "git"' in message
+    assert "Fonction : Exécute une commande locale." not in message
+    assert "• Programme : git" in message
+    assert '• Arguments : ["status", "--short"]' in message
     assert '"justification"' not in message
-    assert "l’action vise une cible située hors du workspace" in message
-    assert "Risques : exécution de commande" in message
-    assert "Portée si autorisé" in message
-    assert "jusqu’à /clear" in message
+    assert "Parce que l’action vise une cible située hors du workspace." in message
+    assert "Cela implique : exécution de commande." in message
+    assert "🕒 Durée de l’autorisation" in message
+    assert "jusqu’à la commande /clear" in message
+    assert call.kwargs["disable_link_preview"] is True
     keyboard = call.kwargs["reply_markup"]["inline_keyboard"][0]
     assert [button["text"] for button in keyboard] == ["Refuser", "Autoriser"]
     assert len(keyboard[1]["callback_data"].encode()) <= 64
@@ -252,7 +346,7 @@ async def test_telegram_approval_callback_is_authorized_and_resumes_batch(
     supervisor._answer_callback.assert_awaited_once()
     assert supervisor._edit_message.await_count == 2
     supervisor._send_message.assert_awaited_once_with(
-        client, TOKEN, chat_id, "Commande terminée"
+        client, TOKEN, chat_id, "Commande terminée", parse_mode="HTML"
     )
 
 

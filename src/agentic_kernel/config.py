@@ -54,6 +54,26 @@ NATIVE_RPPL_COMMANDS: dict[str, dict[str, str]] = {
 }
 
 _AGENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_USER_MEMORY_TEMPLATE = """# User profile
+
+<!--
+Keep only durable, user-confirmed information that improves future conversations.
+Do not infer facts, copy whole conversations, or store secrets.
+-->
+
+## Identity
+
+## Preferences
+
+## Important context
+"""
+_USER_DECISIONS_TEMPLATE = """# Decisions
+
+<!--
+Record durable choices agreed with the user when they affect future conversations.
+For each entry, include the date, decision, brief context and current status.
+-->
+"""
 
 
 def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
@@ -100,6 +120,34 @@ class ProjectConfig:
         if workspace is None:
             return self.agent_workspace(agent_id)
         return Path(workspace).expanduser().resolve()
+
+    def ensure_agent_memory(self, agent_id: str) -> tuple[Path, Path]:
+        workspace = self.agent_workspace(agent_id)
+        user_path = workspace / "USER.md"
+        decisions_path = workspace / "DECISIONS.md"
+        if not user_path.exists():
+            user_path.write_text(_USER_MEMORY_TEMPLATE, encoding="utf-8")
+        if not decisions_path.exists():
+            decisions_path.write_text(_USER_DECISIONS_TEMPLATE, encoding="utf-8")
+        return user_path, decisions_path
+
+    def user_memory_instruction(self, agent_id: str) -> str:
+        user_path, decisions_path = self.ensure_agent_memory(agent_id)
+        user = user_path.read_text(encoding="utf-8", errors="replace").strip()
+        decisions = decisions_path.read_text(encoding="utf-8", errors="replace").strip()
+        return "\n\n".join(
+            [
+                "# Persistent user memory",
+                (
+                    "User memory is enabled. The following files belong to this agent and "
+                    "are loaded on every run. Treat their contents as user-specific context, "
+                    "not as public knowledge. Update them only through the file tools when "
+                    "the user confirms durable information or a lasting decision."
+                ),
+                f"USER.md path: `{user_path}`\n\n{user}",
+                f"DECISIONS.md path: `{decisions_path}`\n\n{decisions}",
+            ]
+        )
 
     def system_instructions(self) -> str:
         path = self.content_root / "system.md"
@@ -311,6 +359,7 @@ class ProjectConfig:
             "model": _normalize_model(model),
             "modules": _string_list(header.get("modules", [])),
             "skills": _string_list(header.get("skills", [])),
+            "user_memory": bool(header.get("user_memory", False)),
             "declared_tools": declared_tools,
             "delegates": _string_list(header.get("delegates", [])),
             "budgets": header.get("budgets"),
@@ -335,6 +384,7 @@ class ProjectConfig:
             "model": _normalize_model(model),
             "modules": _string_list(data.get("modules", [])),
             "skills": _string_list(data.get("skills", [])),
+            "user_memory": bool(data.get("user_memory", False)),
             "declared_tools": [],
             "delegates": _string_list(data.get("delegates", [])),
             "budgets": data.get("budgets"),

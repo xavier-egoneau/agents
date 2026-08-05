@@ -105,6 +105,7 @@ class AgentConfig(BaseModel):
     model: str | None = None
     modules: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
+    user_memory: bool = False
     declared_tools: list[str] = Field(default_factory=list)
     delegates: list[str] = Field(default_factory=list)
     budgets: BudgetConfig | None = None

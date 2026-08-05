@@ -135,6 +135,7 @@ class WorkspaceMapService:
             "DECISION.md",
             "DECISIONS.md",
             "MEMORY.md",
+            "USER.md",
             "pyproject.toml",
             "package.json",
             "Cargo.toml",

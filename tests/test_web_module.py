@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 
 def load_web_module():
@@ -31,8 +32,6 @@ def test_builds_bounded_ketch_commands() -> None:
         "ketch",
         "search",
         "python agents",
-        "--backend",
-        "ddg",
         "--limit",
         "3",
         "--scrape",
@@ -40,6 +39,32 @@ def test_builds_bounded_ketch_commands() -> None:
         "4000",
         "--json",
     ]
+
+
+async def test_web_search_falls_back_after_configured_backend_failure(monkeypatch) -> None:
+    module = load_web_module()
+    call = AsyncMock(
+        side_effect=[
+            {
+                "ok": False,
+                "error": {"type": "upstream", "message": "rate limited"},
+                "metadata": {},
+            },
+            {"ok": True, "data": [{"url": "https://example.com"}], "metadata": {}},
+        ]
+    )
+    monkeypatch.setattr(module, "web", call)
+
+    result = await module.web_search(None, "amiante maison")
+
+    assert result["ok"] is True
+    assert result["metadata"]["search_backends_attempted"] == [
+        "configured-default",
+        "exa",
+    ]
+    assert result["metadata"]["search_backend_selected"] == "exa"
+    assert call.await_args_list[0].kwargs["backend"] is None
+    assert call.await_args_list[1].kwargs["backend"] == "exa"
     crawl = module._build_command(
         binary="ketch",
         action="crawl",

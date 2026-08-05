@@ -22,6 +22,7 @@ from .paths import application_root, runtime_layout
 from .providers import ProviderFactory
 from .sandbox_setup import setup_windows_sandbox
 from .scheduler import CronService
+from .searxng import SearxngService
 from .web_launcher import run_web
 
 app = typer.Typer(help="Agentic Markdown Kernel")
@@ -442,6 +443,13 @@ def _bootstrap_on_start() -> None:
     report = ensure_content_root(content_root)
     if report.initialized:
         typer.echo(report.render(), err=True)
+    searxng = SearxngService()
+    try:
+        installed = searxng.prepare()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise KernelError(f"impossible de préparer SearXNG : {exc}") from exc
+    if installed:
+        typer.echo(f"SearXNG installé et configuré sur {searxng.base_url}", err=True)
     for name in missing_configuration(content_root):
         example = name.replace(".json", ".example.json")
         typer.echo(
@@ -483,4 +491,4 @@ def _default_web_workspace(explicit: Path | None) -> Path:
 def create_api(root: Path, workspace: Path | None = None):
     from .api import create_app
 
-    return create_app(root, workspace)
+    return create_app(root, workspace, local_services=True)

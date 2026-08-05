@@ -96,15 +96,37 @@ async def web_search(
     justification: str = "",
 ) -> dict[str, Any]:
     """Search the public web and return bounded structured results."""
-    return await web(
-        ctx,
-        "search",
-        query=query,
-        limit=limit,
-        backend=backend,
-        scrape_results=scrape_results,
-        justification=justification,
-    )
+    candidates = (backend,) if backend else (None, "exa", "keenable")
+    attempted: list[str] = []
+    last_result: dict[str, Any] | None = None
+    for candidate in candidates:
+        attempted.append(candidate or "configured-default")
+        result = await web(
+            ctx,
+            "search",
+            query=query,
+            limit=limit,
+            backend=candidate,
+            scrape_results=scrape_results,
+            justification=justification,
+        )
+        metadata = result.setdefault("metadata", {})
+        metadata["search_backends_attempted"] = list(attempted)
+        if result.get("ok"):
+            metadata["search_backend_selected"] = candidate or "configured-default"
+            return result
+        last_result = result
+        error = result.get("error") or {}
+        if error.get("type") not in {"upstream", "precondition"}:
+            return result
+        if (error.get("details") or {}).get("remedy"):
+            return result
+    return last_result or {
+        "ok": False,
+        "data": None,
+        "error": {"type": "upstream", "message": "No search backend succeeded."},
+        "metadata": {"search_backends_attempted": attempted},
+    }
 
 
 async def web_scrape(
@@ -193,7 +215,9 @@ def _build_command(
             raise ValueError(f"web action {action!r} requires an http(s) URL")
         command.append(url)
     if action == "search":
-        command.extend(["--backend", backend or "ddg", "--limit", str(limit)])
+        if backend:
+            command.extend(["--backend", backend])
+        command.extend(["--limit", str(limit)])
         if scrape_results:
             command.extend(["--scrape", "--max-chars", str(max_chars)])
     elif action == "scrape":

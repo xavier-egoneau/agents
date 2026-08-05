@@ -121,6 +121,8 @@ def create_resource_router(
                 payload.content,
                 lambda: _validate_agent(project, payload.id, target),
             )
+            if project.agents()[payload.id].user_memory:
+                project.ensure_agent_memory(payload.id)
             if payload.telegram is not None:
                 telegram.update(payload.id, payload.telegram)
         except ConfigurationError as exc:
@@ -147,6 +149,8 @@ def create_resource_router(
                 payload.content,
                 lambda: _validate_agent(project, agent_id, target),
             )
+            if project.agents()[agent_id].user_memory:
+                project.ensure_agent_memory(agent_id)
             if payload.telegram is not None:
                 telegram.update(agent_id, payload.telegram)
         except ConfigurationError as exc:

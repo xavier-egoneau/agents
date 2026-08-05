@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Icon } from "../../theme/theme-context";
 import type { IconName } from "../../theme/icons";
 import { ChromeEmpty } from "./shell";

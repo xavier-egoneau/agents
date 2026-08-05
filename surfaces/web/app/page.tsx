@@ -1743,6 +1743,7 @@ export default function Home() {
           model: "",
           tools: catalog?.tools.map((tool) => tool.name) || [],
           skills: [],
+          user_memory: false,
           delegates: catalog?.agents.map((agent) => agent.id).filter((agentId) => agentId !== id) || [],
         }
       : { name: id, description: "Nouvelle skill", "allowed-tools": [] };
@@ -3536,6 +3537,24 @@ export default function Home() {
                             </label>
                           </div>
                         )}
+                      </fieldset>
+                      <fieldset className="field-wide checkbox-field">
+                        <legend>Mémoire personnelle</legend>
+                        <label className="provider-vision field-wide">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(resourceEditor.frontmatter.user_memory)}
+                            onChange={(event) => updateEditorField(
+                              "user_memory",
+                              event.target.checked,
+                            )}
+                          />
+                          User memory
+                        </label>
+                        <small>
+                          Charge USER.md et DECISIONS.md à chaque run. Les fichiers sont créés
+                          dans le workspace personnel de l’agent lors de l’enregistrement.
+                        </small>
                       </fieldset>
                       <fieldset className="field-wide checkbox-field">
                         <legend>Tools actifs</legend>

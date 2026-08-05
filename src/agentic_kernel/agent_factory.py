@@ -68,7 +68,10 @@ class AgentFactory:
             resolved_provider_id, resolved_model_name
         )
         loaded_modules = self.module_registry.load_enabled()
-        requested_skills = list(dict.fromkeys([*config.skills, *(runtime_skills or [])]))
+        implicit_skills = ["user-memory"] if config.user_memory and "user-memory" in skills else []
+        requested_skills = list(
+            dict.fromkeys([*config.skills, *implicit_skills, *(runtime_skills or [])])
+        )
         runtime_allowlist = None if tool_allowlist is None else set(tool_allowlist)
         missing_skills = set(requested_skills) - skills.keys()
         if missing_skills:
@@ -92,6 +95,9 @@ class AgentFactory:
         ]
         active_workspace = workspace or self.config.agent_workspace(agent_id)
         active_security = security_mode or SecurityMode.LIMITED
+        user_memory_instruction = (
+            self.config.user_memory_instruction(agent_id) if config.user_memory else ""
+        )
         instructions = [
             self.config.system_instructions(),
             self.runtime_instruction(
@@ -105,6 +111,8 @@ class AgentFactory:
             self.context.secret_catalog_instruction(),
             config.instructions,
         ]
+        if user_memory_instruction:
+            instructions.append(user_memory_instruction)
         for skill_id in requested_skills:
             instructions.append(render_skill(skills, skill_id))
         workflow_instruction = _render_workflow(workflow)
@@ -169,6 +177,8 @@ class AgentFactory:
             workflow_instruction or "",
             workspace,
         )
+        if user_memory_instruction:
+            overhead += self.context.estimate_tokens(user_memory_instruction)
         capabilities.append(
             ContextWindowCompaction(
                 agent_id=config.id,

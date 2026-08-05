@@ -1069,6 +1069,7 @@ description: Helper agent
 provider: test
 modules: []
 skills: []
+user_memory: true
 delegates: []
 ---
 Help carefully.
@@ -1095,6 +1096,9 @@ Help carefully.
     assert helper["telegram"]["user_id_configured"] is True
     assert helper["telegram"]["bot_token_configured"] is True
     assert "123456:abcdefghijklmnopqrstuvwxyz_ABCD" not in json.dumps(helper)
+    helper_workspace = project / "content-agents" / "workspaces" / "helper"
+    assert (helper_workspace / "USER.md").is_file()
+    assert (helper_workspace / "DECISIONS.md").is_file()
     assert client.delete("/api/admin/agents/main").status_code == 403
     assert client.delete("/api/admin/agents/helper").status_code == 200
     secret_names = json.loads(

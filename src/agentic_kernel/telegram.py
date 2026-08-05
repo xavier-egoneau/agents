@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import os
 import re
 import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID, uuid5
 
 import httpx
+from markdown_it import MarkdownIt
 from pydantic import BaseModel, field_validator
 
 from .errors import ConfigurationError
@@ -37,6 +41,9 @@ _RISK_LABELS = {
     "screen": "capture d’écran",
 }
 _REASON_LABELS = {
+    "Approval required": "cette action ne peut pas être autorisée automatiquement",
+    "Network approval required": "un accès au réseau est nécessaire",
+    "Overwrite requires approval.": "un fichier existant va être écrasé",
     "Private or local network targets require approval.": (
         "la cible est située sur un réseau privé ou local"
     ),
@@ -53,6 +60,38 @@ _REASON_LABELS = {
         "un fichier existant va être écrasé"
     ),
     "External actions require approval.": "l’action agit sur un service externe",
+    "Potentially destructive command requires approval.": (
+        "la commande peut modifier ou supprimer des données"
+    ),
+    "Command execution requires approval in safe mode.": (
+        "le mode safe exige une confirmation avant d’exécuter une commande"
+    ),
+    "Unknown executable requires approval in limited mode.": (
+        "le programme demandé n’est pas reconnu comme étant autorisé"
+    ),
+}
+_ARGUMENT_LABELS = {
+    "args": "Arguments",
+    "command": "Commande",
+    "cwd": "Dossier de travail",
+    "max_chars": "Longueur maximale",
+    "method": "Méthode",
+    "path": "Chemin",
+    "program": "Programme",
+    "query": "Recherche",
+    "url": "Adresse",
+}
+_MARKDOWN = MarkdownIt("commonmark", {"html": False, "linkify": False})
+_TELEGRAM_HTML_TAGS = {
+    "a",
+    "b",
+    "blockquote",
+    "code",
+    "i",
+    "pre",
+    "s",
+    "tg-spoiler",
+    "u",
 }
 
 LaunchRun = Callable[[RunRequest], Awaitable[RunResult]]
@@ -433,15 +472,20 @@ class TelegramSupervisor:
         if pending:
             await self._send_approval(client, config, chat_id, pending)
             return True
-        result = await self.launch(
-            RunRequest(
-                prompt=text.strip(),
-                agent_id=config.agent_id,
-                session_id=session_id,
-                workspace=None,
-                security_mode=SecurityMode.LIMITED,
-                trigger="telegram",
-                hidden=config.hide_session,
+        result = await self._run_with_chat_action(
+            client,
+            config.bot_token,
+            chat_id,
+            self.launch(
+                RunRequest(
+                    prompt=text.strip(),
+                    agent_id=config.agent_id,
+                    session_id=session_id,
+                    workspace=None,
+                    security_mode=SecurityMode.LIMITED,
+                    trigger="telegram",
+                    hidden=config.hide_session,
+                )
             )
         )
         await self._deliver_result(client, config, chat_id, result)
@@ -462,8 +506,14 @@ class TelegramSupervisor:
             answer = "Une autorisation est requise, mais son détail est indisponible."
         else:
             answer = (result.output or "").strip() or "L’agent n’a pas produit de réponse."
-        for chunk in _telegram_chunks(answer):
-            await self._send_message(client, config.bot_token, chat_id, chunk)
+        for chunk in _telegram_html_chunks(answer):
+            await self._send_message(
+                client,
+                config.bot_token,
+                chat_id,
+                chunk,
+                parse_mode="HTML",
+            )
 
     async def _handle_callback(
         self,
@@ -539,8 +589,13 @@ class TelegramSupervisor:
             f"Autorisation {decision}. Reprise de l’agent en cours…",
         )
         try:
-            result = await self.resolve_approvals(
-                [item.approval_id for item in approvals], approved
+            result = await self._run_with_chat_action(
+                client,
+                config.bot_token,
+                chat_id,
+                self.resolve_approvals(
+                    [item.approval_id for item in approvals], approved
+                ),
             )
         except Exception:
             current = self._approvals_for(session_id, run_id)
@@ -600,34 +655,43 @@ class TelegramSupervisor:
     ) -> None:
         run_id = approvals[0].run_id
         fingerprint = _approval_fingerprint(approvals)
-        lines = ["🔐 Autorisation requise avant de poursuivre."]
+        lines = ["🔐 Autoriser cette action ?"]
         for index, approval in enumerate(approvals, 1):
-            label = f"Action {index}" if len(approvals) > 1 else "Action demandée"
+            label = f"Action {index}" if len(approvals) > 1 else "Action"
+            lines.extend(["", f"📌 {label}", approval.justification])
+            target = _approval_display_target(approval)
+            if target:
+                lines.extend(["", "🎯 Cible", target])
+            reason = _approval_reason(approval.reason)
             lines.extend(
                 [
                     "",
-                    f"{label} : {approval.justification}",
-                    f"Outil : {approval.tool_name}",
+                    "⚠️ Pourquoi votre accord est nécessaire",
+                    f"Parce que {reason}.",
                 ]
             )
-            if approval.tool_description:
-                lines.append(f"Fonction : {approval.tool_description}")
-            if approval.path:
-                lines.append(f"Cible : {approval.path}")
-            arguments = _visible_approval_arguments(approval)
-            if arguments:
-                lines.extend(["Paramètres exacts :", arguments])
-            reason = _REASON_LABELS.get(approval.reason, approval.reason)
-            lines.append(f"Pourquoi une confirmation : {reason}")
             if approval.risks:
                 lines.append(
-                    "Risques : "
+                    "Cela implique : "
                     + ", ".join(
                         _RISK_LABELS.get(str(item.value), str(item.value))
                         for item in approval.risks
                     )
+                    + "."
                 )
-            lines.append(f"Portée si autorisé : {_approval_scope(approval)}")
+            lines.extend(
+                [
+                    "",
+                    "🕒 Durée de l’autorisation",
+                    _approval_scope(approval),
+                    "",
+                    "🔧 Détails techniques",
+                    f"Outil : {approval.tool_name}",
+                ]
+            )
+            arguments = _visible_approval_arguments(approval)
+            if arguments:
+                lines.extend(["Paramètres :", arguments])
         keyboard = {
             "inline_keyboard": [[
                 {
@@ -644,7 +708,12 @@ class TelegramSupervisor:
         if len(text) > 3900:
             text = text[:3897].rstrip() + "..."
         await self._send_message(
-            client, config.bot_token, chat_id, text, reply_markup=keyboard
+            client,
+            config.bot_token,
+            chat_id,
+            text,
+            reply_markup=keyboard,
+            disable_link_preview=True,
         )
         self.store.remember_approval_notice(
             config.agent_id, approvals[0].session_id, fingerprint
@@ -694,15 +763,75 @@ class TelegramSupervisor:
         text: str,
         *,
         reply_markup: dict[str, Any] | None = None,
+        disable_link_preview: bool = False,
+        parse_mode: str | None = None,
     ) -> None:
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
+        if disable_link_preview:
+            payload["link_preview_options"] = {"is_disabled": True}
+        if parse_mode is not None:
+            payload["parse_mode"] = parse_mode
         response = await client.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json=payload,
         )
         response.raise_for_status()
+
+    async def _send_chat_action(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        chat_id: int,
+        action: str,
+    ) -> None:
+        response = await client.post(
+            f"https://api.telegram.org/bot{token}/sendChatAction",
+            json={"chat_id": chat_id, "action": action},
+        )
+        response.raise_for_status()
+
+    async def _keep_chat_action(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        chat_id: int,
+        *,
+        interval: float = 4.0,
+    ) -> None:
+        while True:
+            try:
+                await self._send_chat_action(client, token, chat_id, "typing")
+            except Exception:
+                # A cosmetic Telegram failure must never interrupt the agent run.
+                pass
+            await asyncio.sleep(interval)
+
+    async def _run_with_chat_action(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        chat_id: int,
+        operation: Awaitable[RunResult],
+        *,
+        interval: float = 4.0,
+    ) -> RunResult:
+        indicator = asyncio.create_task(
+            self._keep_chat_action(
+                client,
+                token,
+                chat_id,
+                interval=interval,
+            )
+        )
+        # Let the first action start without delaying the actual run on Telegram I/O.
+        await asyncio.sleep(0)
+        try:
+            return await operation
+        finally:
+            indicator.cancel()
+            await _cancel(indicator)
 
     async def _answer_callback(
         self,
@@ -775,14 +904,39 @@ def _visible_approval_arguments(approval: ApprovalRequest) -> str:
     }
     if not arguments:
         return ""
-    return json.dumps(arguments, ensure_ascii=False, indent=2, sort_keys=True)
+    lines: list[str] = []
+    for key, value in sorted(arguments.items()):
+        label = _ARGUMENT_LABELS.get(key, key.replace("_", " ").capitalize())
+        if isinstance(value, str):
+            rendered = value
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            rendered = f"{value:,}".replace(",", " ")
+        else:
+            rendered = json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
+        lines.append(f"• {label} : {rendered}")
+    return "\n".join(lines)
+
+
+def _approval_display_target(approval: ApprovalRequest) -> str:
+    for key in ("url", "path", "file_path", "target", "cwd"):
+        value = approval.arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return approval.path or ""
+
+
+def _approval_reason(reason: str) -> str:
+    return _REASON_LABELS.get(
+        reason,
+        "cette action sort du périmètre autorisé automatiquement",
+    ).rstrip(". ")
 
 
 def _approval_scope(approval: ApprovalRequest) -> str:
     target = f"la cible « {approval.path} »" if approval.path else "toute cible équivalente"
     return (
-        f"les appels ultérieurs à « {approval.tool_name} » de type "
-        f"« {approval.action_family} » pour {target}, dans cette conversation jusqu’à /clear."
+        f"Valable aussi pour les prochaines actions similaires sur {target}, "
+        "dans cette conversation, jusqu’à la commande /clear."
     )
 
 
@@ -797,21 +951,200 @@ def _parse_approval_callback(value: str) -> tuple[UUID, str, bool] | None:
     return UUID(hex=match.group(1)), match.group(2), match.group(3) == "1"
 
 
-def _telegram_chunks(text: str, limit: int = 4000) -> list[str]:
-    chunks: list[str] = []
-    remaining = text.strip()
-    while remaining:
-        if len(remaining) <= limit:
-            chunks.append(remaining)
-            break
-        split = remaining.rfind("\n", 0, limit)
-        if split < limit // 2:
-            split = remaining.rfind(" ", 0, limit)
-        if split < limit // 2:
-            split = limit
-        chunks.append(remaining[:split].rstrip())
-        remaining = remaining[split:].lstrip()
-    return chunks
+class _TelegramHTMLRenderer(HTMLParser):
+    """Reduce markdown-it HTML to the small HTML subset accepted by Telegram."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.lists: list[tuple[str, int]] = []
+        self.links: list[bool] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag in {"h1", "h2", "h3", "h4", "h5", "h6", "strong"}:
+            self.parts.append("<b>")
+        elif tag == "em":
+            self.parts.append("<i>")
+        elif tag in {"del", "s"}:
+            self.parts.append("<s>")
+        elif tag == "blockquote":
+            self.parts.append("<blockquote>")
+        elif tag == "pre":
+            self.parts.append("<pre>")
+        elif tag == "code":
+            language = ""
+            class_name = attributes.get("class") or ""
+            match = re.fullmatch(r"language-([A-Za-z0-9_+.-]+)", class_name)
+            if match:
+                language = f' class="language-{match.group(1)}"'
+            self.parts.append(f"<code{language}>")
+        elif tag == "a":
+            href = attributes.get("href") or ""
+            allowed = _telegram_link_allowed(href)
+            self.links.append(allowed)
+            if allowed:
+                self.parts.append(f'<a href="{html.escape(href, quote=True)}">')
+        elif tag == "ul":
+            self.lists.append(("ul", 0))
+        elif tag == "ol":
+            try:
+                start = max(1, int(attributes.get("start") or "1"))
+            except ValueError:
+                start = 1
+            self.lists.append(("ol", start - 1))
+        elif tag == "li":
+            depth = max(0, len(self.lists) - 1)
+            prefix = "• "
+            if self.lists and self.lists[-1][0] == "ol":
+                kind, counter = self.lists[-1]
+                counter += 1
+                self.lists[-1] = (kind, counter)
+                prefix = f"{counter}. "
+            self.parts.append("  " * depth + prefix)
+        elif tag == "br":
+            self.parts.append("\n")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "br":
+            self.parts.append("\n")
+        elif tag == "img":
+            attributes = dict(attrs)
+            alt = attributes.get("alt") or "Image"
+            src = attributes.get("src") or ""
+            label = html.escape(alt)
+            if _telegram_link_allowed(src):
+                self.parts.append(
+                    f'<a href="{html.escape(src, quote=True)}">{label}</a>'
+                )
+            else:
+                self.parts.append(label)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            self.parts.append("</b>\n\n")
+        elif tag == "strong":
+            self.parts.append("</b>")
+        elif tag == "em":
+            self.parts.append("</i>")
+        elif tag in {"del", "s"}:
+            self.parts.append("</s>")
+        elif tag == "blockquote":
+            self.parts.append("</blockquote>\n\n")
+        elif tag == "pre":
+            self.parts.append("</pre>\n\n")
+        elif tag == "code":
+            self.parts.append("</code>")
+        elif tag == "a":
+            if self.links.pop() if self.links else False:
+                self.parts.append("</a>")
+        elif tag == "p":
+            self.parts.append("\n\n")
+        elif tag == "li":
+            self.parts.append("\n")
+        elif tag in {"ul", "ol"}:
+            if self.lists:
+                self.lists.pop()
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(html.escape(data))
+
+    def render(self) -> str:
+        return "".join(self.parts).strip()
+
+
+class _TelegramHTMLChunker(HTMLParser):
+    """Split formatted HTML without cutting an entity or leaving tags unbalanced."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(convert_charrefs=True)
+        self.limit = limit
+        self.parts: list[str] = []
+        self.chunks: list[str] = []
+        self.active: list[tuple[str, str]] = []
+        self.length = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in _TELEGRAM_HTML_TAGS:
+            return
+        rendered_attrs = "".join(
+            f' {name}="{html.escape(value or "", quote=True)}"' for name, value in attrs
+        )
+        opening = f"<{tag}{rendered_attrs}>"
+        self.parts.append(opening)
+        self.active.append((tag, opening))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag not in _TELEGRAM_HTML_TAGS:
+            return
+        self.parts.append(f"</{tag}>")
+        if self.active and self.active[-1][0] == tag:
+            self.active.pop()
+
+    def handle_data(self, data: str) -> None:
+        remaining = data
+        while remaining:
+            budget = self.limit - self.length
+            if budget <= 0:
+                self._split()
+                budget = self.limit
+            count = _utf16_prefix_length(remaining, budget)
+            if count == 0:
+                self._split()
+                continue
+            segment = remaining[:count]
+            self.parts.append(html.escape(segment))
+            self.length += _utf16_length(segment)
+            remaining = remaining[count:]
+            if remaining:
+                self._split()
+
+    def _split(self) -> None:
+        if self.length:
+            closing = "".join(f"</{tag}>" for tag, _opening in reversed(self.active))
+            self.chunks.append("".join(self.parts) + closing)
+        self.parts = [opening for _tag, opening in self.active]
+        self.length = 0
+
+    def result(self) -> list[str]:
+        if self.length:
+            self.chunks.append("".join(self.parts))
+        return self.chunks
+
+
+def _telegram_link_allowed(url: str) -> bool:
+    return urlsplit(url).scheme.lower() in {"http", "https", "mailto", "tg"}
+
+
+def _utf16_length(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2
+
+
+def _utf16_prefix_length(value: str, limit: int) -> int:
+    used = 0
+    for index, character in enumerate(value):
+        used += 2 if ord(character) > 0xFFFF else 1
+        if used > limit:
+            return index
+    return len(value)
+
+
+def _markdown_to_telegram_html(markdown: str) -> str:
+    renderer = _TelegramHTMLRenderer()
+    renderer.feed(_MARKDOWN.render(markdown))
+    renderer.close()
+    return renderer.render()
+
+
+def _telegram_html_chunks(markdown: str, limit: int = 3900) -> list[str]:
+    rendered = _markdown_to_telegram_html(markdown)
+    if not rendered:
+        return []
+    chunker = _TelegramHTMLChunker(limit)
+    chunker.feed(rendered)
+    chunker.close()
+    return chunker.result()
 
 
 async def _cancel(task: asyncio.Task[Any]) -> None:
