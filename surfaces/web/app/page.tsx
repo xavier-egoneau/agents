@@ -5225,7 +5225,23 @@ export default function Home() {
             </section>
           </div>
         ) : explorerError ? (
-          <ChromeEmpty icon="error">{explorerError}</ChromeEmpty>
+          <div className="git-review-body" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
+            <section>
+              <h3>
+                Aperçu indisponible
+                <button
+                  type="button"
+                  className="ibtn sm"
+                  style={{ float: "right", marginTop: -6 }}
+                  aria-label="Revenir à l'arborescence"
+                  onClick={() => setExplorerError("")}
+                >
+                  <Icon name="close" size="xs" />
+                </button>
+              </h3>
+              <ChromeEmpty icon="error">{explorerError}</ChromeEmpty>
+            </section>
+          </div>
         ) : (
           <FileExplorer
             workspace={conversationWorkspace || undefined}

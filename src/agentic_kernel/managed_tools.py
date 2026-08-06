@@ -36,7 +36,13 @@ class ToolSpec:
 
 def _platform_values() -> tuple[str, str]:
     systems = {"Windows": "windows", "Darwin": "darwin", "Linux": "linux"}
-    machines = {"x86_64": "x86_64", "AMD64": "x86_64", "aarch64": "arm64", "ARM64": "arm64"}
+    machines = {
+        "x86_64": "x86_64",
+        "AMD64": "x86_64",
+        "aarch64": "arm64",
+        "ARM64": "arm64",
+        "arm64": "arm64",
+    }
     try:
         return systems[platform.system()], machines[platform.machine()]
     except KeyError as exc:
