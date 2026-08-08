@@ -3,6 +3,8 @@
 import { Icon } from "../theme/theme-context";
 
 export type SecurityMode = "safe" | "limited" | "power";
+/** `off` par défaut : la bibliothèque n'entre dans le contexte que si on le demande. */
+export type KnowledgeMode = "off" | "auto" | "manual";
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
 
 type ProviderModels = {
@@ -21,6 +23,11 @@ type ComposerControlsProps = {
   canAttach: boolean;
   canSend: boolean;
   vision: boolean;
+  knowledgeMode: KnowledgeMode;
+  /** Nombre de pages retenues, affiché en pastille en mode manuel. */
+  knowledgeCount: number;
+  onKnowledgeModeChange: (mode: KnowledgeMode) => void;
+  onKnowledgeSelect: () => void;
   onAttach: () => void;
   onSecurityModeChange: (mode: SecurityMode) => void;
   onModelChange: (providerId: string, model: string) => void;
@@ -39,6 +46,10 @@ export function ComposerControls({
   canAttach,
   canSend,
   vision,
+  knowledgeMode,
+  knowledgeCount,
+  onKnowledgeModeChange,
+  onKnowledgeSelect,
   onAttach,
   onSecurityModeChange,
   onModelChange,
@@ -56,6 +67,38 @@ export function ComposerControls({
           aria-label="Ajouter une image"
           title={vision ? "Ajouter une image" : "Ajouter une image · analyse locale Gemma 4"}
         ><Icon name="attach" size="md" /></button>
+        {/* Deux gestes distincts sur un même contrôle : l'icône ouvre la
+            sélection, le menu change de mode. Les séparer évitait un bouton
+            qui fait deux choses selon l'endroit exact du clic. */}
+        <div className="knowledge-control" data-active={knowledgeMode !== "off" ? "true" : undefined}>
+          <button
+            type="button"
+            className="composer-icon-button"
+            onClick={onKnowledgeSelect}
+            disabled={knowledgeMode !== "manual"}
+            aria-label="Choisir les pages de connaissance"
+            title={
+              knowledgeMode === "manual"
+                ? `Choisir les pages · ${knowledgeCount} retenue(s)`
+                : "Bibliothèque de connaissance"
+            }
+          >
+            <Icon name="knowledge" size="md" />
+            {knowledgeMode === "manual" && knowledgeCount > 0 && (
+              <span className="knowledge-count">{knowledgeCount}</span>
+            )}
+          </button>
+          <select
+            value={knowledgeMode}
+            onChange={(event) => onKnowledgeModeChange(event.target.value as KnowledgeMode)}
+            aria-label="Mode de connaissance"
+            title="Bibliothèque de connaissance"
+          >
+            <option value="off">sans</option>
+            <option value="auto">auto</option>
+            <option value="manual">manuel</option>
+          </select>
+        </div>
         <label title="Niveau de permission">
           <span className={`permission-dot ${securityMode}`} />
           <select

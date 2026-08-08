@@ -454,9 +454,40 @@ button { color: inherit; }
 .kernel-status.offline > span { background: var(--danger); }
 .kernel-status > div { min-width: 0; }
 .kernel-status strong,
-.kernel-status small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kernel-status strong { font: var(--weight-medium) var(--text-sm) var(--font-sans); }
-.kernel-status small { margin-top: 2px; color: var(--ctx-text-faint); font: var(--font-meta); }
+.kernel-status small { display: block; }
+.kernel-status strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--weight-medium) var(--text-sm) var(--font-sans);
+}
+/* La cause d'une panne s'écrit en entier : tronquée à « 503 sur /api… », elle
+   n'apprenait rien et il fallait aller lire les journaux du serveur. */
+.kernel-status small {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  color: var(--ctx-text-faint);
+  font: var(--font-meta);
+  line-height: var(--leading-normal);
+}
+
+/* Accès aux paramètres, à la place de l'état nominal du kernel. */
+.panel-settings {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ctx-text-muted);
+  padding: 8px 9px;
+  text-align: left;
+  cursor: pointer;
+  font: var(--weight-medium) var(--text-sm) var(--font-sans);
+}
+.panel-settings:hover { background: var(--ctx-hover); color: var(--ctx-text); }
+.panel-settings:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .side-panel-section.grow .side-panel-section-body {
   overflow-y: auto;
   overscroll-behavior: contain;

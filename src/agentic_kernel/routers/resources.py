@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -44,6 +45,12 @@ class ProviderResourceBody(BaseModel):
     config: dict[str, object]
 
 
+class ContentHomeBody(BaseModel):
+    """Dossier parent de `content-agents`. Vide rétablit l'emplacement par défaut."""
+
+    path: str | None = None
+
+
 class ModuleSettingsBody(BaseModel):
     values: dict[str, object]
 
@@ -70,6 +77,21 @@ def _atomic_markdown_write(
         raise
 
 
+def _knowledge_library(project: ProjectConfig, agent_id: str):
+    """Bibliothèque d'un orchestrateur, résolue comme côté outils.
+
+    Même règle que dans le module `memory` : sans identifiant utilisable, on
+    retombe sur le dossier partagé plutôt que de bâtir un chemin depuis une
+    chaîne arbitraire.
+    """
+    from ..knowledge import KnowledgeLibrary
+
+    racine = project.content_root
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", agent_id or ""):
+        return KnowledgeLibrary(racine / "knowledge")
+    return KnowledgeLibrary(racine / "workspaces" / agent_id / "knowledge")
+
+
 def _validate_agent(project: ProjectConfig, agent_id: str, target: Path) -> None:
     agent = project.agents().get(agent_id)
     if agent is None or Path(agent.source).resolve() != target.resolve():
@@ -92,6 +114,72 @@ def create_resource_router(
         project.content_root,
         ModuleRegistry(project.tools_root),
     )
+
+    @router.get("/content-home")
+    async def content_home() -> dict[str, object]:
+        from ..paths import configured_home, data_home
+
+        return {
+            "current": str(project.content_root),
+            "configured": str(configured_home()) if configured_home() else None,
+            "default": str(data_home().resolve()),
+            # Une variable d'environnement prime sur le réglage : le dire évite
+            # de chercher pourquoi une modification ne prend jamais effet.
+            "environment_override": os.environ.get("AMK_HOME"),
+        }
+
+    @router.put("/content-home")
+    async def set_content_home(payload: ContentHomeBody) -> dict[str, object]:
+        from ..paths import normalized_home, store_home
+
+        target = (payload.path or "").strip()
+        if not target:
+            store_home(None)
+            return {"path": None, "restart_required": True}
+        selected = Path(target).expanduser()
+        try:
+            selected = selected.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(status_code=422, detail="Chemin illisible") from exc
+        if not selected.is_dir():
+            raise HTTPException(status_code=422, detail=f"Dossier introuvable : {selected}")
+        # Pointer sur un `content-agents` existant est le geste naturel : on le
+        # ramène à son parent au lieu de créer `content-agents/content-agents`.
+        selected = normalized_home(selected)
+        # Le dossier doit être inscriptible : découvrir l'inverse au prochain
+        # démarrage laisserait AMK sans données et sans explication.
+        probe = selected / ".amk-write-test"
+        try:
+            probe.touch()
+            probe.unlink()
+        except OSError as exc:
+            raise HTTPException(
+                status_code=422, detail=f"Dossier non inscriptible : {selected}"
+            ) from exc
+        store_home(selected)
+        return {"path": str(selected), "restart_required": True}
+
+    @router.get("/knowledge")
+    async def knowledge_inventory(agent_id: str = "main") -> dict[str, object]:
+        """Index de la bibliothèque d'un orchestrateur.
+
+        `agent_id` désigne la racine du run à venir : chaque orchestrateur a son
+        corpus, et un sous-agent n'en a jamais un à lui.
+        """
+        from ..knowledge import KnowledgeLibrary
+
+        if agent_id not in project.agents():
+            raise HTTPException(status_code=404, detail=f"Agent inconnu : {agent_id}")
+        library = _knowledge_library(project, agent_id)
+        pages = library.inventory()
+        return {
+            "agent_id": agent_id,
+            "pages": pages,
+            "tags": sorted(KnowledgeLibrary(library.root).known_tags()),
+            # La somme sert à prévenir avant d'injecter : une sélection large
+            # peut peser plus que la fenêtre du modèle.
+            "total_bytes": sum(int(page["bytes"]) for page in pages),
+        }
 
     @router.get("/module-settings")
     async def configurable_modules() -> list[dict[str, object]]:
@@ -122,6 +210,7 @@ def create_resource_router(
                 "content": Path(agent.source).read_text(encoding="utf-8"),
                 "telegram": telegram.view(agent.id),
                 "has_avatar": agent.id in with_avatar,
+                "subagent": agent.subagent,
             }
             for agent in project.agents().values()
             if Path(agent.source).resolve().parent == managed_root

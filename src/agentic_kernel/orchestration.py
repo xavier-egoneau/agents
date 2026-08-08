@@ -44,6 +44,11 @@ class RuntimeDeps:
     # c'est deux fois trop optimiste. Sans ce correctif, la compaction décide
     # sur un chiffre qui n'a plus de rapport avec la fenêtre réelle.
     context_calibration: float = 1.0
+    # Agent racine du run, pas l'agent courant. La bibliothèque de connaissance
+    # appartient à l'orchestrateur : un sous-agent appelé par `main` doit lire
+    # et écrire dans celle de `main`, jamais dans une sienne — sinon ce qu'il
+    # apprend se perd à la fin de la délégation.
+    orchestrator_id: str = "main"
     secret_resolver: Callable[[str], str | None] | None = None
     secret_redactor: Callable[[Any], Any] | None = None
     snapshot_store: Any | None = None

@@ -29,7 +29,7 @@ skills:
   - dev
   - explore
   - model-context
-delegates: []
+subagent: true
 ---
 # Rôle
 

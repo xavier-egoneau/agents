@@ -31,7 +31,7 @@ skills:
   - explore
   - rag-first-research
   - model-context
-delegates: []
+subagent: true
 ---
 # Rôle
 

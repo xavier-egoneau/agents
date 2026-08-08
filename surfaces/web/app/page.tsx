@@ -20,6 +20,7 @@ import {
 } from "./components/approval-panel";
 import {
   ComposerControls,
+  type KnowledgeMode,
   type ReasoningLevel,
   type SecurityMode,
 } from "./components/composer-controls";
@@ -79,6 +80,8 @@ type Agent = {
   skills: string[];
   delegates: string[];
   has_avatar?: boolean;
+  /** Exécutant appelé par un orchestrateur; il ne délègue à personne. */
+  subagent?: boolean;
 };
 
 type Skill = { name: string; description: string };
@@ -89,15 +92,19 @@ type SlashCommand = {
   skill: string;
   source: string;
 };
+/** Traitée par la surface, jamais transmise au modèle : elle purge le journal
+ *  de la session côté kernel. */
 const routineClearCommand: SlashCommand = {
   command: "/clear",
-  description: "Vider définitivement le fil de la session Routines.",
+  description: "Vider définitivement le fil de cette conversation.",
   kind: "native",
   skill: "",
   source: "interface",
 };
 type Catalog = {
   default_provider: string;
+  /** Délégations écartées au chargement — signalées, jamais bloquantes. */
+  agent_warnings?: string[];
   agents: Agent[];
   skills: Skill[];
   providers: {
@@ -171,11 +178,16 @@ function ModuleSettingsPanel({
   saving,
   onChange,
   onSave,
+  header,
 }: {
   modules: ConfigurableModule[];
   saving: boolean;
   onChange: (moduleId: string, fieldName: string, value: unknown) => void;
   onSave: (module: ConfigurableModule) => void;
+  /** Rendu au-dessus des modules, dans le même corps défilant. La modale place
+   *  tous ses enfants directs dans une seule cellule de grille : un second bloc
+   *  frère s'y serait rangé en colonne, à côté de celui-ci. */
+  header?: React.ReactNode;
 }) {
   const stateLabel = {
     configured: "Configuré",
@@ -184,6 +196,7 @@ function ModuleSettingsPanel({
   };
   return (
     <div className="management-body module-settings-list">
+      {header}
       {modules.map((module) => (
         <section className="module-settings-card" key={module.id}>
           <header>
@@ -363,6 +376,7 @@ type ManagedResource = {
   content: string;
   telegram?: TelegramAgentConfig;
   has_avatar?: boolean;
+  subagent?: boolean;
 };
 
 type TelegramAgentConfig = {
@@ -788,6 +802,7 @@ const providerKindLabels: Record<string, string> = {
   "openai-codex": "Codex — connexion ChatGPT",
   openai: "OpenAI API — clé API",
   deepseek: "DeepSeek — clé API",
+  qwen: "Qwen — clé API",
   "llama-cpp": "llama.cpp — local",
   "claude-oauth": "Claude — connexion OAuth",
   anthropic: "Anthropic API — clé API",
@@ -802,6 +817,26 @@ const providerKindLabels: Record<string, string> = {
  * la configuration de `main` et voir `deepseek-v4-flash` dans le composer, sans
  * rien pour expliquer l'écart.
  */
+type KnowledgePage = {
+  slug: string;
+  title: string;
+  tags: string[];
+  ingested: string;
+  source: string;
+  summary: string;
+  bytes: number;
+};
+
+type ContentHome = {
+  /** Dossier réellement utilisé par le kernel en cours d'exécution. */
+  current: string;
+  /** Choix enregistré, ou null tant que l'emplacement par défaut s'applique. */
+  configured: string | null;
+  default: string;
+  /** `AMK_HOME` l'emporte sur le réglage : le taire rendrait l'écran menteur. */
+  environment_override: string | null;
+};
+
 type ComposerPreferences = {
   securityMode: "safe" | "limited" | "power";
   providerId: string;
@@ -1157,6 +1192,20 @@ export default function Home() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState("");
   const [workspaceInput, setWorkspaceInput] = useState("");
+  // Rien n'entre dans le contexte par défaut : `off` est délibéré, la
+  // connaissance ne s'invite pas d'elle-même.
+  const [knowledgeMode, setKnowledgeMode] = useState<KnowledgeMode>("off");
+  const [knowledgePages, setKnowledgePages] = useState<KnowledgePage[]>([]);
+  const [knowledgeSelection, setKnowledgeSelection] = useState<string[]>([]);
+  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  const [knowledgeError, setKnowledgeError] = useState("");
+  // Emplacement du dossier de données. Le kernel l'ouvre au démarrage : un
+  // changement ne prend effet qu'au suivant, et l'interface doit le dire.
+  const [contentHome, setContentHome] = useState<ContentHome | null>(null);
+  const [contentHomeInput, setContentHomeInput] = useState("");
+  const [contentHomeBusy, setContentHomeBusy] = useState(false);
+  const [contentHomeNotice, setContentHomeNotice] = useState("");
+  const [contentHomeError, setContentHomeError] = useState("");
   const [workspaceError, setWorkspaceError] = useState("");
   const [pickingWorkspace, setPickingWorkspace] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -1273,21 +1322,34 @@ export default function Home() {
    * kernel éteint.
    */
   const loadCatalog = useCallback(async () => {
+    // Deux pannes distinctes, deux gestes distincts : un kernel éteint se
+    // lance, un kernel mal configuré se corrige. Les confondre derrière un même
+    // message obligeait à deviner laquelle des deux on avait.
+    let response: Response;
     try {
-      const response = await fetch("/api/kernel/catalog");
-      if (!response.ok) {
-        throw new Error(`Le kernel a répondu ${response.status} sur /api/catalog.`);
-      }
+      response = await fetch("/api/kernel/catalog");
+    } catch {
+      setCatalogError("Kernel injoignable. Lance-le avec `agents start`.");
+      return null;
+    }
+    if (!response.ok) {
+      // Le corps porte la cause réelle — fichier manquant, chemin cherché. La
+      // jeter pour n'afficher qu'un code laissait devant un « 503 » sans le
+      // moindre moyen d'agir.
+      const detail = await response
+        .json()
+        .then((body: { detail?: unknown }) => formatApiDetail(body.detail))
+        .catch(() => "");
+      setCatalogError(detail || `Le kernel a répondu ${response.status} sur /api/catalog.`);
+      return null;
+    }
+    try {
       const data = (await response.json()) as Catalog;
       setCatalog(data);
       setCatalogError("");
       return data;
-    } catch (error) {
-      setCatalogError(
-        error instanceof Error && error.message.startsWith("Le kernel")
-          ? error.message
-          : "Démarre le kernel avec `amk serve`.",
-      );
+    } catch {
+      setCatalogError("Réponse du kernel illisible sur /api/catalog.");
       return null;
     }
   }, []);
@@ -1404,12 +1466,22 @@ export default function Home() {
 
   const refreshGit = useCallback(async (workspace: string) => {
     try {
-      const [statusResponse, branchesResponse] = await Promise.all([
-        fetch(`/api/kernel/git/status?workspace=${encodeURIComponent(workspace)}`),
-        fetch(`/api/kernel/git/branches?workspace=${encodeURIComponent(workspace)}`),
-      ]);
+      const statusResponse = await fetch(
+        `/api/kernel/git/status?workspace=${encodeURIComponent(workspace)}`,
+      );
       const status = await readApiPayload<GitSnapshot>(statusResponse);
       setGitSnapshot(status.available ? status : null);
+      // Les branches ne sont demandées qu'une fois le dépôt confirmé : sur un
+      // projet non versionné, `/branches` répond 422 à chaque rafraîchissement.
+      // L'erreur était rattrapée, mais elle inondait la console et masquait les
+      // vraies. Une requête en série coûte moins qu'une erreur permanente.
+      if (!status.available) {
+        setGitBranches([]);
+        return;
+      }
+      const branchesResponse = await fetch(
+        `/api/kernel/git/branches?workspace=${encodeURIComponent(workspace)}`,
+      );
       if (branchesResponse.ok) {
         const branchData = await readApiPayload<{ current: string; branches: string[] }>(branchesResponse);
         setGitBranches(branchData.branches);
@@ -1438,11 +1510,13 @@ export default function Home() {
     const value = prompt.trimStart();
     if (!value.startsWith("/") || value.includes(" ")) return [];
     const query = value.toLowerCase();
-    const availableCommands = isRoutineInbox
+    // `/clear` vaut pour toute conversation ouverte, pas seulement la boîte de
+    // routines. Il n'a en revanche aucun sens sur une session pas encore créée.
+    const availableCommands = activeSessionId
       ? [routineClearCommand, ...slashCommands]
       : slashCommands;
     return availableCommands.filter((item) => item.command.startsWith(query));
-  }, [prompt, slashCommands, isRoutineInbox]);
+  }, [prompt, slashCommands, activeSessionId]);
 
   useEffect(() => {
     if (!activeWorkspace) return;
@@ -1783,6 +1857,9 @@ export default function Home() {
   useEffect(() => {
     if (managementModal !== "settings") return;
     setManagementError("");
+    setContentHomeNotice("");
+    setContentHomeError("");
+    void loadContentHome();
     fetch("/api/kernel/admin/module-settings")
       .then(async (response) => {
         if (!response.ok) throw new Error("Impossible de charger les paramètres");
@@ -2301,9 +2378,12 @@ export default function Home() {
   }
 
   async function clearRoutineSession() {
-    if (!activeSessionId || !isRoutineInbox || clearingSession) return;
+    if (!activeSessionId || clearingSession) return;
     if (!window.confirm(
-      "Vider définitivement tous les messages et toutes les traces de la session Routines ?",
+      isRoutineInbox
+        ? "Vider définitivement tous les messages et toutes les traces de la session Routines ?"
+        : "Vider définitivement cette conversation ? Messages, traces, plan et"
+          + " pièces jointes seront supprimés, sans possibilité de retour.",
     )) return;
     setClearingSession(true);
     setAttachmentError("");
@@ -2998,6 +3078,75 @@ export default function Home() {
     registerWorkspace(data as Workspace);
   }
 
+  async function openKnowledge() {
+    setKnowledgeError("");
+    setKnowledgeOpen(true);
+    try {
+      const response = await fetch(
+        `/api/kernel/admin/knowledge?agent_id=${encodeURIComponent(agentId)}`,
+      );
+      const data = await readApiPayload<{ pages: KnowledgePage[] }>(response);
+      setKnowledgePages(data.pages);
+      // Une page supprimée depuis la dernière sélection ne doit pas rester
+      // cochée : elle serait ignorée à l'envoi sans que rien ne le dise.
+      const disponibles = new Set(data.pages.map((page) => page.slug));
+      setKnowledgeSelection((current) => current.filter((slug) => disponibles.has(slug)));
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "Bibliothèque illisible");
+      setKnowledgePages([]);
+    }
+  }
+
+  async function loadContentHome() {
+    try {
+      const response = await fetch("/api/kernel/admin/content-home");
+      const data = await readApiPayload<ContentHome>(response);
+      setContentHome(data);
+      setContentHomeInput(data.configured || "");
+    } catch {
+      /* l'écran reste utilisable sans cette information */
+    }
+  }
+
+  async function saveContentHome(path: string) {
+    setContentHomeBusy(true);
+    setContentHomeError("");
+    setContentHomeNotice("");
+    try {
+      const response = await fetch("/api/kernel/admin/content-home", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: path.trim() || null }),
+      });
+      await readApiPayload(response);
+      await loadContentHome();
+      setContentHomeNotice(
+        path.trim()
+          ? "Emplacement enregistré. Il sera utilisé au prochain démarrage d’AMK."
+          : "Emplacement par défaut rétabli. Effectif au prochain démarrage d’AMK.",
+      );
+    } catch (error) {
+      setContentHomeError(
+        error instanceof Error ? error.message : "Enregistrement impossible",
+      );
+    } finally {
+      setContentHomeBusy(false);
+    }
+  }
+
+  async function pickContentHome() {
+    setContentHomeError("");
+    try {
+      const response = await fetch("/api/kernel/workspaces/pick", { method: "POST" });
+      const data = await readApiPayload<{ path: string }>(response);
+      if (data.path) setContentHomeInput(data.path);
+    } catch (error) {
+      setContentHomeError(
+        error instanceof Error ? error.message : "Sélection impossible",
+      );
+    }
+  }
+
   async function pickWorkspace() {
     setPickingWorkspace(true);
     setWorkspaceError("");
@@ -3068,6 +3217,8 @@ export default function Home() {
             : conversationWorkspace || activeWorkspace || undefined,
           session_id: sessionId,
           security_mode: securityMode,
+          knowledge_mode: knowledgeMode,
+          knowledge_pages: knowledgeMode === "manual" ? knowledgeSelection : [],
           provider_id: providerId || undefined,
           model: selectedModel || undefined,
           reasoning,
@@ -3453,15 +3604,19 @@ export default function Home() {
         footer={
           <>
             <ThemePicker />
-            <span
-              className="rail-item rail-status"
-              data-state={catalogError ? "offline" : "online"}
-              data-tip={catalogError || `Kernel connecté · ${catalog?.default_provider || "…"}`}
-              role="status"
-              aria-label="État du kernel"
-            >
-              <Icon name="activity" size="md" />
-            </span>
+            {/* Même règle que dans le panneau déplié : un kernel qui fonctionne
+                n'a rien à signaler, seule la panne mérite d'être vue. */}
+            {catalogError && (
+              <span
+                className="rail-item rail-status"
+                data-state="offline"
+                data-tip={catalogError}
+                role="status"
+                aria-label="État du kernel"
+              >
+                <Icon name="activity" size="md" />
+              </span>
+            )}
           </>
         }
       />
@@ -3471,13 +3626,26 @@ export default function Home() {
         collapsed={!panels.left.open}
         footer={
           <>
-            <div className={`kernel-status ${catalogError ? "offline" : ""}`} role="status">
-              <span />
-              <div>
-                <strong>{catalogError ? "Kernel hors ligne" : "Kernel connecté"}</strong>
-                <small>{catalogError || catalog?.default_provider || "connexion…"}</small>
+            {/* L'état nominal du kernel n'apprenait rien : il est connecté la
+                quasi-totalité du temps, et son provider est déjà lisible dans le
+                composer. Seule la panne mérite d'occuper cette place. */}
+            {catalogError && (
+              <div className="kernel-status offline" role="status">
+                <span />
+                <div>
+                  <strong>Kernel hors ligne</strong>
+                  <small>{catalogError}</small>
+                </div>
               </div>
-            </div>
+            )}
+            <button
+              type="button"
+              className="panel-settings"
+              onClick={() => openManagement("settings")}
+            >
+              <Icon name="settings" size="sm" />
+              <span>Paramètres</span>
+            </button>
             <ThemePicker placement="panel" />
           </>
         }
@@ -3625,12 +3793,90 @@ export default function Home() {
               <div className="management-error" role="alert">{managementError}</div>
             )}
 
+            {/* Une hiérarchie invalide n'empêche plus le catalogue de charger :
+                la délégation fautive est ignorée et signalée ici, là même où
+                elle se corrige. */}
+            {managementModal === "agents" && !resourceEditor
+              && (catalog?.agent_warnings?.length ?? 0) > 0 && (
+              <div className="management-warning" role="status">
+                {catalog?.agent_warnings?.map((warning) => (
+                  <p key={warning}>{warning}</p>
+                ))}
+              </div>
+            )}
+
             {managementModal === "settings" && (
               <ModuleSettingsPanel
                 modules={moduleSettings}
                 saving={savingResource}
                 onChange={updateModuleSetting}
                 onSave={(module) => void saveModuleSettings(module)}
+                header={
+                  <section className="content-home">
+                  <h3>Dossier de données</h3>
+                  <p>
+                    Emplacement de <code>content-agents/</code> — agents, skills,
+                    sessions, secrets et base d’état. Indique le dossier parent,
+                    ou un <code>content-agents</code> existant. Le kernel l’ouvre
+                    au démarrage : un changement prend effet au suivant, et aucun
+                    fichier n’est déplacé.
+                  </p>
+                  <form
+                    className="workspace-form modal-workspace-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveContentHome(contentHomeInput);
+                    }}
+                  >
+                    <input
+                      value={contentHomeInput}
+                      onChange={(event) => setContentHomeInput(event.target.value)}
+                      placeholder={contentHome?.default || "/chemin/du/dossier"}
+                      aria-label="Dossier de données"
+                      disabled={contentHomeBusy}
+                    />
+                    <button
+                      type="button"
+                      className="pick-workspace"
+                      disabled={contentHomeBusy}
+                      onClick={() => void pickContentHome()}
+                      aria-label="Choisir un dossier"
+                      title="Choisir un dossier"
+                    >
+                      <Icon name="folderOpen" size="sm" />
+                    </button>
+                    <button
+                      className="add-workspace"
+                      disabled={contentHomeBusy}
+                      aria-label="Enregistrer l’emplacement"
+                      title="Enregistrer"
+                    >
+                      <Icon
+                        name={contentHomeBusy ? "running" : "save"}
+                        size="sm"
+                        className={contentHomeBusy ? "spin" : undefined}
+                      />
+                    </button>
+                  </form>
+                  <dl className="content-home-facts">
+                    <dt>Utilisé actuellement</dt>
+                    <dd>{contentHome?.current || "…"}</dd>
+                    {contentHome?.environment_override && (
+                      <>
+                        <dt>Forcé par l’environnement</dt>
+                        {/* Sans cette ligne, on chercherait longtemps pourquoi
+                            le réglage enregistré ne s'applique jamais. */}
+                        <dd>
+                          AMK_HOME = {contentHome.environment_override} — ce
+                          réglage reste sans effet tant que la variable existe.
+                        </dd>
+                      </>
+                    )}
+                  </dl>
+                  {contentHomeNotice && <p className="content-home-notice">{contentHomeNotice}</p>}
+                  {contentHomeError && <p className="content-home-error">{contentHomeError}</p>}
+                  </section>
+                }
               />
             )}
 
@@ -3783,6 +4029,28 @@ export default function Home() {
                         )}
                       </fieldset>
                       <fieldset className="field-wide checkbox-field">
+                        <legend>Niveau</legend>
+                        <label className="provider-vision field-wide">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(resourceEditor.frontmatter.subagent)}
+                            onChange={(event) => {
+                              updateEditorField("subagent", event.target.checked);
+                              // Un sous-agent ne délègue à personne : garder une
+                              // liste d'enfants la rendrait invalide au chargement.
+                              if (event.target.checked) updateEditorField("delegates", []);
+                            }}
+                          />
+                          Sous-agent
+                        </label>
+                        <small>
+                          Un sous-agent est appelé par un orchestrateur et ne délègue
+                          à personne. Il n’apparaît pas comme agent principal et
+                          partage la bibliothèque de connaissance de celui qui
+                          l’invoque.
+                        </small>
+                      </fieldset>
+                      <fieldset className="field-wide checkbox-field">
                         <legend>Mémoire personnelle</legend>
                         <label className="provider-vision field-wide">
                           <input
@@ -3836,36 +4104,41 @@ export default function Home() {
                           {catalog?.skills.length === 0 && <p>Aucune skill installée.</p>}
                         </div>
                       </fieldset>
-                      <fieldset className="field-wide checkbox-field">
-                        <legend>Agents enfants</legend>
-                        <div className="checkbox-field-actions">
-                          <button
-                            type="button"
-                            onClick={() => updateEditorField(
-                              "delegates",
-                              catalog?.agents.map((agent) => agent.id)
-                                .filter((id) => id !== resourceEditor.id) || [],
+                      {/* Un sous-agent ne délègue à personne : lui proposer des
+                          enfants suggérerait une hiérarchie qui n'existe pas. */}
+                      {!resourceEditor.frontmatter.subagent && (
+                        <fieldset className="field-wide checkbox-field">
+                          <legend>Sous-agents accessibles</legend>
+                          <p className="field-note">
+                            Sans sélection, cet orchestrateur accède à tous les
+                            sous-agents. En cocher revient à restreindre — un
+                            sous-agent ajouté plus tard ne lui serait alors pas
+                            proposé.
+                          </p>
+                          <div className="checkbox-field-actions">
+                            <button type="button" onClick={() => updateEditorField("delegates", [])}>
+                              Tous
+                            </button>
+                          </div>
+                          <div className="checkbox-grid">
+                            {catalog?.agents
+                              .filter((agent) => agent.subagent)
+                              .map((agent) => (
+                                <label key={agent.id} title={agent.description}>
+                                  <input
+                                    type="checkbox"
+                                    checked={resourceList(resourceEditor.frontmatter.delegates).includes(agent.id)}
+                                    onChange={() => toggleEditorListField("delegates", agent.id)}
+                                  />
+                                  <span><strong>{agent.id}</strong><small>{agent.description}</small></span>
+                                </label>
+                              ))}
+                            {!catalog?.agents.some((agent) => agent.subagent) && (
+                              <p>Aucun sous-agent défini.</p>
                             )}
-                          >Tout sélectionner</button>
-                          <button type="button" onClick={() => updateEditorField("delegates", [])}>
-                            Aucun
-                          </button>
-                        </div>
-                        <div className="checkbox-grid">
-                          {catalog?.agents
-                            .filter((agent) => agent.id !== resourceEditor.id)
-                            .map((agent) => (
-                              <label key={agent.id} title={agent.description}>
-                                <input
-                                  type="checkbox"
-                                  checked={resourceList(resourceEditor.frontmatter.delegates).includes(agent.id)}
-                                  onChange={() => toggleEditorListField("delegates", agent.id)}
-                                />
-                                <span><strong>{agent.id}</strong><small>{agent.provider}</small></span>
-                              </label>
-                            ))}
-                        </div>
-                      </fieldset>
+                          </div>
+                        </fieldset>
+                      )}
                     </>
                   ) : (
                     <fieldset className="field-wide checkbox-field">
@@ -3954,15 +4227,27 @@ export default function Home() {
 
             {!resourceEditor && managementModal === "agents" && (
               <div className="management-body management-list">
-                {managedResources.map((resource) => (
-                  <div className={`resource-row ${resource.id === agentId ? "active" : ""}`} key={resource.id}>
+                {/* Orchestrateurs d'abord, chacun suivi des sous-agents en
+                    retrait : la liste montre la hiérarchie au lieu d'aligner
+                    six agents de rôles très différents. */}
+                {[...managedResources]
+                  .sort((left, right) => Number(left.subagent) - Number(right.subagent))
+                  .map((resource) => (
+                  <div
+                    className={`resource-row ${resource.id === agentId ? "active" : ""}`}
+                    data-subagent={resource.subagent ? "true" : undefined}
+                    key={resource.id}
+                  >
                     <button
                       className="resource-select"
                       onClick={() => { setAgentId(resource.id); setManagementModal(null); }}
                     >
                       <span className="context-icon agent-icon">{resource.id.slice(0, 1).toUpperCase()}</span>
                       <span>
-                        <strong>{resource.id}</strong>
+                        <strong>
+                          {resource.id}
+                          {resource.subagent && <em className="resource-tag">sous-agent</em>}
+                        </strong>
                         <small>{resource.description}</small>
                       </span>
                     </button>
@@ -4038,7 +4323,7 @@ export default function Home() {
                       value={providerEditor.kind}
                       onChange={(event) => selectProviderKind(event.target.value)}
                     >
-                      {["deepseek", "llama-cpp", "openai-codex", "claude-oauth", "openai", "anthropic"].map((kind) => (
+                      {["deepseek", "qwen", "llama-cpp", "openai-codex", "claude-oauth", "openai", "anthropic"].map((kind) => (
                         <option key={kind} value={kind}>
                           {providerKindLabels[kind] || kind}
                         </option>
@@ -5135,6 +5420,15 @@ export default function Home() {
             canAttach={!running && composerImages.length < 4}
             canSend={Boolean(prompt.trim()) && !running && !clearingSession}
             vision={Boolean(activeProvider?.vision)}
+            knowledgeMode={knowledgeMode}
+            knowledgeCount={knowledgeSelection.length}
+            onKnowledgeModeChange={(mode) => {
+              setKnowledgeMode(mode);
+              // Passer en manuel sans rien avoir choisi n'injecterait rien :
+              // autant ouvrir la sélection tout de suite.
+              if (mode === "manual") void openKnowledge();
+            }}
+            onKnowledgeSelect={() => void openKnowledge()}
             onAttach={() => imageInput.current?.click()}
             onSecurityModeChange={(mode) => void changeSecurityMode(mode)}
             onModelChange={(nextProvider, model) => {
@@ -5251,6 +5545,77 @@ export default function Home() {
           />
         )}
       </Dock>
+
+      {knowledgeOpen && (
+        <div className="management-backdrop" onClick={() => setKnowledgeOpen(false)}>
+          <section
+            className="management-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="knowledge-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <p className="eyebrow">Bibliothèque de {agentId}</p>
+                <h2 id="knowledge-title">Pages à joindre</h2>
+              </div>
+              <div className="modal-header-actions">
+                <button onClick={() => setKnowledgeOpen(false)} aria-label="Fermer">
+                  <Icon name="close" size="sm" />
+                </button>
+              </div>
+            </header>
+            {knowledgeError && <div className="management-error">{knowledgeError}</div>}
+            <div className="management-body management-list">
+              {knowledgePages.length > 0 && (
+                <div className="checkbox-field-actions">
+                  <button
+                    type="button"
+                    onClick={() => setKnowledgeSelection(knowledgePages.map((page) => page.slug))}
+                  >Tout sélectionner</button>
+                  <button type="button" onClick={() => setKnowledgeSelection([])}>Aucune</button>
+                </div>
+              )}
+              {knowledgePages.map((page) => (
+                <div className="resource-row" key={page.slug}>
+                  <label className="resource-select">
+                    <input
+                      type="checkbox"
+                      checked={knowledgeSelection.includes(page.slug)}
+                      onChange={() => setKnowledgeSelection((current) =>
+                        current.includes(page.slug)
+                          ? current.filter((slug) => slug !== page.slug)
+                          : [...current, page.slug],
+                      )}
+                    />
+                    <span>
+                      <strong>
+                        {page.title}
+                        {page.tags.map((tag) => (
+                          <em className="resource-tag" key={tag}>{tag.trim()}</em>
+                        ))}
+                      </strong>
+                      <small>
+                        {/* Le poids est affiché parce qu'il se paie : une
+                            sélection large peut saturer la fenêtre. */}
+                        {page.ingested || "sans date"} · {Math.max(1, Math.round(page.bytes / 1024))} ko
+                        {page.summary ? ` · ${page.summary}` : ""}
+                      </small>
+                    </span>
+                  </label>
+                </div>
+              ))}
+              {knowledgePages.length === 0 && !knowledgeError && (
+                <div className="management-empty">
+                  <strong>Bibliothèque vide</strong>
+                  <p>Utilise <code>/save</code> pour y archiver une recherche.</p>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
 
       {gitCommitMessage !== null && (
         <GitCommitDialog

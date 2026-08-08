@@ -200,7 +200,10 @@ def default_key_env(kind: str) -> str:
 
 
 def default_base_url(kind: str) -> str | None:
-    return {"deepseek": "https://api.deepseek.com"}.get(kind)
+    return {
+        "deepseek": "https://api.deepseek.com",
+        "qwen": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+    }.get(kind)
 
 
 def local_base_url(config: ProviderConfig) -> str:

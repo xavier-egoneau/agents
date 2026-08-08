@@ -337,7 +337,7 @@ class RagService:
         terms = tokenize(query)
         if not terms:
             return {"results": [], "query": query}
-        query_vector = (await self.embed([query]))[0]
+        query_vector, degraded = await self._query_vector(query)
         project = str(self.workspace)
         fts_query = " OR ".join(f'"{term.replace(chr(34), "")}"' for term in terms[:20])
         with self._db() as db:
@@ -357,20 +357,26 @@ class RagService:
             coordinates = {
                 row["chunk_id"]: (row["start_line"], row["end_line"]) for row in vector_rows
             }
-        vector_ranked = sorted(
-            (
+        if query_vector is None:
+            # Sans vecteur de requête, la comparaison sémantique n'a pas de
+            # sens; la recherche lexicale, elle, n'a jamais eu besoin du
+            # service d'embeddings.
+            vector_ranked: list[tuple[float, Any]] = []
+        else:
+            vector_ranked = sorted(
                 (
-                    cosine(query_vector, json.loads(row["embedding_json"])),
-                    row,
-                )
-                for row in vector_rows
-            ),
-            key=lambda item: item[0],
-            reverse=True,
-        )
-        vector_ranked = [item for item in vector_ranked if item[0] >= self.config.min_vector_score][
-            : max(limit * 5, 25)
-        ]
+                    (
+                        cosine(query_vector, json.loads(row["embedding_json"])),
+                        row,
+                    )
+                    for row in vector_rows
+                ),
+                key=lambda item: item[0],
+                reverse=True,
+            )
+            vector_ranked = [
+                item for item in vector_ranked if item[0] >= self.config.min_vector_score
+            ][: max(limit * 5, 25)]
         scores: dict[str, float] = {}
         evidence: dict[str, tuple[str, str, float, float]] = {}
         for rank, row in enumerate(lexical_rows, 1):
@@ -413,10 +419,27 @@ class RagService:
         return {
             "query": query,
             "results": results,
-            "backend": "hybrid_fts5_vector_rrf",
+            "backend": "fts5_only" if query_vector is None else "hybrid_fts5_vector_rrf",
             "embedding_backend": self.config.embedding_backend,
             "embedding_model": self.config.embedding_model,
+            # Nommer la dégradation : des résultats purement lexicaux présentés
+            # comme hybrides laisseraient croire qu'un sujet est absent alors
+            # qu'il n'a simplement pas été trouvé par les mots employés.
+            "degraded": degraded,
         }
+
+    async def _query_vector(self, query: str) -> tuple[list[float] | None, str | None]:
+        """Vecteur de la requête, ou None si le service d'embeddings est absent.
+
+        L'appel était en première ligne de `search` : une erreur de connexion
+        emportait la recherche entière, y compris la partie FTS5 qui ne dépend
+        d'aucun service. Une bibliothèque devenait inutilisable faute d'un
+        serveur local lancé — alors que le lexical seul rend déjà service.
+        """
+        try:
+            return (await self.embed([query]))[0], None
+        except Exception as exc:  # noqa: BLE001 — toute panne du service vaut repli
+            return None, f"{type(exc).__name__}: {exc}"
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if self.config.embedding_backend == "feature_hash":

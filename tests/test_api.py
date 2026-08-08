@@ -80,6 +80,33 @@ def test_health_and_catalog(project: Path) -> None:
     assert missing.status_code == 422
 
 
+def test_the_catalog_carries_the_hierarchy_warnings(project: Path) -> None:
+    """L'avertissement doit atteindre l'écran où la configuration se corrige.
+
+    Le refus, lui, emportait le catalogue entier : plus d'agents, plus de
+    modale, aucun moyen de réparer depuis l'application.
+    """
+    agents = project / "content-agents" / "agents"
+    (agents / "sophie.md").write_text(
+        "---\nid: sophie\ndescription: Sophie\nprovider: test\ndelegates: [main]\n---\nSophie.\n",
+        encoding="utf-8",
+    )
+    (agents / "dev.md").write_text(
+        "---\nid: dev\ndescription: Dev\nprovider: test\nsubagent: true\n---\nDev.\n",
+        encoding="utf-8",
+    )
+    # `main` délègue : il est orchestrateur, sophie ne peut donc pas l'appeler.
+    (agents / "main.md").write_text(
+        "---\nid: main\ndescription: Main\nprovider: test\ndelegates: [dev]\n---\nMain.\n",
+        encoding="utf-8",
+    )
+
+    payload = TestClient(create_app(project)).get("/api/catalog").json()
+
+    assert {agent["id"] for agent in payload["agents"]} >= {"main", "sophie"}
+    assert any("orchestrateurs" in warning for warning in payload["agent_warnings"])
+
+
 def test_api_default_workspace_is_distinct_from_application_root(
     project: Path, tmp_path: Path
 ) -> None:
@@ -1206,3 +1233,50 @@ def test_module_settings_are_schema_driven_and_secrets_are_write_only(
     assert client.put(
         "/api/admin/module-settings/clock", json={"values": {"unknown": True}}
     ).status_code == 422
+
+
+def test_any_conversation_can_be_cleared(project: Path) -> None:
+    """`/clear` était refusé partout sauf sur la boîte de routines.
+
+    Depuis une conversation Telegram, la commande était avalée en silence : le
+    front la détournait, le kernel l'aurait refusée, et rien n'était envoyé.
+    """
+    ModuleRegistry(project / "tools").build_index()
+    app = create_app(project)
+    store = JsonlEventStore(project / "content-agents" / "sessions")
+    session_id, run_id = uuid4(), uuid4()
+    store.append(
+        Event(
+            session_id=session_id,
+            run_id=run_id,
+            agent_id="main",
+            type="session.started",
+            payload={
+                "prompt": "première question",
+                "trigger": "telegram",
+                "workspace": str(project),
+            },
+        )
+    )
+    store.append(
+        Event(
+            session_id=session_id,
+            run_id=run_id,
+            agent_id="main",
+            type="session.completed",
+            payload={"status": "success", "output": "une réponse"},
+        )
+    )
+
+    client = TestClient(app)
+    response = client.post(f"/api/sessions/{session_id}/clear")
+
+    assert response.status_code == 200
+    detail = client.get(f"/api/sessions/{session_id}").json()
+    assert detail["messages"] == []
+    # Ce qui définit la session lui survit : sans cela, un fil Telegram vidé
+    # serait reclassé en conversation ordinaire et disparaîtrait de ses listes.
+    assert detail["trigger"] == "telegram"
+    assert detail["workspace"] == str(project)
+    # Et surtout : vidée, pas relancée.
+    assert detail["status"] == "success"

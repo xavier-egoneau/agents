@@ -4202,7 +4202,7 @@
       "tools": [
         {
           "name": "knowledge_ingest",
-          "description": "Convertir une URL ou un document local en markdown et le classer dans la bibliothèque.",
+          "description": "Convertir une URL ou un document local en markdown et le classer dans la bibliotheque. Le titre designe un sujet : le reutiliser reecrit sa page, la version precedente partant au journal.",
           "category": "knowledge",
           "risk_tags": [
             "read",
@@ -7059,6 +7059,9 @@
                     "type": "array"
                   },
                   {
+                    "type": "string"
+                  },
+                  {
                     "type": "null"
                   }
                 ],
@@ -7180,6 +7183,9 @@
                       "type": "string"
                     },
                     "type": "array"
+                  },
+                  {
+                    "type": "string"
                   },
                   {
                     "type": "null"

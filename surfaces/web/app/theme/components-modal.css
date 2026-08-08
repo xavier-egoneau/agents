@@ -22,7 +22,10 @@
   max-height: min(760px, calc(100vh - 48px));
   overflow: hidden;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  /* Une ligne pour l'en-tête, deux pour les bandeaux (erreur puis
+     avertissement, chacune la sienne : partager une ligne les mettrait côte à
+     côte), la dernière pour le corps défilant. */
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-2xl);
   background: var(--surface-overlay);
@@ -37,7 +40,8 @@
   padding: 20px 22px 17px;
 }
 .management-modal > .management-error { grid-row: 2; }
-.management-modal > :not(header):not(.management-error) { grid-row: 3; }
+.management-modal > .management-warning { grid-row: 3; }
+.management-modal > :not(header):not(.management-error):not(.management-warning) { grid-row: 4; }
 .management-modal h2 { margin: 5px 0 0; color: var(--text-strong); font: var(--weight-semibold) var(--text-3xl) var(--font-display); }
 .modal-header-actions { display: flex; gap: 7px; }
 .modal-header-actions button {
@@ -71,6 +75,25 @@
   font-size: var(--text-sm);
   line-height: var(--leading-snug);
 }
+/* L'avertissement décrit une configuration ignorée, pas une panne : il emprunte
+   la forme du bandeau d'erreur mais son registre de couleur d'alerte douce. */
+.management-warning {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  align-self: start;
+  margin: 14px 22px 0;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  padding: 9px 11px;
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+}
+.management-warning p { margin: 0; }
+
 .management-body { min-height: 0; overflow-y: auto; padding: 18px 22px 22px; }
 .management-list { display: grid; gap: 7px; }
 
@@ -842,4 +865,93 @@ label.resource-select { cursor: pointer; }
   .resource-fields .field-wide { grid-column: 1; }
   .resource-editor-actions { display: grid; grid-template-columns: 1fr; }
   .resource-editor-actions button { width: 100%; }
+}
+
+/* --- Dossier de données ----------------------------------------------------- */
+
+/* Premier bloc du corps défilant des paramètres : il partage la gouttière de
+   `.module-settings-list` et n'ajoute donc aucune marge propre. */
+.content-home {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.content-home h3 {
+  margin: 0 0 5px;
+  color: var(--text-strong);
+  font: var(--weight-semibold) var(--text-md) var(--font-sans);
+}
+.content-home > p {
+  margin: 0 0 11px;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+.content-home-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 11px 0 0;
+}
+.content-home-facts dt { color: var(--text-muted); font-size: var(--text-sm); }
+.content-home-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-default);
+  font: var(--text-sm) var(--font-mono);
+}
+.content-home-notice,
+.content-home-error {
+  margin: 11px 0 0;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+.content-home-notice { background: var(--success-soft); color: var(--success-text); }
+.content-home-error { background: var(--danger-soft); color: var(--danger-text); }
+
+/* Hiérarchie des agents : le retrait porte le niveau, le libellé le confirme.
+   Deux signaux valent mieux qu'un — le retrait seul se perd dès qu'on filtre
+   la liste ou qu'on la trie autrement. */
+.resource-row[data-subagent] { margin-left: 22px; }
+.resource-row[data-subagent] .context-icon { opacity: 0.75; }
+
+.field-note {
+  margin: 0 0 9px;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+/* Contrôle de connaissance du composer : l'icône ouvre la sélection, le menu
+   change de mode. Inactif par défaut — la bibliothèque ne s'invite pas. */
+.knowledge-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--radius-pill);
+  opacity: 0.55;
+}
+.knowledge-control[data-active] { opacity: 1; }
+.knowledge-control > button { position: relative; }
+.knowledge-control select {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+/* Pastille du nombre de pages retenues : elle dit ce qui partira réellement,
+   là où l'icône seule ne distingue pas « manuel sans rien » de « manuel ». */
+.knowledge-count {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 15px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  padding: 0 3px;
+  text-align: center;
+  font: var(--weight-bold) var(--text-2xs) var(--font-sans);
 }

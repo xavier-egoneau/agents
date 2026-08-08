@@ -260,3 +260,41 @@ async def test_model_context_reference_is_persisted(tmp_path: Path) -> None:
     known = await module.model_context_status(ctx)
     assert known["data"]["known"] is True
     assert known["data"]["context_window_tokens"] == 128_000
+
+
+def _process_module():
+    source = Path(__file__).parents[1] / "tools/modules/process/module.py"
+    spec = importlib.util.spec_from_file_location("test_process_arguments", source)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_arguments_accept_the_string_form_models_actually_send() -> None:
+    """Un run entier a été perdu sur cette erreur de forme.
+
+    Le modèle envoie régulièrement une ligne de commande là où le schéma attend
+    une liste. La validation refusait l'appel, et deux essais suffisaient à
+    condamner le run — alors que l'intention ne souffrait aucune ambiguïté.
+    """
+    normalise = _process_module()._arguments
+
+    assert normalise("-m http.server 8080") == ["-m", "http.server", "8080"]
+    assert normalise(["-m", "http.server", "8080"]) == ["-m", "http.server", "8080"]
+    assert normalise(None) == []
+
+
+def test_quoted_arguments_stay_whole() -> None:
+    """Un chemin contenant une espace reste un seul argument."""
+    normalise = _process_module()._arguments
+
+    assert normalise('run "mon dossier/fichier.txt"') == ["run", "mon dossier/fichier.txt"]
+
+
+def test_normalising_arguments_never_builds_a_shell_command() -> None:
+    """Le découpage ne doit pas interpréter les métacaractères d'un shell :
+    ils restent des arguments littéraux, et la commande est exécutée sans shell."""
+    normalise = _process_module()._arguments
+
+    assert normalise("echo a && rm -rf /") == ["echo", "a", "&&", "rm", "-rf", "/"]

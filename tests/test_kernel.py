@@ -735,7 +735,7 @@ id: child
 description: Child worker
 provider: test
 modules: []
-delegates: []
+subagent: true
 ---
 Complete the delegated task.
 """,
@@ -858,7 +858,7 @@ description: Child worker
 provider: test
 model: modele-de-l-enfant
 modules: []
-delegates: []
+subagent: true
 ---
 Complete the delegated task.
 """,
@@ -907,7 +907,7 @@ description: Child worker
 provider: test
 model: modele-de-l-enfant
 modules: []
-delegates: []
+subagent: true
 ---
 Complete the delegated task.
 """,

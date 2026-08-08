@@ -94,6 +94,8 @@ class ProjectConfig:
         self.root = Path(root).resolve()
         self.content_root = content_root(self.root)
         self.tools_root = self.root / "tools"
+        # Anomalies de hiérarchie relevées au dernier chargement.
+        self.agent_warnings: list[str] = []
         for sensitive in ("providers.json", "secrets.json"):
             path = self.content_root / sensitive
             if path.exists():
@@ -180,8 +182,98 @@ class ProjectConfig:
         for path in sorted((self.root / ".codex" / "agents").glob("*.toml")):
             agent = self._codex_agent(path, default_provider)
             result.setdefault(agent.id, agent)
+        result = self._with_resolved_levels(result)
+        # Écarter avant de compléter : un orchestrateur dont la seule délégation
+        # était invalide se retrouve alors avec la bibliothèque partagée plutôt
+        # qu'avec rien du tout.
+        result = self._enforce_levels(result)
+        result = self._with_default_delegates(result)
         self._validate_agent_graph(result)
         return result
+
+    def _enforce_levels(self, agents: dict[str, AgentConfig]) -> dict[str, AgentConfig]:
+        """Écarte les délégations qui violent la hiérarchie, sans bloquer.
+
+        Deux niveaux, pas davantage : une chaîne d'orchestrateurs rendrait la
+        bibliothèque ambiguë — elle suit la racine du run — et multiplierait les
+        contextes intermédiaires sans qu'aucun n'ait la vue d'ensemble.
+
+        Mais c'est une règle d'organisation, pas une incohérence dangereuse
+        comme un cycle ou un délégué inexistant. La faire échouer rendait toute
+        l'application inutilisable, y compris les écrans qui auraient permis de
+        la corriger. La délégation fautive est donc retirée et signalée.
+        """
+        self.agent_warnings = []
+        corrige: dict[str, AgentConfig] = {}
+        for agent_id, agent in agents.items():
+            if agent.subagent and agent.delegates:
+                self.agent_warnings.append(
+                    f"Le sous-agent {agent_id} ne peut pas déléguer : "
+                    f"{', '.join(sorted(agent.delegates))} ignoré(s). ({agent.source})"
+                )
+                corrige[agent_id] = agent.model_copy(update={"delegates": []})
+                continue
+            refuses = sorted(
+                child
+                for child in agent.delegates
+                if child in agents and not agents[child].subagent
+            )
+            if refuses:
+                self.agent_warnings.append(
+                    f"{agent_id} délègue vers des orchestrateurs, ignoré(s) : "
+                    f"{', '.join(refuses)}. Ajoute `subagent: true` à leur front matter "
+                    f"pour en faire des sous-agents. ({agent.source})"
+                )
+                corrige[agent_id] = agent.model_copy(
+                    update={"delegates": [c for c in agent.delegates if c not in refuses]}
+                )
+                continue
+            corrige[agent_id] = agent
+        return corrige
+
+    @staticmethod
+    def _with_resolved_levels(agents: dict[str, AgentConfig]) -> dict[str, AgentConfig]:
+        """Attribue un niveau aux agents qui n'en déclarent pas.
+
+        Est un sous-agent celui qu'un autre délègue et qui ne délègue lui-même à
+        personne : c'était la sémantique avant l'existence du champ, et elle
+        décrit fidèlement les configurations écrites à cette époque.
+
+        Une déclaration explicite prime toujours — y compris `subagent: false`,
+        qui interdit alors de le déléguer.
+        """
+        delegues = {child for agent in agents.values() for child in agent.delegates}
+        return {
+            agent_id: (
+                agent
+                if agent.subagent is not None
+                else agent.model_copy(
+                    update={"subagent": agent_id in delegues and not agent.delegates}
+                )
+            )
+            for agent_id, agent in agents.items()
+        }
+
+    @staticmethod
+    def _with_default_delegates(agents: dict[str, AgentConfig]) -> dict[str, AgentConfig]:
+        """Un orchestrateur sans `delegates` explicites les reçoit tous.
+
+        Les sous-agents sont une bibliothèque partagée, pas la propriété d'un
+        orchestrateur : créer un nouvel orchestrateur ne doit obliger ni à les
+        recopier, ni à les énumérer. Renseigner `delegates` reste possible et
+        signifie alors « ceux-là seulement ».
+        """
+        available = sorted(agent.id for agent in agents.values() if agent.subagent)
+        if not available:
+            return agents
+        return {
+            agent_id: (
+                agent.model_copy(update={"delegates": available})
+                if not agent.subagent and not agent.delegates
+                else agent
+            )
+            for agent_id, agent in agents.items()
+        }
 
     def skills(self, workspace: Path | str | None = None) -> dict[str, SkillConfig]:
         """Discover AMK skills from the project's explicit skill directory only.
@@ -372,6 +464,7 @@ class ProjectConfig:
             "skills": _string_list(header.get("skills", [])),
             "user_memory": bool(header.get("user_memory", False)),
             "declared_tools": declared_tools,
+            "subagent": header.get("subagent"),
             "delegates": _string_list(header.get("delegates", [])),
             "budgets": header.get("budgets"),
             "instructions": instructions,
@@ -397,6 +490,7 @@ class ProjectConfig:
             "skills": _string_list(data.get("skills", [])),
             "user_memory": bool(data.get("user_memory", False)),
             "declared_tools": [],
+            "subagent": data.get("subagent"),
             "delegates": _string_list(data.get("delegates", [])),
             "budgets": data.get("budgets"),
             "instructions": data.get("developer_instructions", ""),

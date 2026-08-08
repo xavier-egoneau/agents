@@ -179,6 +179,9 @@ class Kernel:
             model_name=active_model,
             context_window_tokens=context_window_tokens,
             context_calibration=self._context_calibration(request.session_id),
+            # L'agent demandé est la racine du run : c'est lui qui détermine la
+            # bibliothèque, y compris pour les sous-agents qu'il invoquera.
+            orchestrator_id=request.agent_id,
         )
         self.active_runs[request.session_id] = deps
         self.events.append(
@@ -246,6 +249,7 @@ class Kernel:
                 runtime_skills=request.skills,
                 workflow=request.workflow,
                 tool_allowlist=request.tool_allowlist,
+                knowledge_instruction=self._knowledge_instruction(request),
                 workspace=workspace,
                 security_mode=request.security_mode,
                 provider_override=request.provider_id,
@@ -952,6 +956,27 @@ class Kernel:
             model_name=model_name,
         )
 
+    def _knowledge_instruction(self, request: RunRequest) -> str:
+        """Matériel de bibliothèque à joindre au contexte, selon le mode.
+
+        Résolu ici plutôt que dans la fabrique d'agents : c'est la requête qui
+        porte le choix de l'utilisateur, et la bibliothèque dépend de
+        l'orchestrateur, que seul le kernel connaît à ce stade.
+        """
+        if request.knowledge_mode == "off":
+            return ""
+        from .knowledge import KnowledgeLibrary
+
+        racine = self.config.content_root
+        library = KnowledgeLibrary(racine / "workspaces" / request.agent_id / "knowledge")
+        try:
+            return _knowledge_instruction(
+                library, request.knowledge_mode, request.knowledge_pages
+            )
+        except OSError:
+            # Une bibliothèque illisible ne doit pas empêcher la conversation.
+            return ""
+
     def _context_calibration(self, session_id) -> float:
         """Écart mesuré entre les tokens facturés et notre estimation.
 
@@ -1075,6 +1100,7 @@ class Kernel:
         runtime_skills: list[str] | None = None,
         workflow: dict[str, Any] | None = None,
         tool_allowlist: list[str] | None = None,
+        knowledge_instruction: str = "",
         workspace: Path | None = None,
         security_mode: SecurityMode | None = None,
         provider_override: str | None = None,
@@ -1091,6 +1117,7 @@ class Kernel:
             runtime_skills=runtime_skills,
             workflow=workflow,
             tool_allowlist=tool_allowlist,
+            knowledge_instruction=knowledge_instruction,
             workspace=workspace,
             security_mode=security_mode,
             provider_override=provider_override,
@@ -1148,6 +1175,52 @@ class Kernel:
             else f"**Le run ne s'est pas terminé — {error_type}.**"
         )
         return "\n\n---\n\n".join(blocs)
+
+
+MAX_INJECTED_PAGE_BYTES = 60_000
+
+
+def _knowledge_instruction(library: Any, mode: str, pages: list[str]) -> str:
+    """Ce que la bibliothèque apporte au contexte, selon le mode retenu.
+
+    Rien par défaut : la connaissance n'entre que sur demande explicite. En
+    `auto`, seul l'index est fourni — l'agent disposait déjà de la recherche,
+    mais ne s'en servait jamais faute de savoir que la bibliothèque contenait
+    quelque chose. En `manual`, les pages retenues sont fournies en entier.
+    """
+    if mode == "off":
+        return ""
+    inventaire = library.inventory()
+    if not inventaire:
+        return ""
+    if mode == "auto":
+        # Les titres seuls. Le slug n'apporte rien — `knowledge_search` prend
+        # une requête libre, jamais un identifiant de page — et les tags
+        # doublaient le coût par ligne pour une aide au tri marginale. Cet index
+        # est payé à chaque message : tout ce qui n'aide pas à décider s'il faut
+        # chercher est du poids mort.
+        return "\n".join(
+            [
+                "# Bibliothèque de connaissance",
+                "Sujets disponibles. Si l'un d'eux porte la réponse, lis-le avec"
+                " `knowledge_search` avant toute recherche web.",
+                *(f"- {page['title']}" for page in inventaire),
+            ]
+        )
+
+    retenues = [page for page in (library.page(slug) for slug in pages) if page]
+    if not retenues:
+        return ""
+    blocs = [
+        contenu if len(contenu) <= MAX_INJECTED_PAGE_BYTES
+        # Tronquer plutôt qu'échouer : une page démesurée ne doit pas emporter
+        # la sélection entière, et l'agent peut la relire par la recherche.
+        else contenu[:MAX_INJECTED_PAGE_BYTES] + "\n\n*(page tronquée)*"
+        for contenu in retenues
+    ]
+    return "\n\n---\n\n".join(
+        ["# Bibliothèque de connaissance — pages sélectionnées", *blocs]
+    )
 
 
 def _expand_skill_command(prompt: str, command: str, instruction: str) -> str:

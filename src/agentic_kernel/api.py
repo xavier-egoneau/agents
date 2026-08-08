@@ -5,8 +5,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .auth import OAuthManager
@@ -349,6 +350,16 @@ def create_app(
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["content-type"],
     )
+
+    @app.exception_handler(ConfigurationError)
+    async def _configuration_error(_request: Request, exc: ConfigurationError) -> JSONResponse:
+        """Une configuration incomplète est un état attendu, pas un incident.
+
+        Sans ce gestionnaire, un `providers.json` absent produisait une trace de
+        soixante lignes et un 500 : l'interface se vidait, et rien n'indiquait
+        qu'il manquait simplement un fichier à créer.
+        """
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
     app.include_router(create_run_router(kernel, running_tasks, launch))
     app.include_router(
         create_cron_router(
@@ -442,8 +453,11 @@ def create_app(
     @app.get("/api/catalog")
     async def catalog() -> dict[str, object]:
         providers = project.providers()
+        # Lu après `agents()` : c'est ce chargement qui remplit les avertissements.
+        agents = project.agents()
         return {
             "default_provider": providers.default_provider,
+            "agent_warnings": list(project.agent_warnings),
             "agents": [
                 {
                     "id": agent.id,
@@ -451,9 +465,10 @@ def create_app(
                     "provider": agent.provider,
                     "model": agent.model,
                     "skills": agent.skills,
+                    "subagent": agent.subagent,
                     "delegates": agent.delegates,
                 }
-                for agent in project.agents().values()
+                for agent in agents.values()
             ],
             "skills": [
                 {"name": skill.name, "description": skill.description}

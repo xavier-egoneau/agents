@@ -198,6 +198,40 @@ class SessionProjection:
                  timestamp, timestamp, sequence),
             )
             return
+        if event.type == "session.cleared":
+            # Vider une session n'est ni la démarrer ni créer une boîte de
+            # routines : le statut reste terminal, et le trigger, le workspace
+            # et la visibilité d'origine sont restitués depuis le payload —
+            # `reset` a effacé le journal, plus rien d'autre ne les porte.
+            payload = event.payload
+            db.execute(
+                """INSERT INTO projected_sessions
+                   (session_id, agent_id, prompt, workspace, trigger, hidden, cron_job_id,
+                    created_at, updated_at, status, output, errors_json,
+                    event_count, last_sequence)
+                   VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 'success', '', '[]', 1, ?)
+                   ON CONFLICT(session_id) DO UPDATE SET
+                     prompt=excluded.prompt,
+                     workspace=excluded.workspace,
+                     trigger=excluded.trigger,
+                     hidden=excluded.hidden,
+                     cron_job_id=NULL,
+                     updated_at=excluded.updated_at,
+                     status='success', output='', errors_json='[]',
+                     event_count=1, last_sequence=excluded.last_sequence""",
+                (
+                    session_id,
+                    event.agent_id,
+                    str(payload.get("prompt", "")),
+                    payload.get("workspace"),
+                    str(payload.get("trigger", "user")),
+                    int(bool(payload.get("hidden", False))),
+                    timestamp,
+                    timestamp,
+                    sequence,
+                ),
+            )
+            return
         if event.type == "session.started":
             payload = event.payload
             db.execute(

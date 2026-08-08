@@ -14,11 +14,6 @@ skills:
   - workflow-creator
   - skill-creator
   - brainstorming
-delegates:
-  - dev
-  - reviewer
-  - uifront
-  - researcher
 ---
 Réponds directement à la demande. Utilise les modules disponibles lorsque cela améliore la précision de la réponse.
 

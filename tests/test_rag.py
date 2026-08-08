@@ -119,3 +119,52 @@ def test_chunking_preserves_line_coordinates_and_overlap() -> None:
     assert chunks[0].start_line == 1
     assert chunks[1].start_line <= chunks[0].end_line
     assert chunks[-1].end_line == 30
+
+
+async def test_lexical_search_survives_a_missing_embedding_service(tmp_path: Path) -> None:
+    """La recherche entière tombait faute d'un serveur d'embeddings.
+
+    `search` appelait `embed` en première ligne : une erreur de connexion
+    emportait aussi la partie FTS5, qui ne dépend d'aucun service. Une
+    bibliothèque devenait donc inutilisable tant qu'un serveur local n'était
+    pas lancé.
+    """
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "notes.md").write_text(
+        "# Tardigrades\nLe tardigrade survit à la dessiccation complète.\n",
+        encoding="utf-8",
+    )
+    service = RagService(
+        tmp_path / "state.db", workspace, RagConfig(embedding_dimensions=64)
+    )
+    await service.index(workspace, {".md"})
+
+    async def service_indisponible(_texts):
+        raise ConnectionError("[Errno 111] Connection refused")
+
+    service.embed = service_indisponible
+
+    found = await service.search("tardigrade dessiccation", limit=5)
+
+    assert found["results"], "la recherche lexicale doit continuer sans embeddings"
+    assert "tardigrade" in found["results"][0]["excerpt"].casefold()
+    # La dégradation est nommée : des résultats lexicaux présentés comme
+    # hybrides laisseraient croire qu'un sujet absent n'existe pas.
+    assert found["backend"] == "fts5_only"
+    assert "ConnectionError" in found["degraded"]
+
+
+async def test_a_working_service_still_reports_hybrid_search(tmp_path: Path) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "notes.md").write_text("# Sujet\nUn contenu indexable.\n", encoding="utf-8")
+    service = RagService(
+        tmp_path / "state.db", workspace, RagConfig(embedding_dimensions=64)
+    )
+    await service.index(workspace, {".md"})
+
+    found = await service.search("contenu indexable", limit=5)
+
+    assert found["backend"] == "hybrid_fts5_vector_rrf"
+    assert found["degraded"] is None

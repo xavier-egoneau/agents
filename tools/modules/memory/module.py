@@ -4,8 +4,10 @@ Deux corpus distincts, d'où le paramètre `scope` :
 
 - `project` — les fichiers du workspace courant, dont `DECISION.md` et
   `MEMORY.md`. Cette connaissance appartient au dépôt et voyage avec lui.
-- `library` — `content-agents/knowledge/library/`, la bibliothèque transverse
-  du poste, alimentée par ingestion de documents.
+- `library` — la bibliothèque de l'orchestrateur qui a lancé le run, sous
+  `content-agents/workspaces/<orchestrateur>/knowledge/library/`. Elle lui
+  appartient : deux orchestrateurs ne partagent rien, et un sous-agent hérite
+  de celle de son parent le temps de la délégation.
 
 Sans ce paramètre, ni l'agent ni le lecteur de ses citations ne saurait lequel
 des deux a répondu.
@@ -13,6 +15,7 @@ des deux a répondu.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -31,9 +34,25 @@ DEFAULT_EXTENSIONS = [
 ]
 
 
+_AGENT_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
 def _library(ctx: RunContext[Any]) -> KnowledgeLibrary:
+    """Bibliothèque de l'orchestrateur qui a lancé le run.
+
+    Elle appartient à l'agent racine, pas à l'agent courant : un sous-agent
+    appelé par `main` lit et écrit dans celle de `main`, sinon ce qu'il apprend
+    disparaîtrait à la fin de la délégation.
+
+    Un identifiant hors format retomberait sur le dossier partagé plutôt que de
+    construire un chemin à partir d'une chaîne arbitraire.
+    """
     state_db = Path(ctx.deps.state_db or (ctx.deps.events.directory.parent / "state.db"))
-    return KnowledgeLibrary(state_db.parent / "knowledge")
+    contenu = state_db.parent
+    orchestrateur = str(getattr(ctx.deps, "orchestrator_id", "") or "")
+    if not _AGENT_ID.fullmatch(orchestrateur):
+        return KnowledgeLibrary(contenu / "knowledge")
+    return KnowledgeLibrary(contenu / "workspaces" / orchestrateur / "knowledge")
 
 
 def _rag(ctx: RunContext[Any], scope: Scope) -> RagService:
@@ -64,6 +83,13 @@ async def knowledge_ingest(
 
     Accepts an http(s) URL, or a path to a PDF, HTML, markdown or text file.
     Use tags from the library vocabulary listed in library/_tags.md.
+
+    The library is an encyclopedia: one page per subject. Reusing a `title`
+    rewrites that page instead of adding a second one, so choose the subject
+    name rather than an event name — "Autonomous agent patterns", never
+    "Watch, 8 August". Before rewriting an existing page, read it and keep what
+    is still true: the previous version is archived in the journal, but nothing
+    replays it for you.
     """
     library = _library(ctx)
     library.ensure()

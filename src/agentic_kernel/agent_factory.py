@@ -47,6 +47,7 @@ class AgentFactory:
         runtime_skills: list[str] | None = None,
         workflow: dict[str, Any] | None = None,
         tool_allowlist: list[str] | None = None,
+        knowledge_instruction: str = "",
         workspace: Path | None = None,
         security_mode: SecurityMode | None = None,
         provider_override: str | None = None,
@@ -97,6 +98,7 @@ class AgentFactory:
                 security_mode=security_mode,
                 provider_override=provider_override,
                 model_override=model_override,
+                knowledge_instruction=knowledge_instruction,
             )
             for child in config.delegates
         ]
@@ -120,6 +122,10 @@ class AgentFactory:
         ]
         if user_memory_instruction:
             instructions.append(user_memory_instruction)
+        # Placée après la mémoire personnelle et avant les skills : c'est du
+        # matériel de référence, pas une consigne de comportement.
+        if knowledge_instruction:
+            instructions.append(knowledge_instruction)
         for skill_id in requested_skills:
             instructions.append(render_skill(skills, skill_id))
         workflow_instruction = _render_workflow(workflow)
@@ -245,6 +251,11 @@ class AgentFactory:
             capabilities=capabilities,
             output_type=[str, DeferredToolRequests],
             max_concurrency=budgets.max_concurrency,
+            # Le défaut du SDK est de 1 : un argument mal formé condamnait le run
+            # entier au deuxième essai, alors que le modèle avait compris son
+            # erreur et savait la corriger. `budgets.retries` était défini mais
+            # ne servait qu'aux sous-agents.
+            retries=budgets.retries,
         )
 
     @staticmethod

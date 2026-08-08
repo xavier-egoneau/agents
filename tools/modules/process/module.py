@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -53,6 +54,25 @@ def _cwd(ctx: RunContext[Any], raw: str) -> Path:
     if not target.is_dir():
         raise ValueError(f"not a directory: {target}")
     return target
+
+
+def _arguments(args: list[str] | str | None) -> list[str]:
+    """Normalise les arguments, qu'ils arrivent en liste ou en chaîne.
+
+    Les modèles envoient régulièrement `"-m http.server 8080"` là où le schéma
+    attend `["-m", "http.server", "8080"]`. La validation rejetait l'appel, et
+    deux essais suffisaient à condamner le run entier — pour une erreur de forme
+    sans ambiguïté sur l'intention.
+
+    Le découpage passe par `shlex`, qui respecte les guillemets : un chemin
+    contenant une espace reste un seul argument. Rien n'est confié à un shell,
+    la commande est exécutée telle quelle.
+    """
+    if args is None:
+        return []
+    if isinstance(args, str):
+        return shlex.split(args, posix=os.name != "nt")
+    return list(args)
 
 
 def _command(program: str, args: list[str]) -> list[str]:
@@ -124,14 +144,14 @@ def _redacted_command(command: list[str]) -> list[str]:
 async def command_run(
     ctx: RunContext[Any],
     program: str,
-    args: list[str] | None = None,
+    args: list[str] | str | None = None,
     cwd: str = ".",
     timeout_seconds: Annotated[float, Field(gt=0, le=300)] = 120,
     network: bool = False,
     justification: str = "",
 ) -> dict[str, Any]:
     """Run a structured command without a shell and return bounded output."""
-    command = _command(program, args or [])
+    command = _command(program, _arguments(args))
     workdir = _cwd(ctx, cwd)
     prepared = ExecutionSandbox.prepare(command, ctx.deps, allow_network=network)
     started = time.monotonic()
@@ -180,13 +200,13 @@ async def command_run(
 async def process_start(
     ctx: RunContext[Any],
     program: str,
-    args: list[str] | None = None,
+    args: list[str] | str | None = None,
     cwd: str = ".",
     network: bool = False,
     justification: str = "",
 ) -> dict[str, Any]:
     """Start a structured persistent process and store its identity durably."""
-    command = _command(program, args or [])
+    command = _command(program, _arguments(args))
     workdir = _cwd(ctx, cwd)
     prepared = ExecutionSandbox.prepare(command, ctx.deps, allow_network=network)
     process_id = str(uuid4())

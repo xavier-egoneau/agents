@@ -42,3 +42,42 @@ def test_web_from_a_non_project_directory_uses_a_neutral_workspace(
     assert _default_web_workspace(None) == (
         amk_home / "content-agents" / "workspaces" / "main"
     )
+
+
+def test_pointing_at_an_existing_content_directory_is_understood(tmp_path) -> None:
+    """Le réglage désigne le parent, l'écran parle du contenu.
+
+    Pointer sur un `content-agents` existant est donc le geste naturel, et
+    produisait `…/content-agents/content-agents` — une installation vide, à
+    côté des données réelles.
+    """
+    from agentic_kernel.paths import normalized_home
+
+    parent = tmp_path / "mes-donnees"
+    contenu = parent / "content-agents"
+    contenu.mkdir(parents=True)
+
+    assert normalized_home(contenu) == parent.resolve()
+    assert normalized_home(parent) == parent.resolve()
+
+
+def test_a_renamed_content_directory_is_recognised_by_its_shape(tmp_path) -> None:
+    """Un dossier renommé reste reconnaissable à ce qu'il contient."""
+    from agentic_kernel.paths import normalized_home
+
+    parent = tmp_path / "ailleurs"
+    contenu = parent / "amk-data"
+    (contenu / "agents").mkdir(parents=True)
+    (contenu / "system.md").write_text("# instructions", encoding="utf-8")
+
+    assert normalized_home(contenu) == parent.resolve()
+
+
+def test_an_ordinary_directory_is_left_alone(tmp_path) -> None:
+    """Sans marqueur, on prend le chemin tel quel : c'est un parent."""
+    from agentic_kernel.paths import normalized_home
+
+    ordinaire = tmp_path / "documents"
+    ordinaire.mkdir()
+
+    assert normalized_home(ordinaire) == ordinaire.resolve()

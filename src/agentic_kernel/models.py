@@ -107,6 +107,15 @@ class AgentConfig(BaseModel):
     skills: list[str] = Field(default_factory=list)
     user_memory: bool = False
     declared_tools: list[str] = Field(default_factory=list)
+    # Deux niveaux stricts : un orchestrateur délègue à des sous-agents, un
+    # sous-agent exécute et ne délègue à personne.
+    #
+    # `None` signifie « non déclaré », et se distingue de `False`. Ce champ est
+    # arrivé après les agents : exiger sa présence rendait invalides des
+    # configurations qui fonctionnaient, et le socle ne peut pas le rétro-ajouter
+    # aux fichiers que l'utilisateur a modifiés. Le niveau est alors déduit de
+    # la place réelle de l'agent dans le graphe.
+    subagent: bool | None = None
     delegates: list[str] = Field(default_factory=list)
     budgets: BudgetConfig | None = None
     instructions: str
@@ -358,6 +367,12 @@ class RunRequest(BaseModel):
     # list deliberately exposes no module tool, while a non-empty list is an
     # exact runtime allowlist.
     tool_allowlist: list[str] | None = None
+    # La bibliothèque n'entre jamais dans le contexte d'elle-même : `off` est le
+    # défaut. `auto` fournit l'index pour que l'agent sache quoi chercher —
+    # sans lui il ignore que la bibliothèque contient quelque chose. `manual`
+    # injecte les pages explicitement retenues.
+    knowledge_mode: Literal["off", "auto", "manual"] = "off"
+    knowledge_pages: list[str] = Field(default_factory=list)
 
 
 class RunError(BaseModel):

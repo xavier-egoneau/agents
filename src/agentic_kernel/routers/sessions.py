@@ -163,20 +163,29 @@ def create_session_router(
         session = kernel.events.projection.session(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Session introuvable")
-        if session.get("trigger") != "routine_inbox":
-            raise HTTPException(
-                status_code=409,
-                detail="La commande /clear est réservée à la session Routines.",
-            )
         if session_id in running_tasks:
             raise HTTPException(status_code=409, detail="Un run est encore en cours")
+        # La boîte de routines n'est pas une conversation : elle se recrée avec
+        # son propre événement, qui rétablit son titre et son absence de
+        # workspace. Toute autre session est vidée en conservant ce qui la
+        # définit — son déclencheur, son projet, sa visibilité.
+        est_routine = session.get("trigger") == "routine_inbox"
         lifecycle.reset(
             Event(
                 session_id=session_id,
                 run_id=uuid4(),
                 agent_id=str(session.get("agent_id", "main")),
-                type="routine.inbox.created",
-                payload={"prompt": "Routines"},
+                type="routine.inbox.created" if est_routine else "session.cleared",
+                payload=(
+                    {"prompt": "Routines"}
+                    if est_routine
+                    else {
+                        "prompt": str(session.get("prompt") or ""),
+                        "workspace": session.get("workspace"),
+                        "trigger": str(session.get("trigger") or "user"),
+                        "hidden": bool(session.get("hidden")),
+                    }
+                ),
             )
         )
         return {"session_id": str(session_id), "status": "cleared"}
