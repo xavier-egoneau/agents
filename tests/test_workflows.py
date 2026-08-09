@@ -708,3 +708,40 @@ async def test_proposal_service_surfaces_final_validation_errors(tmp_path: Path)
 
     with pytest.raises(WorkflowValidationError, match="invented_tool"):
         await service.propose(basis(tmp_path))
+
+
+def test_the_accepted_contract_carries_its_own_grants(tmp_path: Path) -> None:
+    """`permissions.declarations` existait depuis le début sans être lu.
+
+    Le workflow décrivait ce qu'il allait faire, et l'utilisateur devait quand
+    même autoriser chaque appel à la main — deux validations pour une seule
+    décision.
+    """
+    from agentic_kernel.workflows import workflow_grants
+
+    concessions = workflow_grants(workflow())
+
+    assert ("web_search", "") in concessions
+
+
+def test_fixed_arguments_are_preserved_in_the_grant() -> None:
+    from agentic_kernel.workflows import workflow_grants
+
+    definition = WorkflowDefinition.model_validate(
+        {
+            "schema": "amk.workflow/v1",
+            "id": "routine",
+            "title": "Routine",
+            "status": "ready",
+            "execution": {"timezone": "Europe/Paris"},
+            "permissions": {
+                "declarations": [{"tool": "http_request", "fixed_args": {"method": "GET"}}]
+            },
+            "steps": [
+                {"id": "synthese", "kind": "synthesize", "instructions": "Rendre compte."}
+            ],
+            "output": {"sections": ["Résumé"]},
+        }
+    )
+
+    assert workflow_grants(definition) == frozenset({("http_request", '{"method":"GET"}')})

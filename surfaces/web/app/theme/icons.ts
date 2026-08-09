@@ -13,6 +13,8 @@
  */
 
 import {
+  Volume2,
+  VolumeX,
   Activity,
   ArrowUp,
   Bot,
@@ -142,6 +144,8 @@ export const baseIcons = {
   pending: Clock,
   running: LoaderCircle,
   cancelled: CircleStop,
+  sound: Volume2,
+  soundOff: VolumeX,
   activity: Activity,
   meter: Gauge,
   security: Shield,

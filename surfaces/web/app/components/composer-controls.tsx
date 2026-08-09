@@ -23,6 +23,9 @@ type ComposerControlsProps = {
   canAttach: boolean;
   canSend: boolean;
   vision: boolean;
+  /** Signal sonore en fin de run. */
+  soundEnabled: boolean;
+  onSoundToggle: () => void;
   knowledgeMode: KnowledgeMode;
   /** Nombre de pages retenues, affiché en pastille en mode manuel. */
   knowledgeCount: number;
@@ -46,6 +49,8 @@ export function ComposerControls({
   canAttach,
   canSend,
   vision,
+  soundEnabled,
+  onSoundToggle,
   knowledgeMode,
   knowledgeCount,
   onKnowledgeModeChange,
@@ -99,6 +104,21 @@ export function ComposerControls({
             <option value="manual">manuel</option>
           </select>
         </div>
+        {/* Même convention que la bibliothèque : l'état se lit à l'opacité,
+            pas à un libellé. */}
+        <button
+          type="button"
+          className="composer-icon-button"
+          data-active={soundEnabled ? "true" : undefined}
+          onClick={onSoundToggle}
+          aria-pressed={soundEnabled}
+          aria-label={soundEnabled ? "Couper le signal de fin" : "Activer le signal de fin"}
+          title={
+            soundEnabled
+              ? "Signal sonore en fin de run · activé"
+              : "Signal sonore en fin de run · coupé"
+          }
+        ><Icon name={soundEnabled ? "sound" : "soundOff"} size="md" /></button>
         <label title="Niveau de permission">
           <span className={`permission-dot ${securityMode}`} />
           <select

@@ -75,6 +75,7 @@ def review_tool_call(
     workspace: Path,
     trusted_read_roots: tuple[Path, ...] = (),
     personal_workspace: Path | None = None,
+    workflow_grants: frozenset[tuple[str, str]] = frozenset(),
     path_parameters: tuple[str, ...] = (),
     url_parameters: tuple[str, ...] = (),
 ) -> GuardianDecision:
@@ -184,6 +185,18 @@ def review_tool_call(
             verdict, reason = GuardianVerdict.ASK, "External actions require approval."
     else:
         verdict, reason = GuardianVerdict.ALLOW, "Action allowed by the active security mode."
+    if verdict is GuardianVerdict.ASK and _covered_by_workflow(
+        tool_name, arguments, workflow_grants
+    ):
+        # Le contrat a été lu et accepté avant d'être enregistré : ce qu'il
+        # déclare est autorisé. Redemander appel par appel ferait valider deux
+        # fois la même chose, et surtout interromprait une routine qui s'exécute
+        # sans personne devant l'écran.
+        #
+        # Un refus, lui, reste un refus : la concession relève ce qui aurait été
+        # demandé, jamais ce qui est interdit.
+        verdict = GuardianVerdict.ALLOW
+        reason = "Déclaré par le workflow accepté de la routine."
     return GuardianDecision(
         verdict=verdict,
         reason=reason,
@@ -227,6 +240,31 @@ def _targets_private_network(arguments: dict[str, Any], url_keys: tuple[str, ...
         ):
             return True
     return False
+
+
+def _covered_by_workflow(
+    tool_name: str,
+    arguments: dict[str, Any],
+    grants: frozenset[tuple[str, str]],
+) -> bool:
+    """Vrai quand l'appel correspond à ce que le contrat accepté déclare.
+
+    Des arguments figés vides valent pour tout appel de l'outil : c'est la forme
+    que produit le générateur, et l'`allowlist` du workflow restreint déjà
+    l'agent à ces seuls outils.
+    """
+    if not grants:
+        return False
+    concessions = {figes for outil, figes in grants if outil == tool_name}
+    if not concessions:
+        return False
+    if "" in concessions:
+        return True
+    fournis = {key: value for key, value in arguments.items() if key != "justification"}
+    return any(
+        all(fournis.get(key) == value for key, value in json.loads(figes).items())
+        for figes in concessions
+    )
 
 
 def _contains_symlink(raw: Any, workspace: Path) -> bool:
@@ -440,6 +478,7 @@ class GuardianToolset(WrapperToolset[Any]):
             )
             if deps.state_db is not None
             else (),
+            workflow_grants=getattr(deps, "workflow_grants", frozenset()),
             personal_workspace=(
                 deps.state_db.parent / "workspaces" / self.agent_id
                 if deps.state_db is not None

@@ -399,6 +399,9 @@
 }
 .composer-icon-button:hover:not(:disabled) { background: var(--ctx-hover); color: var(--ctx-text); }
 .composer-icon-button:disabled { opacity: 0.35; cursor: default; }
+/* Un réglage actif se lit à sa couleur, pas à un libellé : même convention que
+   le contrôle de bibliothèque juste à côté. */
+.composer-icon-button[data-active="true"] { color: var(--ctx-accent); }
 
 .permission-dot { width: 7px; height: 7px; margin-left: 7px; border-radius: var(--radius-circle); background: var(--warning); }
 .permission-dot.safe { background: var(--success); }

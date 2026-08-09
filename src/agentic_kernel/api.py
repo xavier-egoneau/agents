@@ -182,6 +182,18 @@ def create_app(
                 },
             )
         )
+        # Le canal de l'agent n'est pas qu'un fil dans l'interface : c'est son
+        # adresse, quelle que soit la surface. Y déposer un résultat sans le
+        # pousser vers Telegram laissait la moitié du canal muette.
+        if target == agent_session_id(job.agent_id):
+            try:
+                boucle = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            boucle.create_task(
+                telegram.push(job.agent_id, f"{job.name}\n\n{content}"),
+                name=f"amk-telegram-routine-{job.id}",
+            )
 
     def validate_cron_request(request: RunRequest) -> None:
         if request.cron_job_id:

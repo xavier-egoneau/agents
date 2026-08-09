@@ -340,6 +340,45 @@ class TelegramSupervisor:
         self.clear_session = clear_session
         self._workers: dict[str, tuple[str, asyncio.Task[None]]] = {}
 
+    async def push(self, agent_id: str, text: str) -> bool:
+        """Pousse un message vers la conversation Telegram d'un agent.
+
+        Telegram n'observe pas les sessions : il répond aux messages entrants et
+        rien d'autre. Depuis que routines et Telegram partagent le canal de
+        l'agent, un résultat déposé dans ce canal paraît devoir y arriver — il
+        n'y arrivait pas, faute d'un chemin dans ce sens.
+
+        Rend `False` quand rien n'a pu être envoyé, pour que l'appelant sache
+        que la surface n'a pas été atteinte plutôt que de le supposer.
+        """
+        config = next(
+            (
+                item
+                for item in self.store.runtime_configs(self.agent_ids())
+                if item.agent_id == agent_id
+            ),
+            None,
+        )
+        if config is None or not text.strip():
+            return False
+        # La conversation privée du propriétaire est toujours joignable, même
+        # avant tout échange : son identifiant d'utilisateur est aussi celui du
+        # chat. Les autres conversations connues s'y ajoutent.
+        destinations = dict.fromkeys([config.user_id, *(chat for _, chat in config.chats)])
+        envoye = False
+        async with httpx.AsyncClient(timeout=30) as client:
+            for chat_id in destinations:
+                try:
+                    await self._send_message(
+                        client, config.bot_token, chat_id, text, disable_link_preview=True
+                    )
+                except (httpx.HTTPError, OSError):
+                    # Une conversation devenue injoignable — bot bloqué, groupe
+                    # quitté — ne doit pas empêcher les autres de recevoir.
+                    continue
+                envoye = True
+        return envoye
+
     async def run_forever(self) -> None:
         try:
             while True:

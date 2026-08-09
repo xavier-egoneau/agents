@@ -41,6 +41,7 @@ class RunExecutor:
         context_window_tokens: int | None,
         context_calibration: float = 1.0,
         orchestrator_id: str = "main",
+        workflow_grants: frozenset[tuple[str, str]] = frozenset(),
     ) -> RuntimeDeps:
         return RuntimeDeps(
             session_id=session_id,
@@ -58,6 +59,7 @@ class RunExecutor:
             context_window_tokens=context_window_tokens,
             context_calibration=context_calibration,
             orchestrator_id=orchestrator_id,
+            workflow_grants=workflow_grants,
             secret_resolver=self.secrets.resolve,
             secret_redactor=self.secrets.redact,
             snapshot_store=self.snapshots,

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
 from pydantic_ai import (
     Agent,
     BinaryContent,
@@ -50,6 +51,7 @@ from .secrets import SecretStore
 from .snapshots import SnapshotStore
 from .trace_context import bind_event_run_id
 from .vision import LocalVisionService, VisionUnavailable
+from .workflows import WorkflowDefinition, workflow_grants
 from .workspace_map import WorkspaceMapService
 
 
@@ -182,6 +184,7 @@ class Kernel:
             # L'agent demandé est la racine du run : c'est lui qui détermine la
             # bibliothèque, y compris pour les sous-agents qu'il invoquera.
             orchestrator_id=request.agent_id,
+            workflow_grants=_workflow_grants(request.workflow),
         )
         self.active_runs[request.session_id] = deps
         self.events.append(
@@ -491,6 +494,9 @@ class Kernel:
                         "media_type": image.media_type,
                         "kind": "input_image",
                         "bytes": len(raw),
+                        # Voir `routers/artifacts.py` : le relatif est l'adresse,
+                        # l'absolu n'est qu'une trace de production.
+                        "relative_path": f"{artifact_id}/{safe_name}",
                         "path": str(target),
                         "sha256": hashlib.sha256(raw).hexdigest(),
                     },
@@ -1271,6 +1277,20 @@ def _without_images(messages: list[Any]) -> list[Any]:
 
 def _transient_http_status(status_code: int) -> bool:
     return status_code == 429 or status_code >= 500
+
+
+def _workflow_grants(workflow: dict[str, Any] | None) -> frozenset[tuple[str, str]]:
+    """Concessions d'un workflow accepté; vide quand la routine n'en a pas.
+
+    Un contrat illisible ne doit pas ouvrir de droits : à la moindre anomalie on
+    retombe sur le régime normal, où le Guardian demande.
+    """
+    if not workflow:
+        return frozenset()
+    try:
+        return workflow_grants(WorkflowDefinition.model_validate(workflow))
+    except ValidationError:
+        return frozenset()
 
 
 def _runtime_context_instruction(

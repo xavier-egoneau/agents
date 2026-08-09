@@ -1387,3 +1387,90 @@ def test_an_agent_channel_cannot_be_deleted(project: Path) -> None:
 
     assert supprime.status_code == 409
     assert "permanent" in supprime.json()["detail"]
+
+
+def test_an_artifact_survives_moving_the_content_folder(project: Path) -> None:
+    """Le journal enregistre un chemin absolu : c'est une trace, pas une adresse.
+
+    Déplacer `content-agents` — ce que l'application propose dans ses paramètres
+    — périmait tous les chemins d'un coup, et les images des conversations
+    passées disparaissaient sans message.
+    """
+    session_id = uuid4()
+    run_id = uuid4()
+    racine = project / "content-agents" / "sessions" / "artifacts" / str(session_id) / str(run_id)
+    racine.mkdir(parents=True)
+    image = racine / "capture.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    JsonlEventStore(project / "content-agents" / "sessions").append(
+        Event(
+            session_id=session_id,
+            run_id=run_id,
+            agent_id="main",
+            type="artifact.created",
+            payload={
+                "artifact_id": "abc",
+                # Emplacement d'origine, sur une machine où le dossier vivait ailleurs.
+                "path": f"D:\\\\ancien\\\\content-agents\\\\sessions\\\\artifacts\\\\"
+                f"{session_id}\\\\{run_id}\\\\capture.png",
+                "media_type": "image/png",
+                "name": "capture.png",
+            },
+        )
+    )
+
+    reponse = TestClient(create_app(project)).get(f"/api/artifacts/{session_id}/abc")
+
+    assert reponse.status_code == 200
+    assert reponse.content == b"\x89PNG\r\n\x1a\n"
+
+
+def test_an_artifact_outside_the_session_root_is_still_refused(project: Path) -> None:
+    """Retrouver le fichier ne doit pas revenir à servir n'importe quel chemin."""
+    session_id = uuid4()
+    intrus = project / "secret.png"
+    intrus.write_bytes(b"x")
+    JsonlEventStore(project / "content-agents" / "sessions").append(
+        Event(
+            session_id=session_id,
+            run_id=uuid4(),
+            agent_id="main",
+            type="artifact.created",
+            payload={"artifact_id": "abc", "path": str(intrus), "media_type": "image/png"},
+        )
+    )
+
+    reponse = TestClient(create_app(project)).get(f"/api/artifacts/{session_id}/abc")
+
+    assert reponse.status_code == 404
+
+
+def test_a_relative_artifact_path_is_the_address(project: Path) -> None:
+    """L'adresse d'un artefact est relative à la racine de sa session.
+
+    L'absolu reste écrit comme trace de production, mais il ne sert plus à
+    retrouver le fichier : c'est ce couplage qui cassait au déménagement.
+    """
+    session_id = uuid4()
+    run_id = uuid4()
+    racine = project / "content-agents" / "sessions" / "artifacts" / str(session_id) / str(run_id)
+    racine.mkdir(parents=True)
+    (racine / "capture.png").write_bytes(b"\x89PNG")
+    JsonlEventStore(project / "content-agents" / "sessions").append(
+        Event(
+            session_id=session_id,
+            run_id=run_id,
+            agent_id="browser",
+            type="artifact.created",
+            payload={
+                "artifact_id": "abc",
+                "relative_path": f"{run_id}/capture.png",
+                "path": "Z:\\\\introuvable\\\\capture.png",
+                "media_type": "image/png",
+            },
+        )
+    )
+
+    reponse = TestClient(create_app(project)).get(f"/api/artifacts/{session_id}/abc")
+
+    assert reponse.status_code == 200

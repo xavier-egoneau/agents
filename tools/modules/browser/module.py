@@ -280,6 +280,11 @@ async def browser_screenshot(
         "name": safe_name,
         "media_type": "image/png",
         "kind": "image",
+        # Chemin relatif à la racine des artefacts de la session : le dossier de
+        # données est déplaçable depuis les paramètres, et un chemin absolu
+        # devient faux au premier déménagement. L'absolu reste écrit, comme
+        # trace de l'endroit où le fichier a été produit.
+        "relative_path": f"{ctx.deps.root_run_id}/{artifact_id}-{safe_name}",
         "path": str(target),
         "bytes": target.stat().st_size,
         "url": page.url,

@@ -49,6 +49,9 @@ class RuntimeDeps:
     # et écrire dans celle de `main`, jamais dans une sienne — sinon ce qu'il
     # apprend se perd à la fin de la délégation.
     orchestrator_id: str = "main"
+    # Concessions portées par le workflow accepté : l'utilisateur a lu et
+    # validé le contrat, le redemander appel par appel ne l'informe plus.
+    workflow_grants: frozenset[tuple[str, str]] = frozenset()
     secret_resolver: Callable[[str], str | None] | None = None
     secret_redactor: Callable[[Any], Any] | None = None
     snapshot_store: Any | None = None

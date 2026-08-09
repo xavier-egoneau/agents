@@ -422,3 +422,50 @@ async def test_telegram_rejects_approval_callback_from_another_user(
     assert accepted is False
     resolver.assert_not_awaited()
     supervisor._answer_callback.assert_awaited_once()
+
+
+async def test_a_routine_result_reaches_every_known_conversation(tmp_path: Path) -> None:
+    """Telegram n'observe pas les sessions : il répond, et rien d'autre.
+
+    Depuis que routines et Telegram partagent le canal de l'agent, un résultat
+    déposé dans ce canal paraît devoir y arriver. Sans ce chemin, la moitié du
+    canal restait muette — l'utilisateur voyait la routine dans l'interface et
+    la croyait perdue côté téléphone.
+    """
+    store = TelegramConfigStore(tmp_path)
+    store.update("helper", TelegramAgentInput(enabled=True, user_id="42", bot_token=TOKEN))
+    store.remember_chat("helper", uuid4(), -100123)
+    supervisor = TelegramSupervisor(
+        store,
+        lambda: {"helper"},
+        lambda _agent_id: SecurityMode.LIMITED,
+        AsyncMock(),
+        lambda: [],
+        AsyncMock(),
+        lambda _session_id: True,
+    )
+    supervisor._send_message = AsyncMock()  # type: ignore[method-assign]
+
+    envoye = await supervisor.push("helper", "Veille\n\nRien de neuf.")
+
+    assert envoye is True
+    destinataires = {appel.args[2] for appel in supervisor._send_message.await_args_list}
+    # La conversation privée du propriétaire est joignable même sans échange
+    # préalable : son identifiant d'utilisateur est aussi celui du chat.
+    assert destinataires == {42, -100123}
+
+
+async def test_pushing_to_an_agent_without_telegram_reports_failure(tmp_path: Path) -> None:
+    """Rendre `False` plutôt que se taire : l'appelant doit pouvoir distinguer
+    « envoyé » de « aucune surface atteinte »."""
+    supervisor = TelegramSupervisor(
+        TelegramConfigStore(tmp_path),
+        lambda: {"helper"},
+        lambda _agent_id: SecurityMode.LIMITED,
+        AsyncMock(),
+        lambda: [],
+        AsyncMock(),
+        lambda _session_id: True,
+    )
+
+    assert await supervisor.push("helper", "Veille") is False

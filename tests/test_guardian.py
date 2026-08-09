@@ -241,3 +241,93 @@ def test_deleting_inside_the_personal_workspace_still_asks(tmp_path: Path) -> No
     )
 
     assert decision.verdict is GuardianVerdict.ASK
+
+
+def _grants(*couples: tuple[str, str]) -> frozenset[tuple[str, str]]:
+    return frozenset(couples)
+
+
+def test_a_tool_declared_by_the_accepted_workflow_runs_without_asking(tmp_path: Path) -> None:
+    """Le contrat a été lu et validé avant d'être enregistré.
+
+    Redemander appel par appel fait valider deux fois la même chose — et une
+    routine s'exécute sans personne devant l'écran : une demande à six heures du
+    matin ne protège rien, elle interrompt.
+    """
+    decision = review_tool_call(
+        tool_name="icloud_list_events",
+        tool_call_id="1",
+        agent_id="main",
+        arguments={"days_ahead": 7, "justification": "point du jour"},
+        risks=[ToolRisk.READ, ToolRisk.EXTERNAL],
+        mode=SecurityMode.LIMITED,
+        workspace=tmp_path,
+        workflow_grants=_grants(("icloud_list_events", "")),
+    )
+
+    assert decision.verdict is GuardianVerdict.ALLOW
+    assert "workflow accepté" in decision.reason
+
+
+def test_a_tool_absent_from_the_workflow_still_asks(tmp_path: Path) -> None:
+    decision = review_tool_call(
+        tool_name="http_request",
+        tool_call_id="1",
+        agent_id="main",
+        arguments={"url": "https://exemple.test", "method": "POST", "justification": "envoi"},
+        risks=[ToolRisk.NETWORK],
+        mode=SecurityMode.LIMITED,
+        workspace=tmp_path,
+        workflow_grants=_grants(("icloud_list_events", "")),
+    )
+
+    assert decision.verdict is GuardianVerdict.ASK
+
+
+def test_fixed_arguments_narrow_what_the_contract_grants(tmp_path: Path) -> None:
+    """Une déclaration qui fige ses arguments n'autorise pas au-delà."""
+    figes = '{"calendar":"Famille"}'
+
+    conforme = review_tool_call(
+        tool_name="icloud_list_events",
+        tool_call_id="1",
+        agent_id="main",
+        arguments={"calendar": "Famille", "justification": "point"},
+        risks=[ToolRisk.EXTERNAL],
+        mode=SecurityMode.LIMITED,
+        workspace=tmp_path,
+        workflow_grants=_grants(("icloud_list_events", figes)),
+    )
+    devie = review_tool_call(
+        tool_name="icloud_list_events",
+        tool_call_id="2",
+        agent_id="main",
+        arguments={"calendar": "Travail", "justification": "point"},
+        risks=[ToolRisk.EXTERNAL],
+        mode=SecurityMode.LIMITED,
+        workspace=tmp_path,
+        workflow_grants=_grants(("icloud_list_events", figes)),
+    )
+
+    assert conforme.verdict is GuardianVerdict.ALLOW
+    assert devie.verdict is GuardianVerdict.ASK
+
+
+def test_the_contract_never_lifts_a_refusal(tmp_path: Path) -> None:
+    """La concession relève ce qui aurait été demandé, jamais ce qui est interdit.
+
+    Sans cette borne, un workflow accepté deviendrait un chèque en blanc : il
+    suffirait de faire déclarer un outil pour contourner les refus du Guardian.
+    """
+    decision = review_tool_call(
+        tool_name="read",
+        tool_call_id="1",
+        agent_id="main",
+        arguments={"path": str(Path.home() / ".ssh" / "id_rsa"), "justification": "lire"},
+        risks=[ToolRisk.READ, ToolRisk.SECRET],
+        mode=SecurityMode.POWER,
+        workspace=tmp_path,
+        workflow_grants=_grants(("read", "")),
+    )
+
+    assert decision.verdict is GuardianVerdict.DENY

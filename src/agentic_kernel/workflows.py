@@ -284,6 +284,36 @@ def validate_accepted(
     return accepted
 
 
+def workflow_grants(workflow: WorkflowDefinition) -> frozenset[tuple[str, str]]:
+    """Ce que l'acceptation du contrat autorise, sans clic supplémentaire.
+
+    Le workflow est lu et validé par l'utilisateur avant d'être accepté : ses
+    déclarations et ses étapes disent exactement quels outils seront appelés.
+    Redemander ensuite, appel par appel, revient à lui faire valider deux fois
+    la même chose — et surtout, une routine s'exécute sans personne devant
+    l'écran. Une demande à six heures du matin ne protège rien, elle interrompt.
+
+    Chaque concession est un couple `(outil, arguments figés)`. Des arguments
+    vides valent pour tout appel de cet outil : c'est la forme que produit le
+    générateur, et l'`allowlist` restreint déjà l'agent à ces seuls outils.
+    """
+    concessions: set[tuple[str, str]] = set()
+    for declaration in workflow.permissions.declarations:
+        concessions.add((declaration.tool, _canonical_args(declaration.fixed_args)))
+    for step in workflow.steps:
+        if isinstance(step, ToolWorkflowStep):
+            concessions.add((step.tool, ""))
+    return frozenset(concessions)
+
+
+def _canonical_args(args: dict[str, Any]) -> str:
+    """Forme stable d'arguments figés; vide quand rien n'est imposé."""
+    utiles = {key: value for key, value in args.items() if key != "justification"}
+    if not utiles:
+        return ""
+    return json.dumps(utiles, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def workflow_tool_allowlist(workflow: WorkflowDefinition) -> list[str]:
     """Return the stable, exact tool list for a guided workflow."""
 
@@ -794,5 +824,6 @@ __all__ = [
     "render_workflow_instructions",
     "validate_accepted",
     "workflow_basis_hash",
+    "workflow_grants",
     "workflow_tool_allowlist",
 ]

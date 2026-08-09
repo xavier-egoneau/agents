@@ -12,6 +12,7 @@ import {
   useState,
 } from "react";
 import ReactMarkdown from "react-markdown";
+import { playRunChime, primeRunChime } from "./run-chime";
 import remarkGfm from "remark-gfm";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
@@ -849,6 +850,8 @@ type ComposerPreferences = {
   securityMode: "safe" | "limited" | "power";
   providerId: string;
   reasoning: "minimal" | "low" | "medium" | "high" | "xhigh";
+  /** Signal sonore en fin de run. Un run long se surveille mal des yeux. */
+  soundEnabled: boolean;
 };
 
 const composerPreferencesKey = "amk.composer.preferences.v1";
@@ -1196,6 +1199,8 @@ export default function Home() {
     dispatchConversation({ type: "set", field: "activeRunId", value });
   }, []);
   const [running, setRunning] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const approvalsRef = useRef(0);
   const [clearingSession, setClearingSession] = useState(false);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState("");
@@ -1296,6 +1301,13 @@ export default function Home() {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
+  // Le son est joué depuis le `finally` d'un envoi : la fermeture y capture
+  // l'état du début du run, pas celui de sa fin. Une référence donne le compte
+  // au moment où il est lu.
+  useEffect(() => {
+    approvalsRef.current = approvals.length;
+  }, [approvals]);
+
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(composerPreferencesKey);
@@ -1308,6 +1320,7 @@ export default function Home() {
         if (["minimal", "low", "medium", "high", "xhigh"].includes(String(stored.reasoning))) {
           setReasoning(stored.reasoning as ComposerPreferences["reasoning"]);
         }
+        if (typeof stored.soundEnabled === "boolean") setSoundEnabled(stored.soundEnabled);
         restoredComposerPreferences.current = stored as ComposerPreferences;
       }
     } catch {
@@ -1319,10 +1332,12 @@ export default function Home() {
 
   useEffect(() => {
     if (!composerPreferencesReady) return;
-    const preferences: ComposerPreferences = { securityMode, providerId, reasoning };
+    const preferences: ComposerPreferences = {
+      securityMode, providerId, reasoning, soundEnabled,
+    };
     restoredComposerPreferences.current = preferences;
     window.localStorage.setItem(composerPreferencesKey, JSON.stringify(preferences));
-  }, [composerPreferencesReady, securityMode, providerId, reasoning]);
+  }, [composerPreferencesReady, securityMode, providerId, reasoning, soundEnabled]);
 
   /**
    * Le catalogue porte les agents, skills, providers, tools et modules : sans
@@ -2448,6 +2463,7 @@ export default function Home() {
 
   async function resumeSession(sessionId: string) {
     setManagementError("");
+    primeRunChime();
     setRunning(true);
     setActiveSessionId(sessionId);
     runningSessionId.current = sessionId;
@@ -3239,6 +3255,7 @@ export default function Home() {
     setPrompt("");
     setComposerImages([]);
     setAttachmentError("");
+    primeRunChime();
     setRunning(true);
     const eventSource = startEventStream(sessionId);
     try {
@@ -3307,6 +3324,11 @@ export default function Home() {
       eventSource.close();
       await refreshSessions();
       await refreshPlan(sessionId);
+      if (soundEnabled) {
+        // Une demande d'autorisation n'est pas une fin : le run est suspendu et
+        // n'ira pas plus loin sans toi. Deux timbres pour deux réactions.
+        playRunChime(approvalsRef.current > 0 ? "attention" : "done");
+      }
       setRunning(false);
       runningSessionId.current = null;
       setStopRequested(false);
@@ -3319,6 +3341,7 @@ export default function Home() {
     const previousApprovals = approvals;
     setApprovals((current) => current.filter((item) => item.approval_id !== approval.approval_id));
     setApprovalProgress(approved ? "Autorisation enregistrée · reprise en cours" : "Refus enregistré · reprise en cours");
+    primeRunChime();
     setRunning(true);
     runningSessionId.current = approval.session_id;
     const eventSource = startEventStream(approval.session_id);
@@ -3372,6 +3395,7 @@ export default function Home() {
   async function resolveApprovalBatch(approved: boolean) {
     if (approvals.length === 0) return;
     const previousApprovals = approvals;
+    primeRunChime();
     setRunning(true);
     const sessionId = approvals[0].session_id;
     runningSessionId.current = sessionId;
@@ -5491,6 +5515,8 @@ export default function Home() {
             canAttach={!running && composerImages.length < 4}
             canSend={Boolean(prompt.trim()) && !running && !clearingSession}
             vision={Boolean(activeProvider?.vision)}
+            soundEnabled={soundEnabled}
+            onSoundToggle={() => setSoundEnabled((actif) => !actif)}
             knowledgeMode={knowledgeMode}
             knowledgeCount={knowledgeSelection.length}
             onKnowledgeModeChange={(mode) => {
