@@ -13,7 +13,7 @@ from agentic_kernel.models import ApprovalRequest, Event, RunRequest
 from agentic_kernel.modules import ModuleRegistry
 from agentic_kernel.plans import PlanService, PlanStepInput
 from agentic_kernel.routers.crons import _workflow_basis
-from agentic_kernel.scheduler import ROUTINE_INBOX_SESSION_ID, CronJobInput
+from agentic_kernel.scheduler import CronJobInput, agent_session_id
 from agentic_kernel.workflows import (
     AcceptedWorkflow,
     WorkflowDefinition,
@@ -104,7 +104,11 @@ def test_the_catalog_carries_the_hierarchy_warnings(project: Path) -> None:
     payload = TestClient(create_app(project)).get("/api/catalog").json()
 
     assert {agent["id"] for agent in payload["agents"]} >= {"main", "sophie"}
-    assert any("orchestrateurs" in warning for warning in payload["agent_warnings"])
+    avertissement = payload["agent_warnings"][0]
+    assert avertissement["agent_id"] == "sophie"
+    assert avertissement["dropped"] == ["main"]
+    # Conseiller `subagent: true` démoterait l'orchestrateur principal.
+    assert "Retirer" in avertissement["remedy"]
 
 
 def test_api_default_workspace_is_distinct_from_application_root(
@@ -981,7 +985,7 @@ def test_visible_telegram_session_can_be_aggregated_into_app_catalog(project: Pa
     )
 
 
-def test_session_history_has_global_routine_inbox_and_hides_execution_sessions(
+def test_session_history_has_the_agent_channel_and_hides_execution_sessions(
     project: Path,
 ) -> None:
     ModuleRegistry(project / "tools").build_index()
@@ -1005,9 +1009,9 @@ def test_session_history_has_global_routine_inbox_and_hides_execution_sessions(
     )
     sessions = TestClient(app).get("/api/sessions", params={"workspace": str(project)}).json()
     assert any(
-        item["trigger"] == "routine_inbox" and item["workspace"] is None for item in sessions
+        item["trigger"] == "agent_channel" and item["workspace"] is None for item in sessions
     )
-    inbox = next(item for item in sessions if item["trigger"] == "routine_inbox")
+    inbox = next(item for item in sessions if item["trigger"] == "agent_channel")
     assert inbox["workspace_kind"] == "agent_default"
     assert inbox["effective_workspace"] == str(
         (project / "content-agents" / "workspaces" / "main").resolve()
@@ -1015,14 +1019,14 @@ def test_session_history_has_global_routine_inbox_and_hides_execution_sessions(
     assert all(item["session_id"] != str(automation_session) for item in sessions)
 
 
-def test_routine_inbox_keeps_its_stable_name_after_a_user_reply(project: Path) -> None:
+def test_the_agent_channel_keeps_its_stable_name_after_a_user_reply(project: Path) -> None:
     ModuleRegistry(project / "tools").build_index()
     app = create_app(project)
     from agentic_kernel.events import JsonlEventStore
 
     JsonlEventStore(project / "content-agents" / "sessions").append(
         Event(
-            session_id=ROUTINE_INBOX_SESSION_ID,
+            session_id=agent_session_id("main"),
             run_id=uuid4(),
             agent_id="main",
             type="session.started",
@@ -1031,13 +1035,13 @@ def test_routine_inbox_keeps_its_stable_name_after_a_user_reply(project: Path) -
     )
 
     sessions = TestClient(app).get("/api/sessions").json()
-    inbox = next(item for item in sessions if item["session_id"] == str(ROUTINE_INBOX_SESSION_ID))
-    assert inbox["prompt"] == "Routines"
-    assert inbox["trigger"] == "routine_inbox"
+    inbox = next(item for item in sessions if item["session_id"] == str(agent_session_id("main")))
+    assert inbox["prompt"] == "main"
+    assert inbox["trigger"] == "agent_channel"
     assert inbox["workspace"] is None
 
 
-def test_routine_inbox_can_be_cleared_without_deleting_its_stable_session(
+def test_the_agent_channel_can_be_cleared_without_deleting_its_stable_session(
     project: Path,
 ) -> None:
     ModuleRegistry(project / "tools").build_index()
@@ -1046,7 +1050,7 @@ def test_routine_inbox_can_be_cleared_without_deleting_its_stable_session(
     run_id = uuid4()
     store.append(
         Event(
-            session_id=ROUTINE_INBOX_SESSION_ID,
+            session_id=agent_session_id("main"),
             run_id=run_id,
             agent_id="main",
             type="session.started",
@@ -1055,7 +1059,7 @@ def test_routine_inbox_can_be_cleared_without_deleting_its_stable_session(
     )
     store.append(
         Event(
-            session_id=ROUTINE_INBOX_SESSION_ID,
+            session_id=agent_session_id("main"),
             run_id=run_id,
             agent_id="main",
             type="session.completed",
@@ -1063,26 +1067,26 @@ def test_routine_inbox_can_be_cleared_without_deleting_its_stable_session(
         )
     )
     snapshots = (
-        project / "content-agents" / "sessions" / "blobs" / str(ROUTINE_INBOX_SESSION_ID)
+        project / "content-agents" / "sessions" / "blobs" / str(agent_session_id("main"))
     )
     snapshots.mkdir(parents=True)
     (snapshots / "obsolete.json.gz").write_bytes(b"obsolete")
     artifacts = (
-        project / "content-agents" / "sessions" / "artifacts" / str(ROUTINE_INBOX_SESSION_ID)
+        project / "content-agents" / "sessions" / "artifacts" / str(agent_session_id("main"))
     )
     artifacts.mkdir(parents=True)
     (artifacts / "obsolete.png").write_bytes(b"obsolete")
 
     client = TestClient(app)
-    response = client.post(f"/api/sessions/{ROUTINE_INBOX_SESSION_ID}/clear")
+    response = client.post(f"/api/sessions/{agent_session_id("main")}/clear")
 
     assert response.status_code == 200
     assert response.json()["status"] == "cleared"
-    detail = client.get(f"/api/sessions/{ROUTINE_INBOX_SESSION_ID}").json()
-    assert detail["trigger"] == "routine_inbox"
-    assert detail["prompt"] == "Routines"
+    detail = client.get(f"/api/sessions/{agent_session_id("main")}").json()
+    assert detail["trigger"] == "agent_channel"
+    assert detail["prompt"] == "main"
     assert detail["messages"] == []
-    assert [event["type"] for event in detail["events"]] == ["routine.inbox.created"]
+    assert [event["type"] for event in detail["events"]] == ["agent.channel.created"]
     assert not snapshots.exists()
     assert not artifacts.exists()
 
@@ -1280,3 +1284,106 @@ def test_any_conversation_can_be_cleared(project: Path) -> None:
     assert detail["workspace"] == str(project)
     # Et surtout : vidée, pas relancée.
     assert detail["status"] == "success"
+
+
+def test_repairing_the_hierarchy_rewrites_the_offending_file(project: Path) -> None:
+    """L'avertissement doit pouvoir se corriger depuis l'application.
+
+    Sans ce geste il se répète à chaque démarrage, et l'unique remède est
+    d'éditer un fichier hors de l'interface — que rien ne laisse deviner.
+    """
+    agents = project / "content-agents" / "agents"
+    (agents / "dev.md").write_text(
+        "---\nid: dev\ndescription: Dev\nprovider: test\nsubagent: true\n---\nDev.\n",
+        encoding="utf-8",
+    )
+    (agents / "main.md").write_text(
+        "---\nid: main\ndescription: Main\nprovider: test\ndelegates: [dev]\n---\nMain.\n",
+        encoding="utf-8",
+    )
+    (agents / "sophie.md").write_text(
+        "---\nid: sophie\ndescription: Sophie\nprovider: test\n"
+        "delegates: [main, dev]\nuser_memory: true\n---\nSophie parle.\n",
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(project))
+
+    repare = client.post("/api/admin/agents/repair-hierarchy")
+
+    assert repare.status_code == 200
+    assert repare.json()["repaired"] == [{"agent_id": "sophie", "removed": ["main"]}]
+    assert repare.json()["remaining"] == []
+    ecrit = (agents / "sophie.md").read_text(encoding="utf-8")
+    # La délégation légitime et le reste du front matter survivent.
+    assert "dev" in ecrit
+    assert "user_memory: true" in ecrit
+    assert "Sophie parle." in ecrit
+    assert client.get("/api/catalog").json()["agent_warnings"] == []
+
+
+def test_repairing_a_healthy_catalog_changes_nothing(project: Path) -> None:
+    client = TestClient(create_app(project))
+
+    repare = client.post("/api/admin/agents/repair-hierarchy")
+
+    assert repare.json() == {"repaired": [], "remaining": []}
+
+
+def test_every_orchestrator_gets_its_own_channel(project: Path) -> None:
+    """Le canal appartient à l'agent, pas à l'application.
+
+    Une boîte unique câblée sur `main` faisait écrire un second orchestrateur
+    dans le fil du premier : ses routines et ses échanges Telegram y
+    atterrissaient, mêlés à ceux d'un agent qui n'en savait rien.
+    """
+    agents = project / "content-agents" / "agents"
+    (agents / "sophie.md").write_text(
+        "---\nid: sophie\ndescription: Sophie\nprovider: test\n---\nSophie.\n",
+        encoding="utf-8",
+    )
+    (agents / "dev.md").write_text(
+        "---\nid: dev\ndescription: Dev\nprovider: test\nsubagent: true\n---\nDev.\n",
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app(project))
+    sessions = client.get("/api/sessions", params={"workspace": str(project)}).json()
+    canaux = {item["agent_id"] for item in sessions if item["trigger"] == "agent_channel"}
+
+    assert canaux == {"main", "sophie"}
+    # Un sous-agent ne parle jamais directement : lui ouvrir un fil le
+    # remplirait la liste de conversations qui ne recevraient rien.
+    assert "dev" not in canaux
+
+
+def test_a_routine_reports_into_its_own_agent_channel(project: Path) -> None:
+    (project / "content-agents" / "agents" / "sophie.md").write_text(
+        "---\nid: sophie\ndescription: Sophie\nprovider: test\n---\nSophie.\n",
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(project))
+
+    cree = client.post(
+        "/api/crons",
+        json={
+            "name": "Veille",
+            "schedule": "0 8 * * *",
+            "prompt": "Fais la veille",
+            "agent_id": "sophie",
+            "enabled": False,
+        },
+    )
+
+    assert cree.status_code == 200
+    assert cree.json()["notification_session_id"] == str(agent_session_id("sophie"))
+
+
+def test_an_agent_channel_cannot_be_deleted(project: Path) -> None:
+    """Le supprimer le ferait réapparaître vide au démarrage suivant, en ayant
+    perdu son historique pour rien."""
+    client = TestClient(create_app(project))
+
+    supprime = client.delete(f"/api/sessions/{agent_session_id('main')}")
+
+    assert supprime.status_code == 409
+    assert "permanent" in supprime.json()["detail"]

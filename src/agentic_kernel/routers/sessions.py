@@ -11,7 +11,6 @@ from fastapi.responses import StreamingResponse
 
 from ..kernel import Kernel
 from ..models import Event
-from ..scheduler import ROUTINE_INBOX_SESSION_ID
 from ..session_lifecycle import SessionLifecycle
 
 
@@ -150,8 +149,15 @@ def create_session_router(
 
     @router.delete("/{session_id}")
     async def delete_session(session_id: UUID) -> dict[str, str]:
-        if session_id == ROUTINE_INBOX_SESSION_ID:
-            raise HTTPException(status_code=409, detail="La session Routines est permanente")
+        # Le canal d'un agent est permanent : c'est son fil, pas une
+        # conversation. Le supprimer le ferait réapparaître vide au prochain
+        # démarrage, en ayant perdu son historique pour rien.
+        canal = kernel.events.projection.session(session_id)
+        if canal is not None and canal.get("trigger") == "agent_channel":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Le canal de {canal.get('agent_id', 'agent')} est permanent",
+            )
         if session_id in running_tasks:
             raise HTTPException(status_code=409, detail="Impossible de supprimer un run actif")
         if not lifecycle.delete(session_id):
@@ -165,20 +171,20 @@ def create_session_router(
             raise HTTPException(status_code=404, detail="Session introuvable")
         if session_id in running_tasks:
             raise HTTPException(status_code=409, detail="Un run est encore en cours")
-        # La boîte de routines n'est pas une conversation : elle se recrée avec
-        # son propre événement, qui rétablit son titre et son absence de
-        # workspace. Toute autre session est vidée en conservant ce qui la
-        # définit — son déclencheur, son projet, sa visibilité.
-        est_routine = session.get("trigger") == "routine_inbox"
+        # Le canal d'un agent n'est pas une conversation : il se recrée avec son
+        # propre événement, qui rétablit son titre et son absence de workspace.
+        # Toute autre session est vidée en conservant ce qui la définit — son
+        # déclencheur, son projet, sa visibilité.
+        est_canal = session.get("trigger") == "agent_channel"
         lifecycle.reset(
             Event(
                 session_id=session_id,
                 run_id=uuid4(),
                 agent_id=str(session.get("agent_id", "main")),
-                type="routine.inbox.created" if est_routine else "session.cleared",
+                type="agent.channel.created" if est_canal else "session.cleared",
                 payload=(
-                    {"prompt": "Routines"}
-                    if est_routine
+                    {"prompt": str(session.get("prompt") or session.get("agent_id") or "agent")}
+                    if est_canal
                     else {
                         "prompt": str(session.get("prompt") or ""),
                         "workspace": session.get("workspace"),

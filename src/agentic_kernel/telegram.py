@@ -15,7 +15,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
-from uuid import UUID, uuid5
+from uuid import UUID
 
 import httpx
 from markdown_it import MarkdownIt
@@ -24,9 +24,17 @@ from pydantic import BaseModel, field_validator
 from .errors import ConfigurationError
 from .models import ApprovalRequest, RunRequest, RunResult, RunStatus, SecurityMode
 from .platform.secure_files import secure_file
+from .scheduler import agent_session_id
 from .secrets import SecretStore
 
-TELEGRAM_SESSION_NAMESPACE = UUID("6e59b3f8-a70b-4e8f-89db-36fc2d8141ac")
+# Telegram écrit désormais dans le canal de l'agent plutôt que dans un fil par
+# conversation : c'est le même interlocuteur, sur une autre surface, et le
+# séparer coupait l'agent de ce qu'il venait de dire ailleurs.
+#
+# Conséquence assumée : deux conversations Telegram distinctes avec le même
+# agent partagent ce fil. Un seul utilisateur est autorisé par configuration,
+# donc le cas se réduit à parler au bot depuis un groupe autant que depuis la
+# conversation privée — auquel cas partager le contexte est ce qu'on veut.
 _TOKEN = re.compile(r"^\d+:[A-Za-z0-9_-]{20,}$")
 _USER_ID = re.compile(r"^[1-9]\d*$")
 _RISK_LABELS = {
@@ -317,6 +325,7 @@ class TelegramSupervisor:
         self,
         store: TelegramConfigStore,
         agent_ids: Callable[[], set[str]],
+        agent_security_mode: Callable[[str], SecurityMode],
         launch: LaunchRun,
         list_approvals: ListApprovals,
         resolve_approvals: ResolveApprovals,
@@ -324,6 +333,7 @@ class TelegramSupervisor:
     ) -> None:
         self.store = store
         self.agent_ids = agent_ids
+        self.agent_security_mode = agent_security_mode
         self.launch = launch
         self.list_approvals = list_approvals
         self.resolve_approvals = resolve_approvals
@@ -439,10 +449,7 @@ class TelegramSupervisor:
         ):
             return False
         chat_id = int(chat["id"])
-        session_id = uuid5(
-            TELEGRAM_SESSION_NAMESPACE,
-            f"{config.agent_id}:{chat_id}",
-        )
+        session_id = agent_session_id(config.agent_id)
         self.store.remember_chat(config.agent_id, session_id, chat_id)
         command = text.strip().split(maxsplit=1)[0].lower()
         if command == "/clear" or command.startswith("/clear@"):
@@ -482,7 +489,10 @@ class TelegramSupervisor:
                     agent_id=config.agent_id,
                     session_id=session_id,
                     workspace=None,
-                    security_mode=SecurityMode.LIMITED,
+                    # Le niveau vient de l'agent, pas de la surface. Une valeur
+                    # écrite en dur ici s'imposait sans que rien ne la montre ni
+                    # ne permette de la changer.
+                    security_mode=self.agent_security_mode(config.agent_id),
                     trigger="telegram",
                     hidden=config.hide_session,
                 )
@@ -560,7 +570,7 @@ class TelegramSupervisor:
             return False
         run_id, fingerprint, approved = parsed
         chat_id = int(chat["id"])
-        session_id = uuid5(TELEGRAM_SESSION_NAMESPACE, f"{config.agent_id}:{chat_id}")
+        session_id = agent_session_id(config.agent_id)
         self.store.remember_chat(config.agent_id, session_id, chat_id)
         approvals = self._approvals_for(session_id, run_id)
         if not approvals or _approval_fingerprint(approvals) != fingerprint:
@@ -723,9 +733,7 @@ class TelegramSupervisor:
         self, client: httpx.AsyncClient, config: TelegramRuntimeConfig
     ) -> None:
         chats = dict(config.chats)
-        private_session = uuid5(
-            TELEGRAM_SESSION_NAMESPACE, f"{config.agent_id}:{config.user_id}"
-        )
+        private_session = agent_session_id(config.agent_id)
         chats.setdefault(str(private_session), config.user_id)
         notices = dict(config.approval_notices)
         pending = self.list_approvals()

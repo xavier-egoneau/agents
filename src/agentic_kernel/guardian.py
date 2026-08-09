@@ -74,6 +74,7 @@ def review_tool_call(
     mode: SecurityMode,
     workspace: Path,
     trusted_read_roots: tuple[Path, ...] = (),
+    personal_workspace: Path | None = None,
     path_parameters: tuple[str, ...] = (),
     url_parameters: tuple[str, ...] = (),
 ) -> GuardianDecision:
@@ -161,6 +162,18 @@ def review_tool_call(
         ToolRisk.WRITE in risks
         and mode is SecurityMode.LIMITED
         and any(candidate is not None and candidate.exists() for candidate in paths)
+        # Le rangement personnel de l'agent — USER.md, DECISIONS.md, sa
+        # bibliothèque, l'état de Sentinel — n'est pas le travail de
+        # l'utilisateur. Y réécrire un fichier est le fonctionnement normal, et
+        # demander à chaque fois entraîne à valider sans lire : le jour où la
+        # demande porte sur quelque chose qui compte, elle passe avec les autres.
+        and not (
+            personal_workspace is not None
+            and all(
+                candidate is not None and _inside(candidate, personal_workspace.resolve())
+                for candidate in paths
+            )
+        )
     ):
         verdict = GuardianVerdict.ASK
         reason = "Overwriting an existing path requires approval in limited mode."
@@ -427,6 +440,11 @@ class GuardianToolset(WrapperToolset[Any]):
             )
             if deps.state_db is not None
             else (),
+            personal_workspace=(
+                deps.state_db.parent / "workspaces" / self.agent_id
+                if deps.state_db is not None
+                else None
+            ),
             path_parameters=tuple(self.path_parameters.get(name, ())),
             url_parameters=tuple(self.url_parameters.get(name, ())),
         )

@@ -980,3 +980,36 @@ def test_a_bare_command_needs_no_request() -> None:
     from agentic_kernel.kernel import _expand_skill_command
 
     assert _expand_skill_command("/build", "/build", "Exécute le plan.") == "Exécute le plan."
+
+
+def test_the_runtime_context_tells_the_agent_who_it_is() -> None:
+    """Sans identité, le modèle en invente une et l'affirme sans réserve.
+
+    Un agent qui se trompe sur son propre nom discrédite tout ce qu'il énonce
+    ensuite : l'utilisateur n'a plus de repère pour distinguer ce qui est mesuré
+    de ce qui est comblé.
+    """
+    from agentic_kernel.kernel import _runtime_context_instruction
+    from agentic_kernel.models import SecurityMode
+
+    rendu = _runtime_context_instruction(
+        Path("/tmp/espace"),
+        SecurityMode.LIMITED,
+        agent_id="main",
+        agent_description="Agent superviseur principal du kernel.",
+    )
+
+    assert "You are the agent `main`" in rendu
+    assert "Agent superviseur principal du kernel." in rendu
+    assert "never invent one" in rendu
+
+
+def test_an_agent_without_identity_says_nothing_about_it() -> None:
+    """Le contexte reste utilisable là où l'identité n'a pas de sens."""
+    from agentic_kernel.kernel import _runtime_context_instruction
+    from agentic_kernel.models import SecurityMode
+
+    rendu = _runtime_context_instruction(Path("/tmp/espace"), SecurityMode.LIMITED)
+
+    assert "You are the agent" not in rendu
+    assert "Runtime context" in rendu

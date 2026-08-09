@@ -15,7 +15,7 @@ from .config import ProjectConfig
 from .errors import AuthenticationError, ConfigurationError
 from .git_service import GitService
 from .kernel import Kernel
-from .models import Event, RunError, RunRequest, RunResult, RunStatus
+from .models import Event, RunError, RunRequest, RunResult, RunStatus, SecurityMode
 from .platform.dialogs import NativeDialogUnavailable, choose_directory
 from .providers import ProviderFactory
 from .routers.approvals import create_approval_router
@@ -28,11 +28,11 @@ from .routers.resources import create_resource_router
 from .routers.runs import create_run_router
 from .routers.sessions import create_session_router
 from .scheduler import (
-    ROUTINE_INBOX_SESSION_ID,
     CronJobInput,
     CronScheduler,
     CronService,
     SchedulerError,
+    agent_session_id,
 )
 from .searxng import SearxngService
 from .session_lifecycle import SessionLifecycle
@@ -132,15 +132,23 @@ def create_app(
     cron_service.repair_orphaned_blocks(
         {item.session_id for item in kernel.list_approvals()}
     )
-    routine_inbox = kernel.events.projection.session(ROUTINE_INBOX_SESSION_ID)
-    if routine_inbox is None or routine_inbox.get("trigger") != "routine_inbox":
+    # Un canal par orchestrateur, semé au démarrage. Les sous-agents n'en ont
+    # pas : ils ne parlent jamais directement à l'utilisateur, et leur en donner
+    # un remplirait la liste de fils qui ne recevraient jamais rien.
+    for agent in project.agents().values():
+        if agent.subagent:
+            continue
+        canal = agent_session_id(agent.id)
+        connu = kernel.events.projection.session(canal)
+        if connu is not None and connu.get("trigger") == "agent_channel":
+            continue
         kernel.events.append(
             Event(
-                session_id=ROUTINE_INBOX_SESSION_ID,
+                session_id=canal,
                 run_id=uuid4(),
-                agent_id="main",
-                type="routine.inbox.created",
-                payload={"prompt": "Routines"},
+                agent_id=agent.id,
+                type="agent.channel.created",
+                payload={"prompt": agent.id},
             )
         )
 
@@ -153,8 +161,10 @@ def create_app(
             return
         job = cron_service.get(request.cron_job_id)
         target = job.notification_session_id
-        if kernel.events.projection.session(target) is None:
-            target = ROUTINE_INBOX_SESSION_ID
+        if target is None or kernel.events.projection.session(target) is None:
+            # Le résultat d'une routine ne doit jamais se perdre : à défaut de
+            # cible valable, il retombe sur le canal de son propre agent.
+            target = agent_session_id(job.agent_id)
         error_text = "\n".join(item.message for item in result.errors)
         content = result.output or error_text or f"Routine « {job.name} » terminée."
         kernel.events.append(
@@ -288,6 +298,13 @@ def create_app(
     telegram = TelegramSupervisor(
         telegram_store,
         lambda: set(project.agents()),
+        # Telegram n'offre pas de sélecteur : il suit le niveau par défaut
+        # déclaré sur l'agent, au lieu d'une valeur écrite en dur.
+        lambda agent_id: (
+            agent.security_mode
+            if (agent := project.agents().get(agent_id)) is not None
+            else SecurityMode.LIMITED
+        ),
         launch,
         kernel.list_approvals,
         resolve_telegram_approvals,
@@ -465,6 +482,7 @@ def create_app(
                     "provider": agent.provider,
                     "model": agent.model,
                     "skills": agent.skills,
+                    "security_mode": agent.security_mode.value,
                     "subagent": agent.subagent,
                     "delegates": agent.delegates,
                 }

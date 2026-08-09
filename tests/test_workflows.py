@@ -422,6 +422,50 @@ def test_basis_hash_is_canonical_for_catalog_and_skill_order(tmp_path: Path) -> 
     assert workflow_basis_hash(first) == workflow_basis_hash(second)
 
 
+def test_the_tool_catalog_alone_never_stales_a_workflow(tmp_path: Path) -> None:
+    """Le catalogue décrit l'environnement, pas la routine.
+
+    L'inclure dans le hash faisait qu'une description reformulée ou un module
+    activé périmait tous les workflows enregistrés, en annonçant à tort que la
+    routine avait changé. Il fallait tout revalider à la main.
+    """
+    original = basis(tmp_path)
+    proposal = accepted(workflow(), original)
+    enrichi = original.model_copy(
+        update={
+            "tool_catalog": [
+                *original.tool_catalog,
+                WorkflowTool(name="utc_now", description="Ajouté depuis", input_schema={}),
+            ]
+        }
+    )
+
+    assert validate_accepted(proposal, enrichi) is proposal
+
+
+def test_a_tool_the_workflow_uses_must_still_exist(tmp_path: Path) -> None:
+    """Sortir le catalogue du hash ne relâche rien : la vraie régression — un
+    outil disparu, un argument renommé — reste attrapée par la validation, mais
+    sémantiquement, et seulement pour les outils réellement employés."""
+    original = basis(tmp_path)
+    proposal = accepted(workflow(), original)
+    ampute = original.model_copy(update={"tool_catalog": []})
+
+    with pytest.raises(WorkflowValidationError, match="inconnu dans le catalogue"):
+        validate_accepted(proposal, ampute)
+
+
+def test_rewriting_a_skill_still_stales_the_workflow(tmp_path: Path) -> None:
+    """Le workflow dérive du texte de la skill ; le réécrire peut le rendre
+    incohérent sans qu'aucun outil ne manque, et rien d'autre ne le verrait."""
+    original = basis(tmp_path, skills=["veille"], skill_instructions={"veille": "Ancien texte"})
+    proposal = accepted(workflow(), original)
+    reecrite = original.model_copy(update={"skill_instructions": {"veille": "Nouveau texte"}})
+
+    with pytest.raises(StaleWorkflowError, match="routine a changé"):
+        validate_accepted(proposal, reecrite)
+
+
 def test_workflow_basis_accepts_a_personal_workspace_and_guardian_metadata() -> None:
     current = WorkflowBasis(
         name="Routine personnelle",

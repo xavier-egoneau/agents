@@ -115,6 +115,8 @@ class AgentFactory:
                 provider_id=resolved_provider_id,
                 model_name=resolved_model_name,
                 context_window_tokens=context_window_tokens,
+                agent_id=config.id,
+                agent_description=config.description,
             ),
             self.workspace_maps.build(active_workspace).render(),
             self.context.secret_catalog_instruction(),
@@ -214,6 +216,9 @@ class AgentFactory:
                     provider_id=resolved_provider_id,
                     model_name=resolved_model_name,
                     context_window_tokens=context_window_tokens,
+                    # Le sous-agent neutre tient son rôle du prompt : lui donner
+                    # l'identité du parent le ferait répondre à sa place.
+                    agent_id=f"{config.id}_subagent",
                 ),
                 self.workspace_maps.build(active_workspace).render(),
                 self.context.secret_catalog_instruction(),

@@ -85,9 +85,9 @@ def create_run_router(
         started = next(event for event in reversed(events) if event.type == "session.started")
         session = kernel.events.projection.session(session_id)
         logical_workspace = started.payload.get("workspace")
-        if session and session.get("trigger") == "routine_inbox":
+        if session and session.get("trigger") == "agent_channel":
             # Compatibility with events written before logical and effective
-            # workspaces were separated: the global inbox was already NULL in
+            # workspaces were separated: the agent channel was already NULL in
             # the projection even though its event contained the app root.
             logical_workspace = None
         prompt = payload.prompt or (

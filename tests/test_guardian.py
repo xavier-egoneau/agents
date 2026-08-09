@@ -169,3 +169,75 @@ def test_declared_url_parameter_catches_private_target(tmp_path: Path) -> None:
     )
     assert decision.verdict == GuardianVerdict.ASK
     assert decision.path == "http://127.0.0.1:9000"
+
+
+def test_the_agent_personal_workspace_is_not_gated_on_overwrite(tmp_path: Path) -> None:
+    """Le rangement de l'agent n'est pas le travail de l'utilisateur.
+
+    Demander à chaque écriture de `USER.md` entraîne à valider sans lire — et le
+    jour où la demande porte sur un fichier qui compte, elle passe avec les
+    autres.
+    """
+    personnel = tmp_path / "workspaces" / "main"
+    personnel.mkdir(parents=True)
+    memoire = personnel / "USER.md"
+    memoire.write_text("# User profile\n", encoding="utf-8")
+
+    decision = review_tool_call(
+        tool_name="write",
+        tool_call_id="1",
+        agent_id="main",
+        arguments={"path": str(memoire), "content": "x", "justification": "mémoriser"},
+        risks=[ToolRisk.WRITE],
+        mode=SecurityMode.LIMITED,
+        workspace=personnel,
+        personal_workspace=personnel,
+    )
+
+    assert decision.verdict is GuardianVerdict.ALLOW
+
+
+def test_overwriting_a_user_file_still_asks_in_limited_mode(tmp_path: Path) -> None:
+    """L'exemption vise le dossier de l'agent, pas le répertoire de travail :
+    l'élargir ferait disparaître la garde devant les fichiers du projet."""
+    projet = tmp_path / "projet"
+    projet.mkdir()
+    source = projet / "app.ts"
+    source.write_text("export const a = 1;\n", encoding="utf-8")
+
+    decision = review_tool_call(
+        tool_name="write",
+        tool_call_id="1",
+        agent_id="main",
+        arguments={"path": str(source), "content": "x", "justification": "corriger"},
+        risks=[ToolRisk.WRITE],
+        mode=SecurityMode.LIMITED,
+        workspace=projet,
+        personal_workspace=tmp_path / "workspaces" / "main",
+    )
+
+    assert decision.verdict is GuardianVerdict.ASK
+    assert "Overwriting" in decision.reason
+
+
+def test_deleting_inside_the_personal_workspace_still_asks(tmp_path: Path) -> None:
+    """Effacer une page d'encyclopédie n'a pas de filet : le tag destructif
+    reste traité avant l'exemption."""
+    personnel = tmp_path / "workspaces" / "main"
+    personnel.mkdir(parents=True)
+    page = personnel / "knowledge" / "sujet.md"
+    page.parent.mkdir()
+    page.write_text("contenu", encoding="utf-8")
+
+    decision = review_tool_call(
+        tool_name="move",
+        tool_call_id="1",
+        agent_id="main",
+        arguments={"path": str(page), "justification": "ranger"},
+        risks=[ToolRisk.WRITE, ToolRisk.DESTRUCTIVE],
+        mode=SecurityMode.LIMITED,
+        workspace=personnel,
+        personal_workspace=personnel,
+    )
+
+    assert decision.verdict is GuardianVerdict.ASK

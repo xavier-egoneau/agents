@@ -12,12 +12,29 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .models import RunRequest, RunResult, RunStatus, SecurityMode
 from .workflows import WorkflowDefinition, workflow_tool_allowlist
 
-ROUTINE_INBOX_SESSION_ID = uuid5(NAMESPACE_URL, "agentic-kernel:routine-inbox")
+# Ancienne boîte unique, câblée sur `main` et partagée par toutes les routines.
+# Les routines créées avant la refonte pointent encore dessus : la session existe
+# toujours en projection, donc le repli « cible introuvable » ne se déclenche pas,
+# et les résultats continuaient d'y tomber — dans un fil qu'aucun écran ne montre
+# plus, puisque son déclencheur n'existe plus dans le vocabulaire.
+LEGACY_ROUTINE_INBOX = uuid5(NAMESPACE_URL, "agentic-kernel:routine-inbox")
+
+
+def agent_session_id(agent_id: str) -> UUID:
+    """Session canonique d'un agent : son fil permanent, quelle que soit la surface.
+
+    Elle est née comme boîte de réception des routines, d'où son ancien nom, mais
+    c'est bien le canal de l'agent : routines, Telegram et tout échange qui ne
+    tient pas à un projet y convergent. La faire dépendre de l'agent est ce qui
+    permet à un second orchestrateur d'avoir le sien plutôt que d'écrire dans
+    celui de `main`.
+    """
+    return uuid5(NAMESPACE_URL, f"agentic-kernel:agent-session:{agent_id}")
 
 
 class CronJobInput(BaseModel):
@@ -35,7 +52,15 @@ class CronJobInput(BaseModel):
     reasoning: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None
     enabled: bool = True
     auto_resume: bool = True
-    notification_session_id: UUID = ROUTINE_INBOX_SESSION_ID
+    # Non renseignée, elle suit l'agent : le défaut ne peut pas être une
+    # constante de classe, puisqu'il dépend d'un autre champ.
+    notification_session_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _default_notification_session(self) -> CronJobInput:
+        if self.notification_session_id is None:
+            self.notification_session_id = agent_session_id(self.agent_id)
+        return self
 
 
 class CronJob(CronJobInput):
@@ -161,11 +186,22 @@ class CronService:
             # A previous process may have added the nullable column and stopped
             # before backfilling every row. Keep this repair idempotent instead
             # of tying it only to the ALTER TABLE branch.
-            connection.execute(
-                "UPDATE cron_jobs SET notification_session_id=? "
-                "WHERE notification_session_id IS NULL OR notification_session_id=''",
-                (str(ROUTINE_INBOX_SESSION_ID),),
-            )
+            #
+            # L'ancienne boîte unique est reprise au même endroit : sans cela une
+            # routine antérieure continuerait de livrer dans un fil invisible,
+            # sans erreur ni trace, ce qui est pire qu'un échec franc.
+            # La cible dépend de l'agent de la routine : une seule requête SQL
+            # ne peut pas la calculer, d'où la reprise ligne à ligne.
+            for identifiant, agent in connection.execute(
+                "SELECT id, agent_id FROM cron_jobs "
+                "WHERE notification_session_id IS NULL OR notification_session_id='' "
+                "OR notification_session_id=?",
+                (str(LEGACY_ROUTINE_INBOX),),
+            ).fetchall():
+                connection.execute(
+                    "UPDATE cron_jobs SET notification_session_id=? WHERE id=?",
+                    (str(agent_session_id(agent)), identifiant),
+                )
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS cron_runs (
                     id TEXT PRIMARY KEY,
@@ -188,11 +224,18 @@ class CronService:
             run_columns = {row[1] for row in connection.execute("PRAGMA table_info(cron_runs)")}
             if "notification_session_id" not in run_columns:
                 connection.execute("ALTER TABLE cron_runs ADD COLUMN notification_session_id TEXT")
-            connection.execute(
-                "UPDATE cron_runs SET notification_session_id=? "
-                "WHERE notification_session_id IS NULL OR notification_session_id=''",
-                (str(ROUTINE_INBOX_SESSION_ID),),
-            )
+            for identifiant, agent in connection.execute(
+                "SELECT cron_runs.id, cron_jobs.agent_id FROM cron_runs "
+                "JOIN cron_jobs ON cron_jobs.id = cron_runs.cron_job_id "
+                "WHERE cron_runs.notification_session_id IS NULL "
+                "OR cron_runs.notification_session_id='' "
+                "OR cron_runs.notification_session_id=?",
+                (str(LEGACY_ROUTINE_INBOX),),
+            ).fetchall():
+                connection.execute(
+                    "UPDATE cron_runs SET notification_session_id=? WHERE id=?",
+                    (str(agent_session_id(agent)), identifiant),
+                )
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_cron_runs_job_claimed
                    ON cron_runs(cron_job_id, claimed_at DESC)"""
@@ -708,7 +751,7 @@ class CronService:
             # Defensive compatibility for a database opened before the
             # idempotent backfill above committed in another connection.
             payload["notification_session_id"] = payload.get("notification_session_id") or str(
-                ROUTINE_INBOX_SESSION_ID
+                agent_session_id(str(payload.get("agent_id") or "main"))
             )
             result.append(CronRun.model_validate(payload))
         return result
@@ -849,7 +892,7 @@ class CronService:
             enabled=bool(row["enabled"]),
             auto_resume=bool(row["auto_resume"]),
             notification_session_id=UUID(
-                row["notification_session_id"] or str(ROUTINE_INBOX_SESSION_ID)
+                row["notification_session_id"] or str(agent_session_id(row["agent_id"]))
             ),
             session_id=UUID(row["session_id"]),
             created_at=datetime.fromisoformat(row["created_at"]),

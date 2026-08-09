@@ -1280,10 +1280,29 @@ def _runtime_context_instruction(
     provider_id: str | None = None,
     model_name: str | None = None,
     context_window_tokens: int | None = None,
+    agent_id: str | None = None,
+    agent_description: str | None = None,
 ) -> str:
+    """Contexte d'exécution, identité de l'agent comprise.
+
+    Rien ne disait à l'agent qui il était. Son fichier de définition peut le
+    nommer, mais rien ne l'y oblige, et en l'absence de nom le modèle en invente
+    un — avec l'aplomb d'une information vérifiée. Un agent qui se trompe sur
+    son propre nom discrédite tout ce qu'il affirme ensuite.
+    """
     current = now or datetime.now().astimezone()
+    identite = ""
+    if agent_id:
+        identite = f"You are the agent `{agent_id}`."
+        if agent_description:
+            identite += f" {agent_description.strip()}"
+        identite += (
+            " Never introduce yourself under another name, and never invent one: "
+            "if the user asks who you are, answer with this identifier.\n"
+        )
     return (
         "# Runtime context\n\n"
+        f"{identite}"
         f"Current local date and time: {current.isoformat(timespec='seconds')}\n"
         f"Timezone: {current.tzname() or current.strftime('%z')}\n"
         f"Workspace/CWD: {workspace.resolve()}\n"

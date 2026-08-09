@@ -913,6 +913,15 @@ label.resource-select { cursor: pointer; }
 /* Hiérarchie des agents : le retrait porte le niveau, le libellé le confirme.
    Deux signaux valent mieux qu'un — le retrait seul se perd dès qu'on filtre
    la liste ou qu'on la trie autrement. */
+/* Le retrait seul laissait croire que les sous-agents appartenaient au dernier
+   orchestrateur listé. L'intitulé énonce la règle : ils sont partagés. */
+.resource-group {
+  margin: 12px 0 2px;
+  color: var(--ctx-text-muted);
+  font: var(--weight-semibold) var(--text-xs) / var(--leading-snug) var(--font-sans);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
 .resource-row[data-subagent] { margin-left: 22px; }
 .resource-row[data-subagent] .context-icon { opacity: 0.75; }
 

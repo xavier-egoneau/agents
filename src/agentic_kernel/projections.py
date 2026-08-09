@@ -111,6 +111,13 @@ class SessionProjection:
                 );
                 """
             )
+            # L'ancienne boîte unique des routines n'a plus de gestionnaire
+            # d'événement : une reprojection complète ne la recréerait pas. La
+            # retirer ici met l'état incrémental d'accord avec cette reprojection,
+            # au lieu de laisser un fil qu'aucun écran ne montre mais où des
+            # résultats continuaient d'être écrits. Les exécutions elles-mêmes
+            # restent dans `cron_runs`, donc rien de consultable n'est perdu.
+            db.execute("DELETE FROM projected_sessions WHERE trigger='routine_inbox'")
             columns = {row["name"] for row in db.execute("PRAGMA table_info(projected_context)")}
             if "calibration_factor" not in columns:
                 db.execute(
@@ -182,19 +189,19 @@ class SessionProjection:
         session_id = str(event.session_id)
         run_id = str(event.run_id)
         timestamp = event.timestamp.isoformat()
-        if event.type == "routine.inbox.created":
+        if event.type == "agent.channel.created":
             payload = event.payload
             db.execute(
                 """INSERT INTO projected_sessions
                    (session_id, agent_id, prompt, workspace, trigger, hidden, cron_job_id,
                     created_at, updated_at, status, output, errors_json,
                     event_count, last_sequence)
-                   VALUES (?, ?, ?, NULL, 'routine_inbox', 0, NULL, ?, ?, 'success',
+                   VALUES (?, ?, ?, NULL, 'agent_channel', 0, NULL, ?, ?, 'success',
                            '', '[]', 1, ?)
                    ON CONFLICT(session_id) DO UPDATE SET
-                     prompt='Routines', workspace=NULL, trigger='routine_inbox',
+                     prompt=excluded.prompt, workspace=NULL, trigger='agent_channel',
                      cron_job_id=NULL""",
-                (session_id, event.agent_id, str(payload.get("prompt", "Routines")),
+                (session_id, event.agent_id, str(payload.get("prompt") or event.agent_id),
                  timestamp, timestamp, sequence),
             )
             return
@@ -241,15 +248,15 @@ class SessionProjection:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 1, ?)
                    ON CONFLICT(session_id) DO UPDATE SET
                      agent_id=excluded.agent_id,
-                     prompt=CASE WHEN projected_sessions.trigger='routine_inbox'
-                       THEN 'Routines' ELSE excluded.prompt END,
-                     workspace=CASE WHEN projected_sessions.trigger='routine_inbox'
+                     prompt=CASE WHEN projected_sessions.trigger='agent_channel'
+                       THEN projected_sessions.prompt ELSE excluded.prompt END,
+                     workspace=CASE WHEN projected_sessions.trigger='agent_channel'
                        THEN NULL ELSE excluded.workspace END,
-                     trigger=CASE WHEN projected_sessions.trigger='routine_inbox'
-                       THEN 'routine_inbox' ELSE excluded.trigger END,
-                     hidden=CASE WHEN projected_sessions.trigger='routine_inbox'
+                     trigger=CASE WHEN projected_sessions.trigger='agent_channel'
+                       THEN 'agent_channel' ELSE excluded.trigger END,
+                     hidden=CASE WHEN projected_sessions.trigger='agent_channel'
                        THEN 0 ELSE excluded.hidden END,
-                     cron_job_id=CASE WHEN projected_sessions.trigger='routine_inbox'
+                     cron_job_id=CASE WHEN projected_sessions.trigger='agent_channel'
                        THEN NULL ELSE excluded.cron_job_id END,
                      updated_at=excluded.updated_at,
                      status='running', event_count=event_count + 1,
@@ -506,7 +513,7 @@ class SessionProjection:
         params: list[Any] = []
         clauses: list[str] = []
         if workspace is not None:
-            workspace_clauses = ["workspace = ?", "trigger = 'routine_inbox'"]
+            workspace_clauses = ["workspace = ?", "trigger = 'agent_channel'"]
             params.append(workspace)
             if default_workspace_agent:
                 workspace_clauses.append("(workspace IS NULL AND agent_id = ?)")

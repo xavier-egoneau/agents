@@ -215,14 +215,45 @@ class AcceptedWorkflow(_StrictModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+# Champs du socle que l'utilisateur possède et modifie lui-même.
+#
+# Le catalogue d'outils en est délibérément absent. Il décrit l'environnement,
+# pas la routine : l'y inclure faisait qu'une description reformulée, un module
+# activé ou un `tools/index.json` régénéré périmait tous les workflows
+# enregistrés, sous un message annonçant à tort que la routine avait changé.
+#
+# Ce que le catalogue pouvait révéler de réellement cassant — un outil disparu,
+# un argument renommé — est déjà vérifié par `_validation_errors`, qui confronte
+# chaque étape au catalogue courant. Le hash répond « l'utilisateur a-t-il
+# modifié sa routine ? », la validation répond « l'environnement la supporte-t-il
+# encore ? ».
+#
+# `skill_instructions` reste dedans : réécrire une skill peut rendre incohérent
+# un workflow dérivé de son ancien texte, sans qu'aucun outil ne manque, et rien
+# d'autre ne le détecterait.
+_HASHED_BASIS_FIELDS = (
+    "name",
+    "prompt",
+    "schedule",
+    "timezone",
+    "workspace",
+    "agent_id",
+    "skills",
+    "skill_instructions",
+    "security_mode",
+)
+
+
 def workflow_basis_hash(basis: WorkflowBasis) -> str:
     """Hash a normalized basis so a proposal cannot be applied after an edit."""
 
-    payload = basis.model_dump(mode="json", by_alias=True, exclude_none=False)
+    payload = basis.model_dump(
+        mode="json",
+        by_alias=True,
+        exclude_none=False,
+        include=set(_HASHED_BASIS_FIELDS),
+    )
     payload["skills"] = sorted(payload["skills"])
-    payload["tool_catalog"] = sorted(payload["tool_catalog"], key=lambda item: item["name"])
-    for tool in payload["tool_catalog"]:
-        tool["risk_tags"] = sorted(tool["risk_tags"])
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -241,7 +272,11 @@ def validate_accepted(
     current_hash = workflow_basis_hash(basis)
     if accepted.basis_hash != current_hash:
         raise StaleWorkflowError(
-            ["la routine a changé depuis la génération du workflow; régénérer la proposition"]
+            [
+                "la routine a changé depuis la génération du workflow "
+                "(nom, prompt, planning, workspace, agent, skills ou mode de sécurité); "
+                "régénérer la proposition"
+            ]
         )
     errors = _validation_errors(accepted.workflow, basis)
     if errors:

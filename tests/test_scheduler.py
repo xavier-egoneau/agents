@@ -11,11 +11,12 @@ import pytest
 
 from agentic_kernel.models import RunError, RunRequest, RunResult, RunStatus, SecurityMode
 from agentic_kernel.scheduler import (
-    ROUTINE_INBOX_SESSION_ID,
+    LEGACY_ROUTINE_INBOX,
     CronJobInput,
     CronScheduler,
     CronService,
     SchedulerError,
+    agent_session_id,
 )
 
 
@@ -70,7 +71,7 @@ def test_cron_crud_and_schedule_validation(tmp_path: Path) -> None:
     workspace.mkdir()
     job = service.create(payload(workspace))
     assert job.workspace == workspace.resolve()
-    assert job.notification_session_id == ROUTINE_INBOX_SESSION_ID
+    assert job.notification_session_id == agent_session_id("main")
     assert job.next_run_at is not None
     assert service.list()[0].id == job.id
 
@@ -318,8 +319,8 @@ def test_existing_nullable_notification_columns_are_always_backfilled(tmp_path: 
         )
 
     repaired = CronService(database)
-    assert repaired.get(job.id).notification_session_id == ROUTINE_INBOX_SESSION_ID
-    assert repaired.list_runs()[0].notification_session_id == ROUTINE_INBOX_SESSION_ID
+    assert repaired.get(job.id).notification_session_id == agent_session_id("main")
+    assert repaired.list_runs()[0].notification_session_id == agent_session_id("main")
 
 
 def test_legacy_crons_are_imported_only_once(tmp_path: Path) -> None:
@@ -629,3 +630,27 @@ async def test_scheduler_uses_one_session_and_resumes_failed_job(tmp_path: Path)
     assert calls[0].trigger == "cron"
     assert calls[1].trigger == "cron_resume"
     assert "Ne rejoue pas" in calls[1].prompt
+
+
+def test_a_routine_pointing_at_the_legacy_inbox_is_repointed(tmp_path: Path) -> None:
+    """La cible périmée ne déclenchait aucun repli.
+
+    L'ancienne boîte existait toujours en projection : `deliver_cron_result` la
+    trouvait, ne basculait donc pas sur le canal de l'agent, et les résultats
+    tombaient dans un fil qu'aucun écran ne montre plus. Un échec franc aurait
+    été moins coûteux qu'une livraison silencieuse au mauvais endroit.
+    """
+    base = tmp_path / "state.db"
+    service = CronService(base)
+    job = service.create(
+        CronJobInput(name="Veille", schedule="0 8 * * *", prompt="veille", agent_id="main")
+    )
+    with sqlite3.connect(base) as connection:
+        connection.execute(
+            "UPDATE cron_jobs SET notification_session_id=? WHERE id=?",
+            (str(LEGACY_ROUTINE_INBOX), job.id),
+        )
+
+    repris = CronService(base).get(job.id)
+
+    assert repris.notification_session_id == agent_session_id("main")

@@ -7589,6 +7589,231 @@
     },
     {
       "schema_version": 2,
+      "id": "sentinel",
+      "name": "Sentinel",
+      "description": "Contrôle de sécurité ponctuel de la machine : processus, connexions sortantes, persistances et environnement IA, restitués comme un écart à la référence.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "sentinel_scan",
+          "description": "Scanner la machine et rendre ce qui a changé depuis le dernier passage, avec les sections qui n'ont pas pu être couvertes.",
+          "category": "security",
+          "risk_tags": [
+            "read",
+            "write"
+          ],
+          "path_parameters": [],
+          "url_parameters": [],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "sections": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "update_baseline": {
+                "default": true,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "$defs": {
+              "ToolError": {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "title": "Type",
+                    "type": "string"
+                  },
+                  "message": {
+                    "title": "Message",
+                    "type": "string"
+                  },
+                  "retryable": {
+                    "default": false,
+                    "title": "Retryable",
+                    "type": "boolean"
+                  },
+                  "details": {
+                    "additionalProperties": true,
+                    "title": "Details",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
+                ],
+                "title": "ToolError",
+                "type": "object"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Framework-independent result contract shared by every executable tool.",
+            "properties": {
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "data": {
+                "default": null,
+                "title": "Data"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ToolError"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "metadata": {
+                "additionalProperties": true,
+                "title": "Metadata",
+                "type": "object"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "title": "ToolResult",
+            "type": "object"
+          },
+          "timeout_seconds": 180.0,
+          "cancellable": true,
+          "persistent": true
+        },
+        {
+          "name": "sentinel_acknowledge",
+          "description": "Acquitter des écarts pour qu'ils cessent de remonter dans les rapports suivants.",
+          "category": "security",
+          "risk_tags": [
+            "write"
+          ],
+          "path_parameters": [],
+          "url_parameters": [],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "fingerprints": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "note": {
+                "default": "",
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "fingerprints"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "$defs": {
+              "ToolError": {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "title": "Type",
+                    "type": "string"
+                  },
+                  "message": {
+                    "title": "Message",
+                    "type": "string"
+                  },
+                  "retryable": {
+                    "default": false,
+                    "title": "Retryable",
+                    "type": "boolean"
+                  },
+                  "details": {
+                    "additionalProperties": true,
+                    "title": "Details",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
+                ],
+                "title": "ToolError",
+                "type": "object"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Framework-independent result contract shared by every executable tool.",
+            "properties": {
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "data": {
+                "default": null,
+                "title": "Data"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ToolError"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "metadata": {
+                "additionalProperties": true,
+                "title": "Metadata",
+                "type": "object"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "title": "ToolResult",
+            "type": "object"
+          },
+          "timeout_seconds": 15.0,
+          "cancellable": false,
+          "persistent": true
+        }
+      ],
+      "config": null,
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
       "id": "web",
       "name": "Web research",
       "description": "Recherche, scraping, code public, documentation et crawl via Ketch.",

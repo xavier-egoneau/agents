@@ -7,7 +7,9 @@ export type SessionHistoryItem = {
   prompt: string;
   updated_at: string;
   status: string;
-  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test" | "routine_inbox" | "telegram";
+  /** Nomme le canal permanent, qui appartient à un agent et non à un projet. */
+  agent_id?: string;
+  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test" | "agent_channel" | "telegram";
 };
 
 type SessionHistoryProps = {
@@ -50,8 +52,8 @@ export function SessionHistory({
                 <span className={`session-state ${session.status}`} />
                 <span>
                   <strong>
-                    {session.trigger === "routine_inbox"
-                      ? "Routines"
+                    {session.trigger === "agent_channel"
+                      ? `${session.agent_id} · canonique`
                       : session.trigger === "telegram"
                         ? `Telegram · ${session.prompt || "Conversation"}`
                         : session.prompt || "Session sans titre"}
@@ -84,7 +86,7 @@ export function SessionHistory({
               >
                 <Icon name="refresh" size="xs" />
               </button>
-              {session.trigger !== "routine_inbox" && (
+              {session.trigger !== "agent_channel" && (
                 <button
                   className="session-delete"
                   onClick={() => onDelete(session.session_id)}

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import re
@@ -7,15 +9,13 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-import base64
-import binascii
-
+import yaml
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from ..avatars import AvatarError, AvatarStore
-from ..config import ProjectConfig
+from ..config import ProjectConfig, _string_list, split_front_matter
 from ..errors import ConfigurationError
 from ..models import ProviderRegistry
 from ..module_settings import ModuleSettingsStore
@@ -299,6 +299,57 @@ def create_resource_router(
         except ConfigurationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"id": agent_id, "status": "updated"}
+
+    @router.post("/agents/repair-hierarchy")
+    async def repair_agent_hierarchy() -> dict[str, object]:
+        """Ôte des fichiers les délégations que le chargement a déjà écartées.
+
+        Sans ce geste, l'avertissement se répète à chaque démarrage et ne peut
+        se corriger qu'en éditant un fichier hors de l'application — ce que rien
+        dans l'interface ne laisse deviner.
+
+        La réécriture ne retire que les délégations nommées dans l'avertissement.
+        Tout le reste du front matter, y compris ce que l'application ne
+        comprend pas, est préservé tel quel.
+        """
+        project.agents()  # peuple les avertissements du chargement courant
+        reparations: list[dict[str, object]] = []
+        for avertissement in list(project.agent_warnings):
+            source = Path(str(avertissement["source"]))
+            ecartes = {str(item) for item in avertissement["dropped"]}
+            if not source.is_file():
+                continue
+            header, body = split_front_matter(source.read_text(encoding="utf-8"))
+            restants = [
+                item for item in _string_list(header.get("delegates")) if item not in ecartes
+            ]
+            if restants:
+                header["delegates"] = restants
+            else:
+                header.pop("delegates", None)
+            document = (
+                "---\n"
+                + yaml.safe_dump(header, allow_unicode=True, sort_keys=False)
+                + "---\n\n"
+                + body
+            )
+            agent_id = str(avertissement["agent_id"])
+            try:
+                _atomic_markdown_write(
+                    source,
+                    document,
+                    # Liaison explicite : la lambda est appelée pendant
+                    # l'itération, et capturer la variable de boucle
+                    # validerait le mauvais fichier au tour suivant.
+                    lambda agent_id=agent_id, source=source: _validate_agent(
+                        project, agent_id, source
+                    ),
+                )
+            except ConfigurationError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            reparations.append({"agent_id": agent_id, "removed": sorted(ecartes)})
+        project.agents()  # recharge pour vider les avertissements réparés
+        return {"repaired": reparations, "remaining": project.agent_warnings}
 
     @router.delete("/agents/{agent_id}")
     async def delete_agent(agent_id: str) -> dict[str, str]:

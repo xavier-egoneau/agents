@@ -1,13 +1,13 @@
 import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
-from uuid import uuid4, uuid5
+from uuid import uuid4
 
 import pytest
 
-from agentic_kernel.models import ApprovalRequest, RunResult, RunStatus, ToolRisk
+from agentic_kernel.models import ApprovalRequest, RunResult, RunStatus, SecurityMode, ToolRisk
+from agentic_kernel.scheduler import agent_session_id
 from agentic_kernel.telegram import (
-    TELEGRAM_SESSION_NAMESPACE,
     TelegramAgentInput,
     TelegramConfigStore,
     TelegramRuntimeConfig,
@@ -87,6 +87,7 @@ async def test_telegram_rejects_every_sender_except_exact_allowed_user(tmp_path:
     supervisor = TelegramSupervisor(
         TelegramConfigStore(tmp_path),
         lambda: {"helper"},
+        lambda _agent_id: SecurityMode.LIMITED,
         launch,
         lambda: [],
         AsyncMock(),
@@ -181,6 +182,7 @@ async def test_telegram_refreshes_typing_action_until_run_finishes(tmp_path: Pat
     supervisor = TelegramSupervisor(
         TelegramConfigStore(tmp_path),
         lambda: {"helper"},
+        lambda _agent_id: SecurityMode.LIMITED,
         AsyncMock(),
         lambda: [],
         AsyncMock(),
@@ -251,6 +253,7 @@ async def test_telegram_renders_pending_approval_as_inline_keyboard(tmp_path: Pa
     supervisor = TelegramSupervisor(
         TelegramConfigStore(tmp_path),
         lambda: {"helper"},
+        lambda _agent_id: SecurityMode.LIMITED,
         AsyncMock(),
         lambda: [approval],
         AsyncMock(),
@@ -293,7 +296,9 @@ async def test_telegram_approval_callback_is_authorized_and_resumes_batch(
     tmp_path: Path,
 ) -> None:
     chat_id = 123
-    telegram_session_id = uuid5(TELEGRAM_SESSION_NAMESPACE, f"helper:{chat_id}")
+    # Telegram écrit dans le canal de l'agent : c'est le même interlocuteur,
+    # et un fil par conversation coupait l'agent de ce qu'il venait de dire.
+    telegram_session_id = agent_session_id("helper")
     run_id = uuid4()
     approval = ApprovalRequest(
         session_id=telegram_session_id,
@@ -316,6 +321,7 @@ async def test_telegram_approval_callback_is_authorized_and_resumes_batch(
     supervisor = TelegramSupervisor(
         TelegramConfigStore(tmp_path),
         lambda: {"helper"},
+        lambda _agent_id: SecurityMode.LIMITED,
         AsyncMock(),
         lambda: [approval],
         resolver,
@@ -357,6 +363,7 @@ async def test_telegram_clear_is_native_and_does_not_launch_model(tmp_path: Path
     supervisor = TelegramSupervisor(
         TelegramConfigStore(tmp_path),
         lambda: {"helper"},
+        lambda _agent_id: SecurityMode.LIMITED,
         launched,
         lambda: [],
         AsyncMock(),
@@ -391,6 +398,7 @@ async def test_telegram_rejects_approval_callback_from_another_user(
     supervisor = TelegramSupervisor(
         TelegramConfigStore(tmp_path),
         lambda: {"helper"},
+        lambda _agent_id: SecurityMode.LIMITED,
         AsyncMock(),
         lambda: [],
         resolver,

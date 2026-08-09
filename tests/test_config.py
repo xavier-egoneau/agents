@@ -215,7 +215,7 @@ def test_an_orchestrator_cannot_delegate_to_another_orchestrator(project: Path) 
 
     config = ProjectConfig(project)
     assert config.agents()["chef"].delegates == []
-    assert "orchestrateurs" in config.agent_warnings[0]
+    assert "orchestrateurs" in config.agent_warnings[0]["message"]
 
 
 def test_an_invalid_hierarchy_is_reported_without_blocking(project: Path) -> None:
@@ -235,7 +235,7 @@ def test_an_invalid_hierarchy_is_reported_without_blocking(project: Path) -> Non
 
     assert {"chef", "ouvrier", "isole"} <= set(agents)
     assert len(config.agent_warnings) == 1
-    assert "ouvrier" in config.agent_warnings[0]
+    assert config.agent_warnings[0]["dropped"] == ["ouvrier"]
 
 
 def test_a_stripped_delegation_falls_back_to_the_shared_sub_agents(project: Path) -> None:
@@ -260,7 +260,7 @@ def test_a_sub_agent_cannot_delegate(project: Path) -> None:
 
     config = ProjectConfig(project)
     assert config.agents()["ouvrier"].delegates == []
-    assert "ne peut pas déléguer" in config.agent_warnings[0]
+    assert "ne peut pas déléguer" in config.agent_warnings[0]["message"]
 
 
 def test_an_unknown_delegate_still_fails(project: Path) -> None:
@@ -302,7 +302,7 @@ def test_a_declared_level_always_wins_over_deduction(project: Path) -> None:
     config = ProjectConfig(project)
     # Sans la déclaration, `refuse` aurait été déduit sous-agent et accepté.
     assert config.agents()["chef"].delegates == []
-    assert "orchestrateurs" in config.agent_warnings[0]
+    assert "orchestrateurs" in config.agent_warnings[0]["message"]
 
 
 def test_deduction_never_flattens_a_chain_of_orchestrators(project: Path) -> None:
@@ -318,4 +318,23 @@ def test_deduction_never_flattens_a_chain_of_orchestrators(project: Path) -> Non
     assert agents["milieu"].subagent is False
     # `milieu` écarté, la chaîne est rompue : chef retombe sur les sous-agents.
     assert agents["chef"].delegates == ["bas"]
-    assert "orchestrateurs" in config.agent_warnings[0]
+    assert "orchestrateurs" in config.agent_warnings[0]["message"]
+
+
+def test_an_agent_declares_its_default_permission_level(project: Path) -> None:
+    """Le niveau appartient à l'agent, pas à la surface.
+
+    Telegram l'imposait en dur : rien ne le montrait, rien ne permettait de le
+    changer, et il divergeait du composer sur une même session.
+    """
+    chemin = project / "content-agents" / "agents" / "prudent.md"
+    chemin.write_text(
+        "---\nid: prudent\ndescription: Prudent\nprovider: test\nsecurity_mode: safe\n---\nOK.\n",
+        encoding="utf-8",
+    )
+
+    agents = ProjectConfig(project).agents()
+
+    assert agents["prudent"].security_mode.value == "safe"
+    # Non déclaré, il reste au niveau intermédiaire plutôt qu'au plus permissif.
+    assert agents["main"].security_mode.value == "limited"

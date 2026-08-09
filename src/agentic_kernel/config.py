@@ -94,8 +94,9 @@ class ProjectConfig:
         self.root = Path(root).resolve()
         self.content_root = content_root(self.root)
         self.tools_root = self.root / "tools"
-        # Anomalies de hiérarchie relevées au dernier chargement.
-        self.agent_warnings: list[str] = []
+        # Anomalies de hiérarchie relevées au dernier chargement, chacune
+        # portant de quoi la réparer : le fichier et les délégations à ôter.
+        self.agent_warnings: list[dict[str, Any]] = []
         for sensitive in ("providers.json", "secrets.json"):
             path = self.content_root / sensitive
             if path.exists():
@@ -201,15 +202,28 @@ class ProjectConfig:
         Mais c'est une règle d'organisation, pas une incohérence dangereuse
         comme un cycle ou un délégué inexistant. La faire échouer rendait toute
         l'application inutilisable, y compris les écrans qui auraient permis de
-        la corriger. La délégation fautive est donc retirée et signalée.
+        la corriger. La délégation fautive est donc retirée et signalée, avec
+        de quoi la réparer d'un geste.
         """
         self.agent_warnings = []
         corrige: dict[str, AgentConfig] = {}
         for agent_id, agent in agents.items():
             if agent.subagent and agent.delegates:
+                ecartes = sorted(agent.delegates)
                 self.agent_warnings.append(
-                    f"Le sous-agent {agent_id} ne peut pas déléguer : "
-                    f"{', '.join(sorted(agent.delegates))} ignoré(s). ({agent.source})"
+                    {
+                        "agent_id": agent_id,
+                        "source": str(agent.source),
+                        "dropped": ecartes,
+                        "message": (
+                            f"Le sous-agent {agent_id} ne peut pas déléguer : "
+                            f"{', '.join(ecartes)} ignoré(s)."
+                        ),
+                        "remedy": (
+                            "Retirer ces délégations, ou décocher « Sous-agent » "
+                            f"pour faire de {agent_id} un orchestrateur."
+                        ),
+                    }
                 )
                 corrige[agent_id] = agent.model_copy(update={"delegates": []})
                 continue
@@ -220,9 +234,22 @@ class ProjectConfig:
             )
             if refuses:
                 self.agent_warnings.append(
-                    f"{agent_id} délègue vers des orchestrateurs, ignoré(s) : "
-                    f"{', '.join(refuses)}. Ajoute `subagent: true` à leur front matter "
-                    f"pour en faire des sous-agents. ({agent.source})"
+                    {
+                        "agent_id": agent_id,
+                        "source": str(agent.source),
+                        "dropped": refuses,
+                        "message": (
+                            f"{agent_id} délègue vers des orchestrateurs, "
+                            f"ignoré(s) : {', '.join(refuses)}."
+                        ),
+                        # Conseiller `subagent: true` serait ici un mauvais
+                        # conseil : le délégué visé est souvent l'orchestrateur
+                        # principal, que l'on ne veut surtout pas démoter.
+                        "remedy": (
+                            f"Retirer ces délégations de {agent_id} ; il accède "
+                            "de toute façon à tous les sous-agents."
+                        ),
+                    }
                 )
                 corrige[agent_id] = agent.model_copy(
                     update={"delegates": [c for c in agent.delegates if c not in refuses]}
@@ -463,6 +490,7 @@ class ProjectConfig:
             "modules": _string_list(header.get("modules", [])),
             "skills": _string_list(header.get("skills", [])),
             "user_memory": bool(header.get("user_memory", False)),
+            "security_mode": header.get("security_mode", "limited"),
             "declared_tools": declared_tools,
             "subagent": header.get("subagent"),
             "delegates": _string_list(header.get("delegates", [])),
@@ -489,6 +517,7 @@ class ProjectConfig:
             "modules": _string_list(data.get("modules", [])),
             "skills": _string_list(data.get("skills", [])),
             "user_memory": bool(data.get("user_memory", False)),
+            "security_mode": data.get("security_mode", "limited"),
             "declared_tools": [],
             "subagent": data.get("subagent"),
             "delegates": _string_list(data.get("delegates", [])),

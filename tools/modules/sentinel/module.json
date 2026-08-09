@@ -1,0 +1,36 @@
+{
+  "schema_version": 2,
+  "id": "sentinel",
+  "name": "Sentinel",
+  "description": "Contrôle de sécurité ponctuel de la machine : processus, connexions sortantes, persistances et environnement IA, restitués comme un écart à la référence.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": [
+    "tools"
+  ],
+  "tools": [
+    {
+      "name": "sentinel_scan",
+      "description": "Scanner la machine et rendre ce qui a changé depuis le dernier passage, avec les sections qui n'ont pas pu être couvertes.",
+      "category": "security",
+      "risk_tags": [
+        "read",
+        "write"
+      ],
+      "timeout_seconds": 180,
+      "cancellable": true,
+      "persistent": true
+    },
+    {
+      "name": "sentinel_acknowledge",
+      "description": "Acquitter des écarts pour qu'ils cessent de remonter dans les rapports suivants.",
+      "category": "security",
+      "risk_tags": [
+        "write"
+      ],
+      "timeout_seconds": 15,
+      "persistent": true
+    }
+  ],
+  "enabled": true
+}

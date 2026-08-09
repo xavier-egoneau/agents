@@ -48,7 +48,11 @@ heure d’été/hiver.
 `Tester la routine` exécute le même contrat sans consommer l’échéance planifiée.
 Le test détecte les autorisations nécessaires et met à jour le dernier statut.
 Une occurrence planifiée conserve sa propre ligne durable et livre son résultat
-dans la session choisie, par défaut la boîte globale Routines.
+dans la session choisie, par défaut le canal de son agent.
+
+Ce canal est le fil permanent d’un orchestrateur, distinct de ses conversations
+de projet : routines et Telegram y convergent, et chaque orchestrateur a le sien.
+Il ne peut pas être supprimé — seulement vidé.
 
 États importants :
 

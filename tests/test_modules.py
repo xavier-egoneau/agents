@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from agentic_kernel.errors import ModuleError
+from agentic_kernel.models import ToolRisk
 from agentic_kernel.modules import ModuleRegistry
 
 
@@ -51,7 +52,7 @@ def test_repository_catalog_passes_the_tool_result_contract() -> None:
     index = ModuleRegistry(tools_root).check_index()
     tools = [tool for manifest in index.modules for tool in manifest.tools]
 
-    assert len(index.modules) == 15
+    assert len(index.modules) == 16
     assert len(tools) >= 70
     for tool in tools:
         assert tool.input_schema["type"] == "object"
@@ -60,3 +61,25 @@ def test_repository_catalog_passes_the_tool_result_contract() -> None:
             tool.output_schema["properties"]
         )
         assert tool.timeout_seconds is not None
+
+
+def test_no_shipped_tool_declares_a_risk_that_denies_it_outright() -> None:
+    """`secret` et `system` valent un refus inconditionnel du Guardian.
+
+    Un outil qui les déclare est inutilisable dans tous les modes, y compris
+    `power` — et rien ne le signale : le catalogue l'expose, l'agent l'appelle,
+    le refus n'arrive qu'à l'exécution avec un message qui parle de sécurité
+    plutôt que de configuration. Le coût s'est payé sur `sentinel_scan`, qui
+    lisait l'état de la machine sans jamais la modifier.
+    """
+    tools_root = Path(__file__).parents[1] / "tools"
+    index = ModuleRegistry(tools_root).check_index()
+
+    fautifs = {
+        tool.name: [risk.value for risk in tool.risk_tags]
+        for manifest in index.modules
+        for tool in manifest.tools
+        if {ToolRisk.SECRET, ToolRisk.SYSTEM} & set(tool.risk_tags)
+    }
+
+    assert fautifs == {}

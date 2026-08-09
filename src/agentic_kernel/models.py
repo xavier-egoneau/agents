@@ -96,6 +96,12 @@ class ProviderRegistry(BaseModel):
         return self
 
 
+class SecurityMode(StrEnum):
+    SAFE = "safe"
+    LIMITED = "limited"
+    POWER = "power"
+
+
 class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -106,6 +112,11 @@ class AgentConfig(BaseModel):
     modules: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
     user_memory: bool = False
+    # Niveau d'autorisation par défaut de l'agent. Le composer peut le
+    # surcharger message par message ; les surfaces qui n'offrent pas ce choix —
+    # Telegram — s'y tiennent, au lieu d'imposer une valeur en dur que rien ne
+    # laissait voir ni changer.
+    security_mode: SecurityMode = SecurityMode.LIMITED
     declared_tools: list[str] = Field(default_factory=list)
     # Deux niveaux stricts : un orchestrateur délègue à des sous-agents, un
     # sous-agent exécute et ne délègue à personne.
@@ -277,12 +288,6 @@ class RunStatus(StrEnum):
     TIMEOUT = "timeout"
     APPROVAL_PENDING = "approval_pending"
     CANCELLED = "cancelled"
-
-
-class SecurityMode(StrEnum):
-    SAFE = "safe"
-    LIMITED = "limited"
-    POWER = "power"
 
 
 class GuardianVerdict(StrEnum):

@@ -80,6 +80,8 @@ type Agent = {
   skills: string[];
   delegates: string[];
   has_avatar?: boolean;
+  /** Niveau appliqué par les surfaces sans sélecteur, et défaut du composer. */
+  security_mode?: SecurityMode;
   /** Exécutant appelé par un orchestrateur; il ne délègue à personne. */
   subagent?: boolean;
 };
@@ -104,7 +106,13 @@ const routineClearCommand: SlashCommand = {
 type Catalog = {
   default_provider: string;
   /** Délégations écartées au chargement — signalées, jamais bloquantes. */
-  agent_warnings?: string[];
+  agent_warnings?: {
+    agent_id: string;
+    source: string;
+    dropped: string[];
+    message: string;
+    remedy: string;
+  }[];
   agents: Agent[];
   skills: Skill[];
   providers: {
@@ -896,7 +904,7 @@ type SessionSummary = {
   output: string | null;
   errors: { message: string }[];
   event_count: number;
-  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test" | "routine_inbox" | "telegram";
+  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test" | "agent_channel" | "telegram";
   cron_job_id?: string | null;
   messages?: {
     role: "user" | "assistant";
@@ -1225,6 +1233,7 @@ export default function Home() {
   const [resourceEditor, setResourceEditor] = useState<ResourceEditor | null>(null);
   const [managementError, setManagementError] = useState("");
   const [savingResource, setSavingResource] = useState(false);
+  const [repairingHierarchy, setRepairingHierarchy] = useState(false);
   const [providerModels, setProviderModels] = useState<Record<string, string[]>>({});
   const [modelsLoading, setModelsLoading] = useState(false);
   const [managedProviders, setManagedProviders] = useState<ManagedProvider[]>([]);
@@ -1450,7 +1459,9 @@ export default function Home() {
     () => sessions.find((session) => session.session_id === activeSessionId),
     [activeSessionId, sessions],
   );
-  const isRoutineInbox = activeSession?.trigger === "routine_inbox";
+  // Le canal de l'agent : son fil permanent, où convergent routines et
+  // Telegram. Il n'appartient à aucun projet, d'où l'absence de workspace.
+  const isAgentChannel = activeSession?.trigger === "agent_channel";
   const conversationWorkspace = activeSessionId
     ? activeSession?.effective_workspace || activeSession?.workspace
     : activeWorkspace;
@@ -1497,7 +1508,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!conversationWorkspace || isRoutineInbox) {
+    if (!conversationWorkspace || isAgentChannel) {
       setGitSnapshot(null);
       setGitBranches([]);
       setGitReviewSnapshot(null);
@@ -1505,7 +1516,7 @@ export default function Home() {
       return;
     }
     void refreshGit(conversationWorkspace);
-  }, [conversationWorkspace, isRoutineInbox, running, refreshGit]);
+  }, [conversationWorkspace, isAgentChannel, running, refreshGit]);
   const commandMatches = useMemo(() => {
     const value = prompt.trimStart();
     if (!value.startsWith("/") || value.includes(" ")) return [];
@@ -1605,6 +1616,12 @@ export default function Home() {
         ? activeAgent.model || provider.model || provider.models[0] || ""
         : provider.model || provider.models[0] || "",
     );
+    // Même règle que le modèle : le niveau vient de l'agent, le composer peut
+    // le changer pour un message. Sans cela, `power` gardé d'un agent à l'autre
+    // s'appliquerait à un agent réglé plus prudemment, sans qu'on l'ait voulu.
+    if (lastComposerAgent.current !== activeAgent.id) {
+      setSecurityMode(activeAgent.security_mode || "limited");
+    }
     composerPreferencesApplied.current = true;
     lastComposerAgent.current = activeAgent.id;
   }, [catalog, activeAgent, composerPreferencesReady]);
@@ -1952,6 +1969,24 @@ export default function Home() {
       } : undefined,
     });
     setManagementError("");
+  }
+
+  async function repairAgentHierarchy() {
+    setRepairingHierarchy(true);
+    setManagementError("");
+    try {
+      const response = await fetch("/api/admin/agents/repair-hierarchy", { method: "POST" });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => null);
+        setManagementError(detail?.detail || `Correction impossible (${response.status})`);
+        return;
+      }
+      await refreshCatalog();
+    } catch (error) {
+      setManagementError(error instanceof Error ? error.message : "Correction impossible");
+    } finally {
+      setRepairingHierarchy(false);
+    }
   }
 
   async function saveResource() {
@@ -2380,8 +2415,8 @@ export default function Home() {
   async function clearRoutineSession() {
     if (!activeSessionId || clearingSession) return;
     if (!window.confirm(
-      isRoutineInbox
-        ? "Vider définitivement tous les messages et toutes les traces de la session Routines ?"
+      isAgentChannel
+        ? "Vider définitivement tous les messages et toutes les traces du canal de cet agent ?"
         : "Vider définitivement cette conversation ? Messages, traces, plan et"
           + " pièces jointes seront supprimés, sans possibilité de retour.",
     )) return;
@@ -2485,7 +2520,9 @@ export default function Home() {
       workspace: null, agent_id: agentId, skills: selectedSkills,
       security_mode: securityMode, provider_id: providerId || null,
       model: selectedModel || null, reasoning, enabled: false, auto_resume: true,
-      session_id: "", notification_session_id: sessions.find((item) => item.trigger === "routine_inbox")?.session_id || "",
+      session_id: "", notification_session_id: sessions.find(
+        (item) => item.trigger === "agent_channel" && item.agent_id === agentId,
+      )?.session_id || "",
       next_run_at: null, last_run_at: null, last_status: null,
       last_error: null, in_flight: false, blocked: false,
       last_retryable: false,
@@ -3212,7 +3249,7 @@ export default function Home() {
           prompt: content,
           agent_id: agentId,
           skills: selectedSkills,
-          workspace: isRoutineInbox
+          workspace: isAgentChannel
             ? undefined
             : conversationWorkspace || activeWorkspace || undefined,
           session_id: sessionId,
@@ -3795,13 +3832,25 @@ export default function Home() {
 
             {/* Une hiérarchie invalide n'empêche plus le catalogue de charger :
                 la délégation fautive est ignorée et signalée ici, là même où
-                elle se corrige. */}
+                elle se corrige — et le bouton la corrige vraiment, sinon le
+                seul remède serait d'éditer un fichier hors de l'application. */}
             {managementModal === "agents" && !resourceEditor
               && (catalog?.agent_warnings?.length ?? 0) > 0 && (
               <div className="management-warning" role="status">
                 {catalog?.agent_warnings?.map((warning) => (
-                  <p key={warning}>{warning}</p>
+                  <p key={warning.agent_id}>
+                    <strong>{warning.message}</strong> {warning.remedy}
+                  </p>
                 ))}
+                <div className="checkbox-field-actions">
+                  <button
+                    type="button"
+                    onClick={() => void repairAgentHierarchy()}
+                    disabled={repairingHierarchy}
+                  >
+                    {repairingHierarchy ? "Correction…" : "Corriger"}
+                  </button>
+                </div>
               </div>
             )}
 
@@ -3982,7 +4031,7 @@ export default function Home() {
                         </select>
                       </label>
                       <fieldset className="field-wide checkbox-field telegram-agent-field">
-                        <legend>Canal de conversation</legend>
+                        <legend>Passerelle Telegram</legend>
                         <label className="provider-vision">
                           <input
                             type="checkbox"
@@ -4027,6 +4076,23 @@ export default function Home() {
                             </label>
                           </div>
                         )}
+                      </fieldset>
+                      <fieldset className="field-wide checkbox-field">
+                        <legend>Autorisations par défaut</legend>
+                        <select
+                          value={String(resourceEditor.frontmatter.security_mode || "limited")}
+                          onChange={(event) =>
+                            updateEditorField("security_mode", event.target.value)}
+                        >
+                          <option value="safe">safe — demande avant toute écriture</option>
+                          <option value="limited">limited — demande avant d’écraser</option>
+                          <option value="power">power — ne demande que le destructif</option>
+                        </select>
+                        <small>
+                          Niveau appliqué par les surfaces qui n’offrent pas de choix,
+                          Telegram et les routines. Le composer part de ce niveau et
+                          peut le changer message par message.
+                        </small>
                       </fieldset>
                       <fieldset className="field-wide checkbox-field">
                         <legend>Niveau</legend>
@@ -4227,16 +4293,20 @@ export default function Home() {
 
             {!resourceEditor && managementModal === "agents" && (
               <div className="management-body management-list">
-                {/* Orchestrateurs d'abord, chacun suivi des sous-agents en
-                    retrait : la liste montre la hiérarchie au lieu d'aligner
-                    six agents de rôles très différents. */}
+                {/* Orchestrateurs d'abord, sous-agents ensuite, en retrait.
+                    Le retrait seul se lisait comme un rattachement au dernier
+                    orchestrateur listé : l'intitulé dit qu'ils appartiennent à
+                    tous, ce qui est la règle réelle. */}
                 {[...managedResources]
                   .sort((left, right) => Number(left.subagent) - Number(right.subagent))
-                  .map((resource) => (
+                  .map((resource, index, tries) => (
+                  <Fragment key={resource.id}>
+                  {resource.subagent && !tries[index - 1]?.subagent && (
+                    <p className="resource-group">Sous-agents partagés</p>
+                  )}
                   <div
                     className={`resource-row ${resource.id === agentId ? "active" : ""}`}
                     data-subagent={resource.subagent ? "true" : undefined}
-                    key={resource.id}
                   >
                     <button
                       className="resource-select"
@@ -4263,6 +4333,7 @@ export default function Home() {
                       ><Icon name="remove" size="sm" /></button>
                     </div>
                   </div>
+                  </Fragment>
                 ))}
               </div>
             )}
@@ -4852,8 +4923,8 @@ export default function Home() {
                       }))}>
                       {sessions.map((session) => (
                         <option value={session.session_id} key={session.session_id}>
-                          {session.trigger === "routine_inbox"
-                            ? "Boîte de réception des routines (par défaut)"
+                          {session.trigger === "agent_channel"
+                            ? `${session.agent_id} · canonique (par défaut)`
                             : session.prompt || "Session sans titre"}
                         </option>
                       ))}
@@ -5102,7 +5173,7 @@ export default function Home() {
               data-tip-side="bottom"
             >
               <Icon name="agent" size="sm" />
-              <span>{isRoutineInbox ? "Routines" : activeAgent?.id || "main"}</span>
+              <span>{activeAgent?.id || "main"}</span>
             </button>
 
             <button
@@ -5114,7 +5185,7 @@ export default function Home() {
             >
               <Icon name="project" size="sm" />
               <span>
-                {activeSession?.workspace_kind === "agent_default" || isRoutineInbox
+                {activeSession?.workspace_kind === "agent_default" || isAgentChannel
                   ? "Espace personnel"
                   // Le projet de la conversation prime sur celui sélectionné :
                   // rouvrir une session de l'historique ne doit pas afficher le
