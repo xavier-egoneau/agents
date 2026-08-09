@@ -28,7 +28,7 @@ def _failure(kind: str, message: str, **metadata: Any) -> dict[str, Any]:
     }
 
 
-async def http_request(
+async def http_request(  # noqa: C901 - dette: requête multi-cas
     ctx: RunContext[Any],
     method: Method,
     url: str,

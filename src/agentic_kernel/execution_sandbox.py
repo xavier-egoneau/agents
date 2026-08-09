@@ -22,8 +22,11 @@ class ExecutionSandbox:
         deps: Any,
         *,
         allow_network: bool = False,
+        publish_ports: list[int] | None = None,
     ) -> PreparedExecution:
-        return prepare_execution(command, deps, allow_network=allow_network)
+        return prepare_execution(
+            command, deps, allow_network=allow_network, publish_ports=publish_ports
+        )
 
 
 __all__ = ["ExecutionSandbox", "PreparedExecution"]

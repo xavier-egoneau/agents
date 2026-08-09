@@ -75,9 +75,7 @@ class _MarkdownExtractor(HTMLParser):
         elif tag == "li":
             marker = "1." if self._list_stack and self._list_stack[-1] == "ol" else "-"
             self._chunks.append(f"\n{marker} ")
-        elif tag in {"pre", "blockquote"}:
-            self._chunks.append("\n\n")
-        elif tag in _BLOCK:
+        elif tag in {"pre", "blockquote"} | _BLOCK:
             self._chunks.append("\n\n")
 
     def handle_endtag(self, tag: str) -> None:

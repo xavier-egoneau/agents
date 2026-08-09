@@ -92,7 +92,9 @@ def _has_cycle(graph: dict[str, list[str]]) -> bool:
     return any(visit(node) for node in graph)
 
 
-def validate(document: Any, catalog: dict[str, dict[str, Any]]) -> list[str]:
+def validate(  # noqa: C901 - dette: validation exhaustive multi-règles
+    document: Any, catalog: dict[str, dict[str, Any]]
+) -> list[str]:
     errors: list[str] = []
     if not isinstance(document, dict):
         return ["la racine YAML doit être un objet"]

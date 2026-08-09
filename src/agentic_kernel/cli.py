@@ -71,7 +71,7 @@ def init_workspace() -> None:
 
 
 @app.command("setup")
-def setup(
+def setup(  # noqa: C901 - dette: installation multi-étapes
     full: Annotated[
         bool,
         typer.Option("--full", help="Also install llama.cpp and download the vision model"),
@@ -109,7 +109,7 @@ def setup(
     web_root = layout.application_root / "surfaces" / "web"
     if not (web_root / "node_modules").is_dir():
         typer.echo("Installation des dépendances de la surface web…")
-        subprocess.run([npm, "ci", "--prefix", str(web_root)], check=True)
+        subprocess.run([npm, "ci", "--prefix", str(web_root)], check=True)  # noqa: S603 - commande fixe
 
     typer.echo("Préparation de SearXNG…")
     searxng = SearxngService()
@@ -489,7 +489,7 @@ def _bootstrap_on_start() -> None:
             for job in CronService(content_root / "state.db").list()
             if job.workspace and not job.workspace.is_dir()
         ]
-    except Exception:  # noqa: BLE001 - un état illisible ne doit pas bloquer le démarrage
+    except Exception:  # un état illisible ne doit pas bloquer le démarrage
         return
     for job in stale:
         typer.echo(

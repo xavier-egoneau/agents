@@ -12,8 +12,8 @@ from pydantic_ai import FunctionToolset, RunContext
 from agentic_kernel.network_policy import validate_http_target
 
 ICLOUD_CALDAV_URL = "https://caldav.icloud.com/"
-USERNAME_SECRET = "ICLOUD_CALDAV_USERNAME"
-PASSWORD_SECRET = "ICLOUD_CALDAV_PASSWORD"
+USERNAME_SECRET = "ICLOUD_CALDAV_USERNAME"  # noqa: S105 - nom de secret, pas une valeur
+PASSWORD_SECRET = "ICLOUD_CALDAV_PASSWORD"  # noqa: S105 - nom de secret, pas une valeur
 DAV = "DAV:"
 CALDAV = "urn:ietf:params:xml:ns:caldav"
 
@@ -105,7 +105,7 @@ async def _discover_calendars(client: httpx.AsyncClient) -> list[dict[str, str]]
             "</d:prop></d:propfind>"
         ),
     )
-    principal_root = ElementTree.fromstring(principal_response.content)
+    principal_root = ElementTree.fromstring(principal_response.content)  # noqa: S314 - XML CalDAV iCloud authentifié
     principal_href = _first_text(
         principal_root, f".//{{{DAV}}}current-user-principal/{{{DAV}}}href"
     )
@@ -124,7 +124,7 @@ async def _discover_calendars(client: httpx.AsyncClient) -> list[dict[str, str]]
             "<d:prop><c:calendar-home-set/></d:prop></d:propfind>"
         ),
     )
-    home_root = ElementTree.fromstring(home_response.content)
+    home_root = ElementTree.fromstring(home_response.content)  # noqa: S314 - XML CalDAV iCloud authentifié
     home_href = _first_text(home_root, f".//{{{CALDAV}}}calendar-home-set/{{{DAV}}}href")
     if not home_href:
         raise ValueError("iCloud n’a pas retourné le dossier des calendriers")
@@ -141,7 +141,7 @@ async def _discover_calendars(client: httpx.AsyncClient) -> list[dict[str, str]]
             "<d:prop><d:displayname/><d:resourcetype/></d:prop></d:propfind>"
         ),
     )
-    root = ElementTree.fromstring(calendars_response.content)
+    root = ElementTree.fromstring(calendars_response.content)  # noqa: S314 - XML CalDAV iCloud authentifié
     calendars: list[dict[str, str]] = []
     for response in root.findall(f".//{{{DAV}}}response"):
         if response.find(f".//{{{DAV}}}resourcetype/{{{CALDAV}}}calendar") is None:
@@ -279,7 +279,7 @@ async def icloud_list_calendars(
         return _failure("caldav", str(exc))
 
 
-async def icloud_list_events(
+async def icloud_list_events(  # noqa: C901 - dette: parcours CalDAV multi-étapes
     ctx: RunContext[Any],
     start: str | None = None,
     end: str | None = None,
@@ -326,7 +326,7 @@ async def icloud_list_events(
                         "</c:comp-filter></c:comp-filter></c:filter></c:calendar-query>"
                     ),
                 )
-                root = ElementTree.fromstring(response.content)
+                root = ElementTree.fromstring(response.content)  # noqa: S314 - XML CalDAV iCloud authentifié
                 for node in root.findall(f".//{{{CALDAV}}}calendar-data"):
                     if node.text:
                         events.extend(_parse_events(node.text, item["name"]))

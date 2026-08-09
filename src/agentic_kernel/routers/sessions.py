@@ -14,7 +14,7 @@ from ..models import Event
 from ..session_lifecycle import SessionLifecycle
 
 
-def create_session_router(
+def create_session_router(  # noqa: C901 - dette: factory à plusieurs endpoints
     kernel: Kernel,
     running_tasks: dict[UUID, asyncio.Task[Any]],
     state_database: Path,

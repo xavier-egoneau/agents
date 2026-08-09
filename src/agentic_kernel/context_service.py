@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -182,10 +183,8 @@ class ContextService:
         components.extend(
             skills[name].instructions for name in agent_config.skills if name in skills
         )
-        try:
+        with contextlib.suppress(OSError):
             components.append(self.module_registry.index_path.read_text(encoding="utf-8"))
-        except OSError:
-            pass
         return self.estimate_tokens("\n".join(components))
 
     def status(

@@ -92,6 +92,6 @@ def diagnose(layout: RuntimeLayout) -> list[Diagnostic]:
     try:
         ModuleRegistry(layout.application_root / "tools").check_index()
         checks.append(Diagnostic("tool catalog", "ok", "tools/index.json", True))
-    except Exception as exc:  # noqa: BLE001 - diagnostics must report every failed subsystem
+    except Exception as exc:  # diagnostics must report every failed subsystem
         checks.append(Diagnostic("tool catalog", "error", str(exc), True))
     return checks

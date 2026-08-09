@@ -11,8 +11,8 @@ class NativeDialogUnavailable(RuntimeError):
 def choose_directory(prompt: str) -> str:
     """Open the native folder chooser and return an empty string on cancellation."""
     if platform.system() == "Darwin":
-        result = subprocess.run(
-            ["osascript", "-e", f'POSIX path of (choose folder with prompt "{prompt}")'],
+        result = subprocess.run(  # noqa: S603 - osascript fixe, prompt interne
+            ["osascript", "-e", f'POSIX path of (choose folder with prompt "{prompt}")'],  # noqa: S607
             capture_output=True,
             check=False,
             text=True,

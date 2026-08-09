@@ -654,3 +654,88 @@ def test_a_routine_pointing_at_the_legacy_inbox_is_repointed(tmp_path: Path) -> 
     repris = CronService(base).get(job.id)
 
     assert repris.notification_session_id == agent_session_id("main")
+
+
+def test_one_shot_requires_schedule_or_one_shot_at() -> None:
+    """Un cron ponctuel doit avoir la date ET le schedule vide."""
+    with pytest.raises(ValueError, match="schedule cron"):
+        CronJobInput(name="Sans date ni schedule", prompt="test", schedule="")
+    CronJobInput(
+        name="Avec date",
+        prompt="test",
+        schedule="",
+        one_shot_at=datetime(2026, 8, 15, 9, 0, tzinfo=UTC),
+    )
+
+
+def test_one_shot_next_fire_is_the_date_itself(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    one_shot = datetime(2026, 8, 15, 9, 0, tzinfo=UTC)
+    job = service.create(
+        CronJobInput(
+            name="One-shot précis",
+            schedule="",
+            prompt="Faire le déploiement",
+            one_shot_at=one_shot,
+        )
+    )
+    assert job.next_run_at == one_shot
+    assert job.schedule == ""
+
+
+def test_one_shot_is_due_at_the_exact_time(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    one_shot = datetime(2026, 8, 15, 9, 0, tzinfo=UTC)
+    service.create(
+        CronJobInput(
+            name="One-shot à l'heure",
+            schedule="",
+            prompt="Déployer",
+            one_shot_at=one_shot,
+        )
+    )
+    before = datetime(2026, 8, 15, 8, 0, tzinfo=UTC)
+    assert service.due(before) == []
+    at = datetime(2026, 8, 15, 9, 0, tzinfo=UTC)
+    assert len(service.due(at)) == 1
+    after = datetime(2026, 8, 15, 10, 0, tzinfo=UTC)
+    assert len(service.due(after)) == 1
+
+
+def test_one_shot_is_claimed_once_then_never_again(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    one_shot = datetime(2026, 8, 15, 9, 0, tzinfo=UTC)
+    job = service.create(
+        CronJobInput(
+            name="One-shot unique",
+            schedule="",
+            prompt="Exécuter une seule fois",
+            one_shot_at=one_shot,
+        )
+    )
+    claimed = service.claim(job.id, now=one_shot)
+    assert claimed is not None
+    fresh = service.get(job.id)
+    assert fresh.next_run_at is None
+    assert fresh.in_flight
+    # Finir le run
+    service.finish(job.id, None)
+    final = service.get(job.id)
+    assert not final.in_flight
+    assert final.next_run_at is None
+    # Après execution, `due` ne le retourne plus
+    later = datetime(2026, 8, 15, 10, 0, tzinfo=UTC)
+    assert service.due(later) == []
+
+
+def test_regular_cron_is_not_affected_by_one_shot_logic(tmp_path: Path) -> None:
+    service = CronService(tmp_path / "state.db")
+    job = service.create(
+        CronJobInput(name="Régulière", schedule="*/5 * * * *", prompt="Toutes les 5 min")
+    )
+    claimed = service.claim(job.id, now=datetime(2026, 8, 15, 9, 0, tzinfo=UTC))
+    assert claimed is not None
+    fresh = service.get(job.id)
+    assert fresh.next_run_at is not None
+    # La prochaine échéance doit être après la date de claim
+    assert fresh.next_run_at > datetime(2026, 8, 15, 9, 0, tzinfo=UTC)

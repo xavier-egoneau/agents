@@ -50,7 +50,7 @@ class FileNode(BaseModel):
     size: int | None = None
 
 
-def create_files_router() -> APIRouter:
+def create_files_router() -> APIRouter:  # noqa: C901 - dette: factory à plusieurs endpoints
     router = APIRouter(prefix="/api/files", tags=["files"])
 
     @router.get("/tree")

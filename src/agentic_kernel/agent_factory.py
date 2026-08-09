@@ -36,7 +36,7 @@ class AgentFactory:
         self.workspace_maps = workspace_maps
         self.runtime_instruction = runtime_instruction
 
-    def build(
+    def build(  # noqa: C901 - dette: assemblage d'agent multi-branches
         self,
         agent_id: str,
         configs,

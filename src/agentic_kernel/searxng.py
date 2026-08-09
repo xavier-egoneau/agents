@@ -107,7 +107,7 @@ class SearxngService:
 
     @staticmethod
     def _download(destination: Path) -> None:
-        request = urllib.request.Request(
+        request = urllib.request.Request(  # noqa: S310 - URL d'archive constante (https)
             SEARXNG_ARCHIVE_URL, headers={"User-Agent": "AMK-SearXNG-installer"}
         )
         with (
@@ -151,8 +151,9 @@ class SearxngService:
     def _install_requirements(source: Path, venv: Path) -> None:
         uv = shutil.which("uv")
         if uv:
-            subprocess.run([uv, "venv", "--python", sys.executable, str(venv)], check=True)
-            subprocess.run(
+            cmd = [uv, "venv", "--python", sys.executable, str(venv)]
+            subprocess.run(cmd, check=True)  # noqa: S603 - uv absolu (shutil.which), args fixes
+            subprocess.run(  # noqa: S603 - uv absolu (shutil.which), args fixes
                 [
                     uv,
                     "pip",
@@ -167,9 +168,9 @@ class SearxngService:
                 check=True,
             )
             return
-        subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
+        subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)  # noqa: S603
         python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        subprocess.run(
+        subprocess.run(  # noqa: S603 - python du venv créé ci-dessus, args fixes
             [
                 str(python),
                 "-m",
@@ -211,7 +212,7 @@ class SearxngService:
         if ketch is None:
             return
         for key, value in (("searxng_url", self.base_url), ("backend", "searxng")):
-            result = subprocess.run(
+            result = subprocess.run(  # noqa: S603 - ketch absolu découvert, args fixes
                 [ketch, "config", "set", key, value], capture_output=True, text=True
             )
             if result.returncode:

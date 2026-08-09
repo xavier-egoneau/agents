@@ -64,7 +64,7 @@ def canonical_path(raw: Any, workspace: Path) -> Path | None:
     return (workspace / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
 
 
-def review_tool_call(
+def review_tool_call(  # noqa: C901 - dette: moteur de décision multi-critères
     *,
     tool_name: str,
     tool_call_id: str,
@@ -502,33 +502,36 @@ class GuardianToolset(WrapperToolset[Any]):
                 error={"type": "denied", "message": decision.reason},
                 metadata={"guardian": decision.model_dump(mode="json")},
             ).model_dump(mode="json")
-        if decision.verdict is GuardianVerdict.ASK and not ctx.tool_call_approved:
-            if not deps.is_scope_approved(decision):
-                request = ApprovalRequest(
+        if (
+            decision.verdict is GuardianVerdict.ASK
+            and not ctx.tool_call_approved
+            and not deps.is_scope_approved(decision)
+        ):
+            request = ApprovalRequest(
+                session_id=deps.session_id,
+                run_id=run_id,
+                agent_id=self.agent_id,
+                tool_call_id=call_id,
+                tool_name=name,
+                tool_description=tool.tool_def.description or "",
+                action_family=action_family(risks),
+                path=decision.path,
+                justification=decision.justification,
+                arguments=proposed_arguments,
+                risks=risks,
+                reason=decision.reason,
+            )
+            deps.pending_approvals[call_id] = request
+            deps.events.append(
+                Event(
                     session_id=deps.session_id,
                     run_id=run_id,
                     agent_id=self.agent_id,
-                    tool_call_id=call_id,
-                    tool_name=name,
-                    tool_description=tool.tool_def.description or "",
-                    action_family=action_family(risks),
-                    path=decision.path,
-                    justification=decision.justification,
-                    arguments=proposed_arguments,
-                    risks=risks,
-                    reason=decision.reason,
+                    type="approval.requested",
+                    payload=request.model_dump(mode="json"),
                 )
-                deps.pending_approvals[call_id] = request
-                deps.events.append(
-                    Event(
-                        session_id=deps.session_id,
-                        run_id=run_id,
-                        agent_id=self.agent_id,
-                        type="approval.requested",
-                        payload=request.model_dump(mode="json"),
-                    )
-                )
-                raise ApprovalRequired(metadata={"approval_id": str(request.approval_id)})
+            )
+            raise ApprovalRequired(metadata={"approval_id": str(request.approval_id)})
         clean_args = dict(tool_args)
         clean_args.pop("justification", None)
         started = time.monotonic()

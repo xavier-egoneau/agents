@@ -17,7 +17,7 @@ def secure_file(path: Path) -> None:
     if icacls is None:
         raise PermissionError("icacls is required to protect sensitive files on Windows")
     principal = getpass.getuser()
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603 - icacls absolu (shutil.which), drapeaux fixes
         [
             icacls,
             str(path),

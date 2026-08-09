@@ -33,7 +33,7 @@ def is_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
-def _extract(payload: object) -> tuple[str, str]:
+def _extract(payload: object) -> tuple[str, str]:  # noqa: C901 - dette: extraction multi-formats
     """Retrouve titre et corps dans une sortie dont la forme n'est pas garantie."""
     if isinstance(payload, str):
         return "", payload.strip()

@@ -80,7 +80,9 @@ class ApprovalStore:
             if approval.session_id == session_id:
                 path.unlink(missing_ok=True)
 
-    def resolve_many(self, approval_ids: list[UUID], approved: bool) -> list[dict[str, Any]]:
+    def resolve_many(  # noqa: C901 - dette: résolution par lot multi-cas
+        self, approval_ids: list[UUID], approved: bool
+    ) -> list[dict[str, Any]]:
         """Persist one batch as a single guarded filesystem transaction."""
         with self._lock:
             states: list[dict[str, Any]] = []

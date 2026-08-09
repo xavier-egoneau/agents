@@ -502,7 +502,7 @@ def _workflow_warnings(workflow: WorkflowDefinition) -> list[str]:
     return warnings
 
 
-def _validation_errors(
+def _validation_errors(  # noqa: C901 - dette: validation multi-règles
     workflow: WorkflowDefinition,
     basis: WorkflowBasis,
 ) -> list[str]:

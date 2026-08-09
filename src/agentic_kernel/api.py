@@ -111,7 +111,7 @@ def _session_messages(events: list) -> list[dict[str, object]]:
     return visible
 
 
-def create_app(
+def create_app(  # noqa: C901 - dette: factory montant tous les routers
     root: Path | str = ".",
     default_workspace: Path | str | None = None,
     *,
@@ -614,4 +614,16 @@ def create_app(
     return app
 
 
-app = create_app()
+_lazy_app: FastAPI | None = None
+
+
+def __getattr__(name: str) -> FastAPI:
+    # L'app n'est matérialisée qu'au premier accès : importer le module ne
+    # construit plus le kernel (et ne lit donc plus le répertoire courant).
+    # `uvicorn agentic_kernel.api:app` reste néanmoins utilisable.
+    global _lazy_app
+    if name == "app":
+        if _lazy_app is None:
+            _lazy_app = create_app()
+        return _lazy_app
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

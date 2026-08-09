@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import html
 import json
@@ -413,11 +414,9 @@ class TelegramSupervisor:
     async def _poll(self, config: TelegramRuntimeConfig) -> None:
         offset = config.offset
         async with httpx.AsyncClient(timeout=httpx.Timeout(35, connect=10)) as client:
-            try:
+            # Command discovery is optional; polling must remain available.
+            with contextlib.suppress(Exception):
                 await self._set_commands(client, config.bot_token)
-            except Exception:
-                # Command discovery is optional; polling must remain available.
-                pass
             await self._restore_pending_approvals(client, config)
             if offset is None:
                 updates = await self._get_updates(client, config.bot_token, -1, timeout=0)
@@ -796,11 +795,9 @@ class TelegramSupervisor:
             fingerprint = _approval_fingerprint(approvals)
             if notices.get(raw_session_id) == fingerprint:
                 continue
-            try:
+            # A blocked or migrated chat must not stop polling other updates.
+            with contextlib.suppress(Exception):
                 await self._send_approval(client, config, chat_id, approvals)
-            except Exception:
-                # A blocked or migrated chat must not stop polling other updates.
-                continue
 
     async def _send_message(
         self,
@@ -848,11 +845,9 @@ class TelegramSupervisor:
         interval: float = 4.0,
     ) -> None:
         while True:
-            try:
+            # A cosmetic Telegram failure must never interrupt the agent run.
+            with contextlib.suppress(Exception):
                 await self._send_chat_action(client, token, chat_id, "typing")
-            except Exception:
-                # A cosmetic Telegram failure must never interrupt the agent run.
-                pass
             await asyncio.sleep(interval)
 
     async def _run_with_chat_action(
@@ -922,11 +917,9 @@ class TelegramSupervisor:
         message_id: int,
         text: str,
     ) -> None:
-        try:
+        # Editing is cosmetic; a Telegram limitation must not block the decision.
+        with contextlib.suppress(Exception):
             await self._edit_message(client, token, chat_id, message_id, text)
-        except Exception:
-            # Editing is cosmetic; a Telegram limitation must not block the decision.
-            pass
 
     async def _set_commands(self, client: httpx.AsyncClient, token: str) -> None:
         response = await client.post(
@@ -1007,7 +1000,9 @@ class _TelegramHTMLRenderer(HTMLParser):
         self.lists: list[tuple[str, int]] = []
         self.links: list[bool] = []
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+    def handle_starttag(  # noqa: C901 - dette: rendu HTML par balise
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
         attributes = dict(attrs)
         if tag in {"h1", "h2", "h3", "h4", "h5", "h6", "strong"}:
             self.parts.append("<b>")
@@ -1067,7 +1062,7 @@ class _TelegramHTMLRenderer(HTMLParser):
             else:
                 self.parts.append(label)
 
-    def handle_endtag(self, tag: str) -> None:
+    def handle_endtag(self, tag: str) -> None:  # noqa: C901 - dette: rendu HTML par balise
         if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             self.parts.append("</b>\n\n")
         elif tag == "strong":
@@ -1195,7 +1190,5 @@ def _telegram_html_chunks(markdown: str, limit: int = 3900) -> list[str]:
 
 
 async def _cancel(task: asyncio.Task[Any]) -> None:
-    try:
+    with contextlib.suppress(asyncio.CancelledError, Exception):
         await task
-    except (asyncio.CancelledError, Exception):
-        pass

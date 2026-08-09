@@ -104,7 +104,7 @@ def start_verification(npm: str, web_root: Path) -> subprocess.Popen[bytes] | No
     latence de l'information, jamais celle de l'application.
     """
     try:
-        return subprocess.Popen(
+        return subprocess.Popen(  # noqa: S603 - npm absolu, commande fixe
             [npm, "run", "verify"],
             cwd=web_root,
             stdout=subprocess.PIPE,
@@ -129,7 +129,7 @@ def report_verification(process: subprocess.Popen[bytes]) -> None:
     print("Détail complet : npm run verify (depuis surfaces/web)\n", flush=True)
 
 
-def run_web(
+def run_web(  # noqa: C901 - dette: orchestration multi-services
     root: Path,
     workspace: Path,
     host: str,
@@ -167,7 +167,7 @@ def run_web(
             flush=True,
         )
         web_port = selected_web_port
-    backend = subprocess.Popen(
+    backend = subprocess.Popen(  # noqa: S603 - binaire amk absolu, commande fixe
         [
             amk,
             "serve",
@@ -182,7 +182,7 @@ def run_web(
         **subprocess_group_kwargs(),
     )
     environment = {**os.environ, "AMK_KERNEL_URL": f"http://{host}:{api_port}"}
-    frontend = subprocess.Popen(
+    frontend = subprocess.Popen(  # noqa: S603 - npm absolu, commande fixe
         [npm, "run", "dev", "--", "--host", host, "--port", str(web_port)],
         cwd=web_root,
         env=environment,

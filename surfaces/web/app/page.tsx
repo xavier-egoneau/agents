@@ -41,7 +41,6 @@ import {
 } from "./components/current-plan-panel";
 import {
   RoutineWorkflowPanel,
-  type RoutineWorkflow,
   type RoutineWorkflowProposal,
 } from "./components/routine-workflow-panel";
 import {
@@ -70,6 +69,35 @@ import { AgentAvatar } from "./components/agent-avatar";
 import { CompactionIndicator } from "./components/compaction-indicator";
 import { ToolSelector } from "./components/tool-selector";
 import { Icon } from "./theme/theme-context";
+import {
+  apiErrorDetail,
+  fileExplorerKernelUrl,
+  formatApiDetail,
+  readApiPayload,
+} from "./lib/api";
+import { countLabel, normalizeResourceId } from "./lib/format";
+import { traceEventsForRun, type TraceEvent } from "./lib/trace";
+import {
+  cronEditorFromJob,
+  cronRequestBody,
+  describeCron,
+  groupRoutineApprovals,
+  scheduleFromEditor,
+  workflowProposalError,
+  workflowProposalFromPayload,
+  workflowStateFromPayload,
+  WorkflowProposalDisplayError,
+  type CronApprovalStatus,
+  type CronEditor,
+  type CronFrequencyKind,
+  type CronJob,
+  type CronRun,
+  type CronTestFeedback,
+  type CronTestResult,
+  type CronWorkflowAction,
+} from "./lib/cron";
+import { ProcessTrace } from "./components/process-trace";
+import { useGitReview } from "./components/use-git-review";
 
 type DockTabId = "git" | "files";
 
@@ -151,36 +179,6 @@ type ConfigurableModule = {
   state: "configured" | "defaults" | "required";
   fields: ModuleSettingField[];
 };
-
-function apiErrorDetail(payload: unknown, fallback: string): string {
-  if (!isRecord(payload)) return fallback;
-  if (typeof payload.detail === "string" && payload.detail.trim()) {
-    return payload.detail;
-  }
-  if (Array.isArray(payload.detail)) {
-    const messages = payload.detail.flatMap((entry) => {
-      if (!isRecord(entry)) return [];
-      const location = Array.isArray(entry.loc)
-        ? entry.loc.filter((item) => item !== "body").join(" → ")
-        : "";
-      const message = typeof entry.msg === "string" ? entry.msg : "valeur invalide";
-      return [`${location ? `${location} : ` : ""}${message}`];
-    });
-    if (messages.length) return messages.join(" · ");
-  }
-  return fallback;
-}
-
-function normalizeResourceId(value: string): string {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^[^a-z0-9]+|[^a-z0-9._-]+$/g, "");
-}
 
 function ModuleSettingsPanel({
   modules,
@@ -432,379 +430,6 @@ type ManagedProvider = {
   num_predict?: number;
 };
 
-type CronJob = {
-  id: string;
-  name: string;
-  schedule: string;
-  prompt: string;
-  workspace: string | null;
-  agent_id: string;
-  skills: string[];
-  security_mode: "safe" | "limited" | "power";
-  provider_id: string | null;
-  model: string | null;
-  reasoning: "minimal" | "low" | "medium" | "high" | "xhigh" | null;
-  enabled: boolean;
-  auto_resume: boolean;
-  session_id: string;
-  notification_session_id: string;
-  next_run_at: string | null;
-  last_run_at: string | null;
-  last_status: string | null;
-  last_error: string | null;
-  last_retryable: boolean;
-  in_flight: boolean;
-  blocked: boolean;
-  workflow?: RoutineWorkflow | null;
-  workflow_revision?: number | null;
-  workflow_basis_hash?: string | null;
-  workflow_updated_at?: string | null;
-};
-
-type CronRun = {
-  id: string;
-  cron_job_id: string;
-  scheduled_for: string;
-  claimed_at: string;
-  started_at: string | null;
-  completed_at: string | null;
-  session_id: string;
-  notification_session_id: string;
-  run_id: string | null;
-  execution_status: string;
-  task_status: string | null;
-  delivery_status: "unread" | "read";
-  output_preview: string | null;
-  error: string | null;
-};
-
-type CronApprovalStatus = {
-  approved_scopes: { tool_name: string; action_family: string; path: string | null }[];
-  pending_count: number;
-  pending_run_id: string | null;
-};
-
-type CronTestFeedback = "idle" | "progress" | "success" | "error";
-type CronWorkflowAction = "propose" | "continue" | "accept" | "delete" | null;
-
-type CronTestResult = {
-  session_id: string;
-  run_id?: string | null;
-  status: string;
-  output?: string | null;
-  errors?: { message: string }[];
-};
-
-type CronFrequencyKind = "minutes" | "hours" | "daily" | "weekly" | "yearly";
-type CronEditor = CronJob & {
-  creating: boolean;
-  frequency_kind: CronFrequencyKind;
-  frequency_interval: number;
-  frequency_time: string;
-  frequency_weekday: number;
-  frequency_month: number;
-  frequency_monthday: number;
-};
-
-function parseCronFrequency(schedule: string): Pick<CronEditor,
-  "frequency_kind" | "frequency_interval" | "frequency_time" |
-  "frequency_weekday" | "frequency_month" | "frequency_monthday"> {
-  const parts = schedule.trim().split(/\s+/);
-  const defaults = {
-    frequency_kind: "daily" as CronFrequencyKind,
-    frequency_interval: 1,
-    frequency_time: "09:00",
-    frequency_weekday: 1,
-    frequency_month: 1,
-    frequency_monthday: 1,
-  };
-  if (parts.length !== 5) return defaults;
-  const [minute, hour, monthday, month, weekday] = parts;
-  if (minute.startsWith("*/") && hour === "*" && monthday === "*" && month === "*" && weekday === "*") {
-    return { ...defaults, frequency_kind: "minutes", frequency_interval: Number(minute.slice(2)) || 1 };
-  }
-  if (minute === "0" && hour.startsWith("*/") && monthday === "*" && month === "*" && weekday === "*") {
-    return { ...defaults, frequency_kind: "hours", frequency_interval: Number(hour.slice(2)) || 1 };
-  }
-  const time = `${String(Number(hour)).padStart(2, "0")}:${String(Number(minute)).padStart(2, "0")}`;
-  if (monthday === "*" && month === "*" && weekday === "*") {
-    return { ...defaults, frequency_kind: "daily", frequency_time: time };
-  }
-  if (monthday === "*" && month === "*" && weekday !== "*") {
-    return { ...defaults, frequency_kind: "weekly", frequency_time: time, frequency_weekday: Number(weekday) };
-  }
-  if (monthday !== "*" && month !== "*" && weekday === "*") {
-    return {
-      ...defaults, frequency_kind: "yearly", frequency_time: time,
-      frequency_monthday: Number(monthday), frequency_month: Number(month),
-    };
-  }
-  return defaults;
-}
-
-function cronEditorFromJob(job: CronJob, creating = false): CronEditor {
-  return { ...job, creating, ...parseCronFrequency(job.schedule) };
-}
-
-function countLabel(count: number, singular: string, plural = `${singular}s`) {
-  return `${count} ${count === 1 ? singular : plural}`;
-}
-
-async function readApiPayload<T = Record<string, unknown>>(response: Response): Promise<T> {
-  const text = await response.text();
-  let payload: unknown = {};
-  if (text) {
-    try {
-      payload = JSON.parse(text) as unknown;
-    } catch {
-      if (!response.ok) {
-        throw new Error(`Le serveur n’a pas pu traiter la demande (${response.status}).`);
-      }
-      throw new Error("Réponse serveur illisible.");
-    }
-  }
-  if (!response.ok) {
-    const detail = typeof payload === "object" && payload !== null && "detail" in payload
-      ? (payload as { detail?: unknown }).detail
-      : null;
-    throw new Error(formatApiDetail(detail) || `La demande a échoué (${response.status}).`);
-  }
-  return payload as T;
-}
-
-/**
- * Met en forme le `detail` d'une réponse d'erreur.
- *
- * FastAPI renvoie une chaîne pour nos `HTTPException`, mais une LISTE d'objets
- * `{loc, msg, type}` quand c'est Pydantic qui refuse le corps de la requête.
- * Un `String()` direct sur cette liste produisait « [object Object] », ce qui
- * masquait complètement la cause du refus.
- */
-function formatApiDetail(detail: unknown): string {
-  if (!detail) return "";
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) {
-    return detail
-      .map((item) => {
-        if (typeof item === "string") return item;
-        if (!isRecord(item)) return JSON.stringify(item);
-        const field = Array.isArray(item.loc)
-          // On retire le premier segment ("body", "query"…), sans intérêt ici.
-          ? item.loc.slice(1).filter((part) => part !== "").join(".")
-          : "";
-        const message = typeof item.msg === "string" ? item.msg : JSON.stringify(item);
-        return field ? `${field} : ${message}` : message;
-      })
-      .filter(Boolean)
-      .join("\n");
-  }
-  if (isRecord(detail) && typeof detail.msg === "string") return detail.msg;
-  return JSON.stringify(detail);
-}
-
-function groupRoutineApprovals(approvals: Approval[]) {
-  const grouped = new Map<string, {
-    key: string;
-    tool_name: string;
-    path: string | null;
-    count: number;
-    justifications: string[];
-  }>();
-  for (const approval of approvals) {
-    const key = [approval.tool_name, approval.action_family, approval.path || ""].join("::");
-    const existing = grouped.get(key);
-    if (existing) {
-      existing.count += 1;
-      if (!existing.justifications.includes(approval.justification)) {
-        existing.justifications.push(approval.justification);
-      }
-    } else {
-      grouped.set(key, {
-        key,
-        tool_name: approval.tool_name,
-        path: approval.path,
-        count: 1,
-        justifications: [approval.justification],
-      });
-    }
-  }
-  return [...grouped.values()];
-}
-
-function scheduleFromEditor(editor: CronEditor): string {
-  const [hour = "9", minute = "0"] = editor.frequency_time.split(":");
-  if (editor.frequency_kind === "minutes") return `*/${Math.max(1, editor.frequency_interval)} * * * *`;
-  if (editor.frequency_kind === "hours") return `0 */${Math.max(1, editor.frequency_interval)} * * *`;
-  if (editor.frequency_kind === "weekly") return `${Number(minute)} ${Number(hour)} * * ${editor.frequency_weekday}`;
-  if (editor.frequency_kind === "yearly") {
-    return `${Number(minute)} ${Number(hour)} ${editor.frequency_monthday} ${editor.frequency_month} *`;
-  }
-  return `${Number(minute)} ${Number(hour)} * * *`;
-}
-
-function describeCron(editor: CronEditor): string {
-  const days = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
-  const months = ["janvier", "février", "mars", "avril", "mai", "juin",
-    "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
-  if (editor.frequency_kind === "minutes") {
-    return `Toutes les ${countLabel(editor.frequency_interval, "minute")}`;
-  }
-  if (editor.frequency_kind === "hours") {
-    return `Toutes les ${countLabel(editor.frequency_interval, "heure")}`;
-  }
-  if (editor.frequency_kind === "weekly") return `Chaque ${days[editor.frequency_weekday]} à ${editor.frequency_time}`;
-  if (editor.frequency_kind === "yearly") {
-    return `Tous les ans, le ${editor.frequency_monthday} ${months[editor.frequency_month - 1]} à ${editor.frequency_time}`;
-  }
-  return `Tous les jours à ${editor.frequency_time}`;
-}
-
-function cronRequestBody(editor: CronEditor, acceptedWorkflow?: RoutineWorkflowProposal) {
-  return {
-    name: editor.name,
-    schedule: scheduleFromEditor(editor),
-    prompt: editor.prompt,
-    workspace: editor.workspace,
-    agent_id: editor.agent_id,
-    skills: editor.skills,
-    security_mode: editor.security_mode,
-    provider_id: editor.provider_id,
-    model: editor.model,
-    reasoning: editor.reasoning,
-    enabled: editor.enabled,
-    auto_resume: editor.auto_resume,
-    notification_session_id: editor.notification_session_id,
-    ...(acceptedWorkflow
-      ? {
-        accepted_workflow: {
-          workflow: acceptedWorkflow.workflow,
-          basis_hash: acceptedWorkflow.basis_hash,
-          // Le kernel attend `list[str]`. La forme `{message}` n'existe que
-          // pour l'affichage : la renvoyer telle quelle faisait refuser le
-          // corps par Pydantic, une erreur par avertissement.
-          warnings: acceptedWorkflow.warnings.map(
-            (warning) => typeof warning === "string" ? warning : warning.message || "",
-          ).filter(Boolean),
-        },
-      }
-      : {}),
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// Fonction pure et sans dependances : definie au niveau module (et non inline
-// dans le JSX) pour garder une identite stable entre les rendus. Sinon
-// `FileExplorer` la voit changer a chaque rendu de `Home` et recharge son
-// arborescence en boucle.
-function fileExplorerKernelUrl(path: string): string {
-  return `/api/kernel${path.replace("/api", "")}`;
-}
-
-class WorkflowProposalDisplayError extends Error {}
-
-/**
- * Récupère le `detail` renvoyé par le kernel. Sans lui, un échec de génération
- * (502) se réduit à « vérifie le fournisseur » alors que le backend explique
- * précisément ce qui a échoué — le diagnostic était jeté avec le corps.
- */
-async function workflowProposalError(response: Response): Promise<WorkflowProposalDisplayError> {
-  let detail = "";
-  try {
-    const payload: unknown = await response.json();
-    if (isRecord(payload) && typeof payload.detail === "string") detail = payload.detail.trim();
-  } catch {
-    // The status-specific message remains useful when a proxy returns no JSON.
-  }
-  return workflowProposalErrorForStatus(response.status, detail);
-}
-
-function workflowProposalErrorForStatus(
-  status: number,
-  detail = "",
-): WorkflowProposalDisplayError {
-  if (status === 404) {
-    return new WorkflowProposalDisplayError(
-      "La proposition guidée n’est pas encore chargée dans l’application active. "
-      + "Redémarre l’application puis réessaie. La routine reste utilisable en mode libre.",
-    );
-  }
-  if (status === 401 || status === 403) {
-    return new WorkflowProposalDisplayError(
-      "La connexion au fournisseur du modèle n’est plus valide. "
-      + "Vérifie sa configuration, puis réessaie.",
-    );
-  }
-  if (status === 408 || status === 429 || status === 503 || status === 504) {
-    return new WorkflowProposalDisplayError(
-      "Le fournisseur du modèle est temporairement indisponible. "
-      + "Attends un instant, puis réessaie.",
-    );
-  }
-  if (status === 502) {
-    return new WorkflowProposalDisplayError(
-      "Le modèle a répondu, mais sa réponse n’a pas pu être transformée en workflow.",
-    );
-  }
-  if (status === 422) {
-    return new WorkflowProposalDisplayError(
-      detail || (
-        "Le prompt, les skills ou les outils disponibles ne permettent pas encore de préparer un workflow. "
-        + "Ajuste la routine, puis réessaie."
-      ),
-    );
-  }
-  return new WorkflowProposalDisplayError(
-    "Le modèle n’a pas pu préparer le workflow. "
-    + "Vérifie le fournisseur et le modèle configurés, puis réessaie.",
-  );
-}
-
-function workflowProposalFromPayload(payload: unknown): RoutineWorkflowProposal {
-  if (!isRecord(payload) || !isRecord(payload.workflow) || typeof payload.basis_hash !== "string") {
-    throw new Error("La proposition de workflow est incomplète.");
-  }
-  const warnings = Array.isArray(payload.warnings)
-    ? payload.warnings.filter((item) => typeof item === "string" || isRecord(item))
-      .map((item) => typeof item === "string" ? item : { message: String(item.message || "Point à vérifier") })
-    : [];
-  return {
-    workflow: payload.workflow as RoutineWorkflow,
-    basis_hash: payload.basis_hash,
-    warnings,
-  };
-}
-
-function workflowStateFromPayload(payload: unknown): {
-  workflow: RoutineWorkflow | null;
-  revision?: number | null;
-  basisHash?: string | null;
-  updatedAt?: string | null;
-} {
-  if (payload === null) return { workflow: null };
-  if (!isRecord(payload)) return { workflow: null };
-  if ("workflow" in payload) {
-    return {
-      workflow: isRecord(payload.workflow) ? payload.workflow as RoutineWorkflow : null,
-      revision: typeof payload.workflow_revision === "number"
-        ? payload.workflow_revision
-        : typeof payload.revision === "number" ? payload.revision : null,
-      basisHash: typeof payload.workflow_basis_hash === "string"
-        ? payload.workflow_basis_hash
-        : typeof payload.basis_hash === "string" ? payload.basis_hash : null,
-      updatedAt: typeof payload.workflow_updated_at === "string"
-        ? payload.workflow_updated_at
-        : typeof payload.updated_at === "string" ? payload.updated_at : null,
-    };
-  }
-  const looksLikeWorkflow = Array.isArray(payload.steps)
-    || typeof payload.schema === "string"
-    || typeof payload.status === "string";
-  return { workflow: looksLikeWorkflow ? payload as RoutineWorkflow : null };
-}
-
 const codexAuthHelpUrl = "https://learn.chatgpt.com/docs/auth?surface=cli";
 const codexApiUrl = "https://chatgpt.com/backend-api/codex";
 const providerKindLabels: Record<string, string> = {
@@ -883,17 +508,6 @@ function parseListFieldValue(value: string) {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
-type TraceEvent = {
-  timestamp: string;
-  session_id: string;
-  run_id: string;
-  agent_id: string;
-  parent_run_id: string | null;
-  type: string;
-  attempt: number;
-  payload: Record<string, unknown>;
-};
-
 type SessionSummary = {
   session_id: string;
   agent_id: string;
@@ -927,126 +541,6 @@ function gitSnapshotForRun(events: TraceEvent[], runId?: string): GitSnapshot | 
   if (!event) return null;
   const payload = event.payload as Partial<GitSnapshot>;
   return payload.available && Array.isArray(payload.files) ? payload as GitSnapshot : null;
-}
-
-const visibleTraceTypes = new Set([
-  "session.started", "run.suspended", "run.resumed", "run.transitioned",
-  "agent.queued", "agent.started", "agent.retrying", "agent.completed", "agent.failed",
-  "tool.proposed", "guardian.reviewed", "approval.requested", "approval.resolved",
-  "tool.started", "tool.completed", "tool.failed", "tool.trashed", "session.completed",
-  "security.changed", "context.pre_compaction_snapshot", "context.compacted",
-  "context.inspected", "context.window_updated", "context.window_update_failed",
-]);
-
-function traceLabel(event: TraceEvent) {
-  const tool = String(event.payload.tool || event.payload.tool_name || "outil");
-  const labels: Record<string, string> = {
-    "session.started": "Analyse de la demande",
-    "agent.started": `Délégation à ${event.agent_id}`,
-    "agent.retrying": `Nouvelle tentative de ${event.agent_id}`,
-    "agent.completed": `${event.agent_id} a terminé`,
-    "agent.failed": `${event.agent_id} a échoué`,
-    "tool.proposed": `Préparation de ${tool}`,
-    "guardian.reviewed": `Guardian · ${String(event.payload.verdict || "revue")}`,
-    "approval.requested": `Autorisation requise pour ${tool}`,
-    "approval.resolved": event.payload.approved ? "Action autorisée" : "Action refusée",
-    "tool.started": `${tool} en cours`,
-    "tool.completed": `${tool} terminé`,
-    "tool.failed": `${tool} a échoué`,
-    "tool.trashed": "Élément déplacé dans la corbeille",
-    "session.completed": "Réponse terminée",
-    "security.changed": `Permissions · ${String(event.payload.security_mode || "")}`,
-    "context.pre_compaction_snapshot": "Préservation du contexte complet",
-    "context.compacted": event.payload.manual
-      ? "Compaction manuelle terminée"
-      : "Compaction automatique terminée",
-    "context.inspected": "Mesure du contexte",
-    "context.window_updated": "Fenêtre de contexte enregistrée",
-    "context.window_update_failed": "Fenêtre de contexte invalide",
-  };
-  return labels[event.type] || event.type;
-}
-
-function traceState(event: TraceEvent, isLast: boolean, live: boolean) {
-  if (event.type.includes("failed")) return "failed";
-  if (event.type === "approval.requested") return "blocked";
-  if (event.type === "session.completed") {
-    return event.payload.status === "failed" || event.payload.status === "timeout" ? "failed" : "done";
-  }
-  if (live && isLast) return "active";
-  return "done";
-}
-
-function traceEventsForRun(events: TraceEvent[], rootRunId?: string) {
-  if (!rootRunId) return [];
-  const included = new Set([rootRunId]);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const event of events) {
-      if (event.parent_run_id && included.has(event.parent_run_id) && !included.has(event.run_id)) {
-        included.add(event.run_id);
-        changed = true;
-      }
-    }
-  }
-  return events.filter((event) => included.has(event.run_id));
-}
-
-function ProcessTrace({
-  events, live,
-}: {
-  events: TraceEvent[];
-  live: boolean;
-}) {
-  return <ProcessTraceState key={live ? "live" : "terminal"} events={events} live={live} />;
-}
-
-function ProcessTraceState({
-  events, live,
-}: {
-  events: TraceEvent[];
-  live: boolean;
-}) {
-  const [expanded, setExpanded] = useState(live);
-  const visible = events.filter((event) => visibleTraceTypes.has(event.type));
-  if (visible.length === 0) return null;
-  return (
-    <section className={`process-trace ${expanded ? "expanded" : "collapsed"}`} aria-label="Traces d’exécution" aria-live="polite">
-      <button
-        type="button"
-        className="trace-toggle"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((current) => !current)}
-      >
-        <strong>Processus</strong>
-        <span className="trace-summary">
-          {live && <i className="trace-live-indicator" />}
-          {live ? "en cours" : `${visible.length} étape${visible.length > 1 ? "s" : ""}`}
-          <b aria-hidden="true">{expanded ? "−" : "+"}</b>
-        </span>
-      </button>
-      {expanded && <ol>
-        {visible.map((event, index) => {
-          const state = traceState(event, index === visible.length - 1, live);
-          const detail = String(
-            event.payload.justification || event.payload.task || event.payload.reason ||
-            event.payload.message || event.payload.error || "",
-          );
-          return (
-            <li className={state} key={`${event.timestamp}-${event.type}-${index}`}>
-              <span className="trace-dot" />
-              <div>
-                <strong>{traceLabel(event)}</strong>
-                <small>{event.agent_id} · {new Date(event.timestamp).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small>
-                {detail && <p>{detail}</p>}
-              </div>
-            </li>
-          );
-        })}
-      </ol>}
-    </section>
-  );
 }
 
 function MarkdownMessage({ content }: { content: string }) {
@@ -1265,15 +759,6 @@ export default function Home() {
   const [cronWorkflowAction, setCronWorkflowAction] = useState<CronWorkflowAction>(null);
   const [cronWorkflowFeedback, setCronWorkflowFeedback] = useState<"idle" | "success" | "error">("idle");
   const [cronWorkflowMessage, setCronWorkflowMessage] = useState("");
-  const [gitSnapshot, setGitSnapshot] = useState<GitSnapshot | null>(null);
-  const [gitBranches, setGitBranches] = useState<string[]>([]);
-  const [gitSelectedFile, setGitSelectedFile] = useState<GitFile | null>(null);
-  const [gitReviewSnapshot, setGitReviewSnapshot] = useState<GitSnapshot | null>(null);
-  const [gitBusy, setGitBusy] = useState(false);
-  const [gitError, setGitError] = useState("");
-  const [gitCommitMessage, setGitCommitMessage] = useState<string | null>(null);
-  const [gitCommitFingerprint, setGitCommitFingerprint] = useState("");
-  const [gitCommitSource, setGitCommitSource] = useState("");
   // Etat du shell : panneaux redimensionnables + onglet actif du dock droit.
   const panels = usePanels();
   const [dockTab, setDockTab] = useState<DockTabId>("git");
@@ -1490,48 +975,30 @@ export default function Home() {
   // n'appartient à aucun projet — routines, espace personnel de l'agent et
   // canaux Telegram. Refiltrer ici masquerait précisément ces trois-là.
 
-  const refreshGit = useCallback(async (workspace: string) => {
-    try {
-      const statusResponse = await fetch(
-        `/api/kernel/git/status?workspace=${encodeURIComponent(workspace)}`,
-      );
-      const status = await readApiPayload<GitSnapshot>(statusResponse);
-      setGitSnapshot(status.available ? status : null);
-      // Les branches ne sont demandées qu'une fois le dépôt confirmé : sur un
-      // projet non versionné, `/branches` répond 422 à chaque rafraîchissement.
-      // L'erreur était rattrapée, mais elle inondait la console et masquait les
-      // vraies. Une requête en série coûte moins qu'une erreur permanente.
-      if (!status.available) {
-        setGitBranches([]);
-        return;
-      }
-      const branchesResponse = await fetch(
-        `/api/kernel/git/branches?workspace=${encodeURIComponent(workspace)}`,
-      );
-      if (branchesResponse.ok) {
-        const branchData = await readApiPayload<{ current: string; branches: string[] }>(branchesResponse);
-        setGitBranches(branchData.branches);
-      } else {
-        setGitBranches([]);
-      }
-    } catch {
-      setGitSnapshot(null);
-      setGitBranches([]);
-      setGitReviewSnapshot(null);
-      setGitSelectedFile(null);
-    }
-  }, []);
+  const {
+    gitSnapshot,
+    gitBranches,
+    gitSelectedFile,
+    gitReviewSnapshot,
+    gitBusy,
+    gitError,
+    gitCommitMessage,
+    gitCommitSource,
+    setGitSelectedFile,
+    setGitReviewSnapshot,
+    setGitCommitMessage,
+    setGitError,
+    switchGitBranch,
+    proposeGitCommit,
+    commitGitChanges,
+  } = useGitReview({
+    workspace: conversationWorkspace,
+    isAgentChannel,
+    running,
+    providerId,
+    selectedModel,
+  });
 
-  useEffect(() => {
-    if (!conversationWorkspace || isAgentChannel) {
-      setGitSnapshot(null);
-      setGitBranches([]);
-      setGitReviewSnapshot(null);
-      setGitSelectedFile(null);
-      return;
-    }
-    void refreshGit(conversationWorkspace);
-  }, [conversationWorkspace, isAgentChannel, running, refreshGit]);
   const commandMatches = useMemo(() => {
     const value = prompt.trimStart();
     if (!value.startsWith("/") || value.includes(" ")) return [];
@@ -3458,66 +2925,6 @@ export default function Home() {
     panels.setOpen("right", true);
   }
 
-  async function switchGitBranch(branch: string) {
-    if (!conversationWorkspace || branch === gitSnapshot?.branch) return;
-    setGitBusy(true);
-    setGitError("");
-    try {
-      const response = await fetch("/api/kernel/git/switch", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspace: conversationWorkspace, branch }),
-      });
-      await readApiPayload(response);
-      await refreshGit(conversationWorkspace);
-    } catch (error) {
-      setGitError(error instanceof Error ? error.message : "Changement de branche impossible.");
-    } finally {
-      setGitBusy(false);
-    }
-  }
-
-  async function proposeGitCommit() {
-    if (!conversationWorkspace) return;
-    setGitBusy(true);
-    setGitError("");
-    try {
-      const response = await fetch("/api/kernel/git/commit-proposal", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspace: conversationWorkspace, provider_id: providerId, model: selectedModel }),
-      });
-      const data = await readApiPayload<{ message: string; fingerprint: string; source: string }>(response);
-      setGitCommitMessage(data.message);
-      setGitCommitFingerprint(data.fingerprint);
-      setGitCommitSource(data.source);
-    } catch (error) {
-      setGitError(error instanceof Error ? error.message : "Proposition impossible.");
-    } finally {
-      setGitBusy(false);
-    }
-  }
-
-  async function commitGitChanges() {
-    if (!conversationWorkspace || gitCommitMessage === null) return;
-    setGitBusy(true);
-    setGitError("");
-    try {
-      const response = await fetch("/api/kernel/git/commit", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspace: conversationWorkspace, message: gitCommitMessage, fingerprint: gitCommitFingerprint }),
-      });
-      await readApiPayload(response);
-      setGitCommitMessage(null);
-      // Les diffs n'existent plus apres le commit : on vide la revue.
-      setGitReviewSnapshot(null);
-      setGitSelectedFile(null);
-      await refreshGit(conversationWorkspace);
-    } catch (error) {
-      setGitError(error instanceof Error ? error.message : "Commit impossible.");
-    } finally {
-      setGitBusy(false);
-    }
-  }
-
   const cronApprovalGroups = groupRoutineApprovals(cronTestApprovals);
   const persistedCron = cronEditor && !cronEditor.creating
     ? cronJobs.find((job) => job.id === cronEditor.id)
@@ -4768,8 +4175,23 @@ export default function Home() {
                       <option value="daily">Tous les jours</option>
                       <option value="weekly">Toutes les semaines</option>
                       <option value="yearly">Tous les ans</option>
+                      <option value="once">Ponctuel (date précise)</option>
                     </select>
                   </label>
+                  {cronEditor.frequency_kind === "once" && (
+                    <label>
+                      Date et heure
+                      <input type="datetime-local"
+                        value={cronEditor.one_shot_datetime}
+                        onChange={(event) => {
+                          invalidateCronWorkflowProposal();
+                          setCronEditor((current) => current && ({
+                            ...current, one_shot_datetime: event.target.value,
+                          }));
+                        }}
+                      />
+                    </label>
+                  )}
                   {(cronEditor.frequency_kind === "minutes" || cronEditor.frequency_kind === "hours") && (
                     <label>
                       Intervalle

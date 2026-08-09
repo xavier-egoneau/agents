@@ -151,7 +151,7 @@ class ToolRisk(StrEnum):
     WRITE = "write"
     DESTRUCTIVE = "destructive"
     NETWORK = "network"
-    SECRET = "secret"
+    SECRET = "secret"  # noqa: S105 - membre d'énumération, pas un mot de passe
     EXTERNAL = "external"
     SYSTEM = "system"
     EXECUTE = "execute"

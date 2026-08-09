@@ -41,7 +41,7 @@ class CronJobInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=120)
-    schedule: str = Field(min_length=1, max_length=120)
+    schedule: str = Field(default="", max_length=120)
     prompt: str = Field(min_length=1)
     workspace: Path | None = None
     agent_id: str = "main"
@@ -55,6 +55,15 @@ class CronJobInput(BaseModel):
     # Non renseignée, elle suit l'agent : le défaut ne peut pas être une
     # constante de classe, puisqu'il dépend d'un autre champ.
     notification_session_id: UUID | None = None
+    one_shot_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _validate_schedule_or_one_shot(self) -> CronJobInput:
+        if not self.schedule and self.one_shot_at is None:
+            raise ValueError(
+                "Une routine doit avoir soit un schedule cron, soit une date one_shot_at."
+            )
+        return self
 
     @model_validator(mode="after")
     def _default_notification_session(self) -> CronJobInput:
@@ -121,7 +130,7 @@ class CronService:
         connection.row_factory = sqlite3.Row
         return connection
 
-    def _initialize(self) -> None:
+    def _initialize(self) -> None:  # noqa: C901 - dette: initialisation multi-étapes
         with self._connect() as connection:
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS cron_jobs (
@@ -175,6 +184,8 @@ class CronService:
                 connection.execute("ALTER TABLE cron_jobs ADD COLUMN workflow_basis_hash TEXT")
             if "workflow_updated_at" not in columns:
                 connection.execute("ALTER TABLE cron_jobs ADD COLUMN workflow_updated_at TEXT")
+            if "one_shot_at" not in columns:
+                connection.execute("ALTER TABLE cron_jobs ADD COLUMN one_shot_at TEXT")
             if "install_id" not in columns:
                 # Colonne d'une quarantaine par machine, retiree depuis : elle
                 # masquait des routines sans le dire, pour un melange de bases
@@ -300,6 +311,8 @@ class CronService:
 
     @staticmethod
     def validate_schedule(expression: str) -> None:
+        if not expression:
+            return
         if not croniter.is_valid(expression):
             raise SchedulerError(f"Expression cron invalide : {expression}")
 
@@ -309,7 +322,10 @@ class CronService:
         base: datetime | None = None,
         *,
         timezone: str = "Europe/Paris",
+        one_shot_at: datetime | None = None,
     ) -> datetime:
+        if one_shot_at is not None:
+            return one_shot_at if one_shot_at.tzinfo else one_shot_at.replace(tzinfo=UTC)
         CronService.validate_schedule(expression)
         try:
             zone = ZoneInfo(timezone)
@@ -383,10 +399,17 @@ class CronService:
         now = datetime.now(UTC)
         job_id = f"cron_{uuid4().hex}"
         session_id = uuid4()
-        next_run = self.next_fire(
-            payload.schedule,
-            timezone=self._workflow_timezone(workflow),
-        )
+        if payload.one_shot_at is not None:
+            next_run = (
+                payload.one_shot_at
+                if payload.one_shot_at.tzinfo
+                else payload.one_shot_at.replace(tzinfo=UTC)
+            )
+        else:
+            next_run = self.next_fire(
+                payload.schedule,
+                timezone=self._workflow_timezone(workflow),
+            )
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO cron_jobs (
@@ -395,10 +418,10 @@ class CronService:
                     session_id, created_at, updated_at, next_run_at, last_run_at,
                     last_status, last_error, last_retryable, in_flight,
                     notification_session_id, workflow_json, workflow_revision,
-                    workflow_basis_hash, workflow_updated_at
+                    workflow_basis_hash, workflow_updated_at, one_shot_at
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0,
-                    ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?
                 )""",
                 (
                     job_id,
@@ -426,6 +449,7 @@ class CronService:
                     1 if workflow is not None else 0,
                     workflow_basis_hash if workflow is not None else None,
                     now.isoformat() if workflow is not None else None,
+                    payload.one_shot_at.isoformat() if payload.one_shot_at is not None else None,
                 ),
             )
         return self.get(job_id)
@@ -610,17 +634,22 @@ class CronService:
         job = self.get(job_id)
         occurrence_at = scheduled_for or fired_at
         occurrence_id = f"cronrun_{uuid4().hex}"
+        if job.one_shot_at is not None:
+            # One-shot : pas de prochaine occurrence, on désactive la routine.
+            next_run_value = None
+        else:
+            next_run_value = self.next_fire(
+                job.schedule,
+                fired_at,
+                timezone=self._workflow_timezone(job.workflow),
+            ).isoformat()
         with self._connect() as connection:
             cursor = connection.execute(
                 """UPDATE cron_jobs SET in_flight=1, last_run_at=?, next_run_at=?,
                    last_error=NULL WHERE id=? AND enabled=1 AND in_flight=0 AND blocked=0""",
                 (
                     fired_at.isoformat(),
-                    self.next_fire(
-                        job.schedule,
-                        fired_at,
-                        timezone=self._workflow_timezone(job.workflow),
-                    ).isoformat(),
+                    next_run_value,
                     job_id,
                 ),
             )
@@ -742,7 +771,7 @@ class CronService:
         with self._connect() as connection:
             rows = connection.execute(
                 f"""SELECT * FROM cron_runs {where}
-                    ORDER BY claimed_at DESC LIMIT ?""",
+                    ORDER BY claimed_at DESC LIMIT ?""",  # noqa: S608 - clauses constantes, valeurs paramétrées
                 values,
             ).fetchall()
         result: list[CronRun] = []
@@ -793,7 +822,7 @@ class CronService:
         with self._connect() as connection:
             rows = connection.execute(
                 f"""SELECT id, cron_job_id FROM cron_runs
-                    WHERE {" AND ".join(clauses)} ORDER BY claimed_at DESC""",
+                    WHERE {" AND ".join(clauses)} ORDER BY claimed_at DESC""",  # noqa: S608 - clauses constantes, valeurs paramétrées
                 values,
             ).fetchall()
         for row in rows:
@@ -908,6 +937,7 @@ class CronService:
             workflow_revision=int(row["workflow_revision"] or 0),
             workflow_basis_hash=row["workflow_basis_hash"],
             workflow_updated_at=parsed("workflow_updated_at"),
+            one_shot_at=parsed("one_shot_at"),
         )
 
 

@@ -13,6 +13,7 @@ from agentic_kernel.models import Event
 from agentic_kernel.network_policy import (
     NetworkTargetError,
     network_scope,
+    validate_file_target,
     validate_http_target,
 )
 
@@ -135,9 +136,17 @@ async def browser_open(
     justification: str = "",
 ) -> dict[str, Any]:
     """Open a rendered JavaScript page or navigate an existing browser page."""
-    initial_scope = network_scope(url) or ""
-    allow_private = _private_approved(ctx, url, initial_scope)
-    await validate_http_target(url, allow_private=allow_private)
+    # Handle file:// URLs: validate they're within the workspace, then open directly.
+    # Playwright supports file:// URLs natively, but we restrict access to workspace
+    # files for security (prevent reading sensitive files outside the project).
+    if url.startswith("file://"):
+        validate_file_target(url, ctx.deps.workspace)
+        # file:// URLs don't need network scope validation
+        initial_scope = ""
+    else:
+        initial_scope = network_scope(url) or ""
+        allow_private = _private_approved(ctx, url, initial_scope)
+        await validate_http_target(url, allow_private=allow_private)
     current = await _session(ctx)
     if page_id:
         page = current.pages.get(page_id)
@@ -342,8 +351,11 @@ class BrowserModule:
     def instructions(self):
         return [
             "Use browser tools when JavaScript rendering or interaction is required. "
-            "Call browser_snapshot before clicking. Use browser_screenshot when the user "
-            "asks to see the rendered result; screenshot artifacts appear in the conversation."
+            "Prefer browser_snapshot over browser_screenshot: the snapshot returns visible "
+            "text and interactive element refs without producing an image file. "
+            "Only use browser_screenshot when the visual layout is essential; then "
+            "follow it with image_inspect (perception module) to get a text description, "
+            "since the model may not support direct image input."
         ]
 
     def capabilities(self):

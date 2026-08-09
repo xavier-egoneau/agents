@@ -31,7 +31,9 @@ class ModuleSettingsStore:
             for manifest in self._configurable_manifests()
         ]
 
-    def update(self, module_id: str, values: dict[str, Any]) -> dict[str, Any]:
+    def update(  # noqa: C901 - dette: mise à jour multi-cas
+        self, module_id: str, values: dict[str, Any]
+    ) -> dict[str, Any]:
         manifests = {item.id: item for item in self._configurable_manifests()}
         manifest = manifests.get(module_id)
         if manifest is None or manifest.config is None:
@@ -99,7 +101,7 @@ class ModuleSettingsStore:
     def _effective_values(
         self, manifest: ModuleManifest, document: dict[str, Any]
     ) -> dict[str, Any]:
-        assert manifest.config is not None
+        assert manifest.config is not None  # noqa: S101 - invariant interne, appelants vérifiés
         values = {
             field.name: field.default
             for field in manifest.config.fields
@@ -129,7 +131,7 @@ class ModuleSettingsStore:
         document: dict[str, Any],
         secret_names: set[str],
     ) -> dict[str, Any]:
-        assert manifest.config is not None
+        assert manifest.config is not None  # noqa: S101 - invariant interne, appelants vérifiés
         effective = self._effective_values(manifest, document)
         fields: list[dict[str, Any]] = []
         complete = True
@@ -194,7 +196,9 @@ class ModuleSettingsStore:
             temporary.unlink(missing_ok=True)
 
 
-def _normalize(field: ModuleConfigField, value: Any) -> Any:
+def _normalize(  # noqa: C901 - dette: normalisation par type de champ
+    field: ModuleConfigField, value: Any
+) -> Any:
     if value in (None, ""):
         if field.required:
             raise ConfigurationError(f"{field.label} est requis")

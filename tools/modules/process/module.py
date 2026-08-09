@@ -141,6 +141,123 @@ def _redacted_command(command: list[str]) -> list[str]:
     return result
 
 
+_DEFAULT_DEV_PORTS = (3000, 5173, 8000, 8080, 8081, 4200, 4321, 5000, 9000)
+
+
+def _is_http_server_command(command: list[str]) -> bool:
+    """Detect commands that start an HTTP server and need network access.
+
+    Covers Python's http.server, Node/Express dev servers, Vite, webpack-dev-server,
+    Next.js, Nuxt, Astro, SvelteKit dev mode, and generic ``serve``/``http-server`` CLIs.
+    Without network the container starts the process but nothing can reach it,
+    which is the #1 cause of "I can't show you the page" failures.
+    """
+    joined = " ".join(command).casefold()
+    server_patterns = (
+        "http.server",
+        "http.server ",
+        "vite ",
+        "vite dev",
+        "webpack serve",
+        "webpack-dev-server",
+        "next dev",
+        "nuxt dev",
+        "astro dev",
+        "svelte-kit dev",
+        "ng serve",
+        "ember serve",
+        "react-scripts start",
+        "npm run dev",
+        "npm run start",
+        "yarn dev",
+        "yarn start",
+        "pnpm dev",
+        "pnpm start",
+        "bun run dev",
+        "bun run start",
+        "deno run",
+        " serve ",
+        " http-server ",
+        "live-server",
+        "browser-sync",
+        "webpack serve",
+    )
+    return any(pattern in joined for pattern in server_patterns)
+
+
+def _http_server_port(  # noqa: C901 - dette: détection de port multi-heuristiques
+    command: list[str],
+) -> int | None:
+    """Extract the port a server command is expected to listen on.
+
+    Looks for explicit ``-p``, ``--port``, or positional port arguments,
+    then falls back to well-known defaults per tool family.
+    """
+    joined = " ".join(command).casefold()
+    # --port=<N> or --port <N>
+    import re
+
+    match = re.search(r"(?:--port\s*[=: ]\s*)(\d{2,5})", joined)
+    if match:
+        return int(match.group(1))
+    # -p <N>
+    for i, arg in enumerate(command):
+        if arg in ("-p", "--port") and i + 1 < len(command):
+            try:
+                return int(command[i + 1])
+            except ValueError:
+                pass
+    # python -m http.server <N>
+    if "http.server" in joined:
+        for part in reversed(command):
+            try:
+                port = int(part)
+                if 1024 <= port <= 65535:
+                    return port
+            except ValueError:
+                pass
+        return 8000
+    # npx serve defaults
+    if any(w in joined for w in (" serve ", "live-server", "http-server", "browser-sync")):
+        for part in reversed(command):
+            try:
+                port = int(part)
+                if 1024 <= port <= 65535:
+                    return port
+            except ValueError:
+                pass
+        return 3000
+    # Framework defaults
+    if "vite" in joined or "astro dev" in joined or "svelte-kit dev" in joined:
+        return 5173
+    if "next dev" in joined:
+        return 3000
+    if "ng serve" in joined:
+        return 4200
+    if "nuxt dev" in joined:
+        return 3000
+    if "react-scripts start" in joined:
+        return 3000
+    if "python" in joined and any(a.casefold().endswith(".py") for a in command):
+        # Python script: scan args for port-like numbers
+        for part in reversed(command):
+            try:
+                port = int(part)
+                if 1024 <= port <= 65535:
+                    return port
+            except ValueError:
+                pass
+    # Fallback: scan all args for a plausible dev port
+    for part in reversed(command):
+        try:
+            port = int(part)
+            if port in _DEFAULT_DEV_PORTS:
+                return port
+        except ValueError:
+            pass
+    return None
+
+
 async def command_run(
     ctx: RunContext[Any],
     program: str,
@@ -153,7 +270,28 @@ async def command_run(
     """Run a structured command without a shell and return bounded output."""
     command = _command(program, _arguments(args))
     workdir = _cwd(ctx, cwd)
-    prepared = ExecutionSandbox.prepare(command, ctx.deps, allow_network=network)
+    # Auto-enable network for HTTP server commands: without it the container
+    # starts the process but nothing can reach it (the #1 cause of "I can't
+    # show you the page" failures). Explicit ``network=False`` still wins.
+    effective_network = network or _is_http_server_command(command)
+    publish_ports = None
+    if effective_network:
+        port = _http_server_port(command)
+        if port is not None:
+            publish_ports = [port]
+    try:
+        prepared = ExecutionSandbox.prepare(
+            command,
+            ctx.deps,
+            allow_network=effective_network,
+            publish_ports=publish_ports,
+        )
+    except RuntimeError as exc:
+        return _failure(
+            "sandbox_error",
+            str(exc),
+            command=_redacted_command(command),
+        )
     started = time.monotonic()
     process = await asyncio.create_subprocess_exec(
         *prepared.command,
@@ -179,12 +317,32 @@ async def command_run(
         prepared.cleanup()
     stdout_truncated = len(stdout) > MAX_CAPTURE_BYTES
     stderr_truncated = len(stderr) > MAX_CAPTURE_BYTES
+    stdout_text = stdout[:MAX_CAPTURE_BYTES].decode(errors="replace")
+    stderr_text = stderr[:MAX_CAPTURE_BYTES].decode(errors="replace")
+    # Detect common Docker sandbox failures and provide actionable messages.
+    if prepared.sandboxed and process.returncode != 0:
+        combined = (stdout_text + stderr_text).casefold()
+        if "executable file not found" in combined or "not found" in combined:
+            stderr_text = (
+                f"Executable not found in sandbox container. "
+                f"The command was: {command}\n"
+                f"Common causes:\n"
+                f"  - The program '{program}' is not installed in the sandbox image\n"
+                f"  - On Windows, 'python3' may not exist (use 'python' instead)\n"
+                f"  - The sandbox image may be missing tools (check AMK_SANDBOX_IMAGE)\n"
+                f"Original stderr:\n{stderr_text}"
+            )
+        elif "permission denied" in combined:
+            stderr_text = (
+                f"Permission denied in sandbox. The container drops all capabilities.\n"
+                f"Original stderr:\n{stderr_text}"
+            )
     data = {
         "command": _redacted_command(command),
         "cwd": str(workdir),
         "exit_code": process.returncode,
-        "stdout": stdout[:MAX_CAPTURE_BYTES].decode(errors="replace"),
-        "stderr": stderr[:MAX_CAPTURE_BYTES].decode(errors="replace"),
+        "stdout": stdout_text,
+        "stderr": stderr_text,
         "stdout_truncated": stdout_truncated,
         "stderr_truncated": stderr_truncated,
     }
@@ -208,14 +366,33 @@ async def process_start(
     """Start a structured persistent process and store its identity durably."""
     command = _command(program, _arguments(args))
     workdir = _cwd(ctx, cwd)
-    prepared = ExecutionSandbox.prepare(command, ctx.deps, allow_network=network)
+    # Auto-enable network for HTTP server commands (same rationale as command_run).
+    effective_network = network or _is_http_server_command(command)
+    publish_ports = None
+    if effective_network:
+        port = _http_server_port(command)
+        if port is not None:
+            publish_ports = [port]
+    try:
+        prepared = ExecutionSandbox.prepare(
+            command,
+            ctx.deps,
+            allow_network=effective_network,
+            publish_ports=publish_ports,
+        )
+    except RuntimeError as exc:
+        return _failure(
+            "sandbox_error",
+            str(exc),
+            command=_redacted_command(command),
+        )
     process_id = str(uuid4())
     output_dir = ctx.deps.events.directory / "processes" / str(ctx.deps.session_id)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{process_id}.log"
     stream = output_path.open("ab", buffering=0)
     try:
-        process = subprocess.Popen(
+        process = subprocess.Popen(  # noqa: S603 - commande agent encadrée par Guardian + sandbox
             prepared.command,
             cwd=workdir,
             env=prepared.env,

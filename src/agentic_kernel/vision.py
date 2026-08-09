@@ -177,7 +177,9 @@ class LocalVisionService:
             )
         return defaults
 
-    async def _ensure_server(self, config: dict[str, object]) -> None:
+    async def _ensure_server(  # noqa: C901 - dette: démarrage serveur multi-cas
+        self, config: dict[str, object]
+    ) -> None:
         if await self._reachable(str(config["base_url"])):
             return
         if await self._wait_for_existing_server(config):
@@ -230,7 +232,7 @@ class LocalVisionService:
             logs = self.content_root / "vision"
             logs.mkdir(parents=True, exist_ok=True)
             stream = (logs / "llama-server.log").open("ab", buffering=0)
-            self._process = subprocess.Popen(
+            self._process = subprocess.Popen(  # noqa: S603 - commande llama-server construite en interne
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=stream,

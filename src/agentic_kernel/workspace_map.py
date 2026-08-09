@@ -197,7 +197,7 @@ def _commands(root: Path) -> list[str]:
 def _git_status(root: Path) -> tuple[str | None, bool | None]:
     try:
         branch = subprocess.run(
-            ["git", "branch", "--show-current"],
+            ["git", "branch", "--show-current"],  # noqa: S607 - git résolu via PATH
             cwd=root,
             capture_output=True,
             text=True,
@@ -205,7 +205,7 @@ def _git_status(root: Path) -> tuple[str | None, bool | None]:
             check=False,
         )
         status = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain"],  # noqa: S607 - git résolu via PATH
             cwd=root,
             capture_output=True,
             text=True,

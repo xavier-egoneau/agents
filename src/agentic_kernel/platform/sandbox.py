@@ -69,6 +69,7 @@ class SandboxBackend(Protocol):
         runtime: RuntimeDirectories,
         *,
         allow_network: bool,
+        publish_ports: list[int] | None = None,
     ) -> PreparedExecution: ...
 
 
@@ -96,8 +97,9 @@ class UnavailableSandbox:
         runtime: RuntimeDirectories,
         *,
         allow_network: bool,
+        publish_ports: list[int] | None = None,
     ) -> PreparedExecution:
-        del allow_network
+        del allow_network, publish_ports
         mode = getattr(deps, "security_mode", SecurityMode.LIMITED)
         if mode in {SecurityMode.SAFE, SecurityMode.LIMITED}:
             raise PermissionError(
@@ -190,6 +192,31 @@ class DockerSandbox:
             )
         return executable, f"docker {probe.stdout.strip()}"
 
+    def image_available(self) -> tuple[bool, str]:
+        """Check if the sandbox image is locally available.
+
+        Returns (available, message). If the image is missing, the message
+        explains how to pull it. This avoids cryptic "executable not found"
+        errors when the real issue is a missing image.
+        """
+        try:
+            probe = subprocess.run(  # noqa: S603 - commande fixe
+                [self.executable, "image", "inspect", self.image],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"cannot inspect image: {type(exc).__name__}"
+        if probe.returncode != 0:
+            return False, (
+                f"sandbox image not found: {self.image}\n"
+                f"Pull it with: docker pull {self.image}\n"
+                f"Or set AMK_SANDBOX_IMAGE to a lighter image (e.g. node:22-bookworm)"
+            )
+        return True, f"image {self.image} available"
+
     def prepare(
         self,
         command: list[str],
@@ -197,7 +224,18 @@ class DockerSandbox:
         runtime: RuntimeDirectories,
         *,
         allow_network: bool,
+        publish_ports: list[int] | None = None,
     ) -> PreparedExecution:
+        # Verify the image is available before building the command. Without this
+        # check, Docker fails with cryptic "executable not found" errors when the
+        # real issue is a missing or corrupted image.
+        available, message = self.image_available()
+        if not available:
+            raise RuntimeError(
+                f"Docker sandbox unavailable: {message}\n"
+                f"The command was: {command}\n"
+                f"To fix: pull the image or set AMK_SANDBOX_IMAGE to a valid image."
+            )
         mode = getattr(deps, "security_mode", SecurityMode.LIMITED)
         # Le workspace est monté en lecture seule en mode `safe` : l'agent peut
         # inspecter et compiler, jamais modifier ce qu'il n'a pas le droit de
@@ -223,6 +261,9 @@ class DockerSandbox:
             f"--mount=type=bind,source={runtime.temporary},target=/tmp",
             f"--mount=type=bind,source={runtime.cache},target=/cache",
         ]
+        if allow_network and publish_ports:
+            for port in publish_ports:
+                arguments.extend(["--publish", f"{port}:{port}"])
         for key, value in sorted(_container_environment(runtime).items()):
             arguments.extend(["--env", f"{key}={value}"])
         arguments.append(self.image)
@@ -245,8 +286,8 @@ def _container_environment(runtime: RuntimeDirectories) -> dict[str, str]:
     """
     del runtime
     return {
-        "HOME": "/tmp",
-        "TMPDIR": "/tmp",
+        "HOME": "/tmp",  # noqa: S108 - chemin interne au conteneur éphémère
+        "TMPDIR": "/tmp",  # noqa: S108 - chemin interne au conteneur éphémère
         "XDG_CACHE_HOME": "/cache",
         "NPM_CONFIG_CACHE": "/cache/npm",
         "PIP_CACHE_DIR": "/cache/pip",
@@ -274,8 +315,9 @@ class MacOSSeatbeltSandbox:
         runtime: RuntimeDirectories,
         *,
         allow_network: bool,
+        publish_ports: list[int] | None = None,
     ) -> PreparedExecution:
-        del deps
+        del deps, publish_ports
         protected = {
             runtime.events_root.parent / "providers.json",
             runtime.events_root.parent / "secrets.json",
@@ -338,7 +380,11 @@ def sandbox_capabilities() -> SandboxCapabilities:
 
 
 def prepare_execution(
-    command: list[str], deps: Any, *, allow_network: bool = False
+    command: list[str],
+    deps: Any,
+    *,
+    allow_network: bool = False,
+    publish_ports: list[int] | None = None,
 ) -> PreparedExecution:
     runtime = runtime_directories(deps)
     return selected_backend().prepare(
@@ -346,6 +392,7 @@ def prepare_execution(
         deps,
         runtime,
         allow_network=allow_network,
+        publish_ports=publish_ports,
     )
 
 

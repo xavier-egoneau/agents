@@ -82,7 +82,9 @@ class ProviderFactory:
         except (AuthenticationError, ConfigurationError) as exc:
             return False, str(exc)
 
-    async def list_models(self, provider_id: str) -> tuple[list[str], str, str | None]:
+    async def list_models(  # noqa: C901 - dette: catalogage par provider
+        self, provider_id: str
+    ) -> tuple[list[str], str, str | None]:
         """Discover provider models live, with a deterministic configured fallback."""
         config = self.get_config(provider_id)
         configured = [
@@ -219,7 +221,7 @@ def _codex_client_version() -> str:
         return override
     try:
         result = subprocess.run(
-            ["codex", "--version"],
+            ["codex", "--version"],  # noqa: S607 - codex résolu via PATH
             capture_output=True,
             check=True,
             text=True,

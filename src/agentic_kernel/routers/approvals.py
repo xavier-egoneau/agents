@@ -23,7 +23,7 @@ class ApprovalBatchResolveBody(BaseModel):
     approved: bool
 
 
-def create_approval_router(
+def create_approval_router(  # noqa: C901 - dette: factory à plusieurs endpoints
     kernel: Kernel,
     running_tasks: dict[UUID, asyncio.Task[Any]],
     cron_service: CronService | None = None,
@@ -37,7 +37,9 @@ def create_approval_router(
         return kernel.list_approvals()
 
     @router.post("/{approval_id}/resolve", response_model=RunResult)
-    async def resolve_approval(approval_id: str, payload: ApprovalResolveBody) -> RunResult:
+    async def resolve_approval(  # noqa: C901 - dette: résolution multi-cas
+        approval_id: str, payload: ApprovalResolveBody
+    ) -> RunResult:
         try:
             approval_uuid = UUID(approval_id)
         except ValueError as exc:
@@ -79,7 +81,9 @@ def create_approval_router(
                 running_tasks.pop(session_id, None)
 
     @router.post("/resolve-batch", response_model=RunResult)
-    async def resolve_approval_batch(payload: ApprovalBatchResolveBody) -> RunResult:
+    async def resolve_approval_batch(  # noqa: C901 - dette: résolution par lot multi-cas
+        payload: ApprovalBatchResolveBody,
+    ) -> RunResult:
         try:
             first_id = UUID(payload.approval_ids[0])
         except ValueError as exc:

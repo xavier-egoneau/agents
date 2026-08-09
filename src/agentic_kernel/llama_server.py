@@ -160,9 +160,13 @@ class LlamaServerManager:
         if state is not None:
             alive = process_running(state.pid)
             is_llama = alive and "llama-server" in process_command(state.pid).lower()
-            if is_llama and state.model == model_name and state.args_hash == args_hash:
-                if self.health_ok():
-                    return state
+            if (
+                is_llama
+                and state.model == model_name
+                and state.args_hash == args_hash
+                and self.health_ok()
+            ):
+                return state
             if is_llama:
                 terminate_tree(state.pid)
             self._state_path().unlink(missing_ok=True)
@@ -254,9 +258,9 @@ class LlamaServerManager:
 
 
 def _http_status(url: str, timeout_seconds: float) -> int:
-    request = urllib.request.Request(url, method="GET")
+    request = urllib.request.Request(url, method="GET")  # noqa: S310 - health-check localhost
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
             return int(response.status)
     except urllib.error.HTTPError as exc:
         return int(exc.code)
@@ -277,6 +281,6 @@ def _spawn_detached(argv: list[str], log_path: Path) -> int:
             )
         else:
             kwargs["start_new_session"] = True
-        return subprocess.Popen(argv, **kwargs).pid  # type: ignore[arg-type]
+        return subprocess.Popen(argv, **kwargs).pid  # type: ignore[arg-type]  # noqa: S603 - argv interne, binaire absolu
     finally:
         log_handle.close()

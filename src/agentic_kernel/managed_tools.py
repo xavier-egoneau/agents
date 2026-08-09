@@ -121,7 +121,7 @@ def discovered_codegraph_executable() -> str | None:
 
 def install_codegraph(npm: str) -> str:
     """Install the CodeGraph CLI globally via npm and return its resolved path."""
-    subprocess.run([npm, "install", "--global", CODEGRAPH_NPM_PACKAGE], check=True)
+    subprocess.run([npm, "install", "--global", CODEGRAPH_NPM_PACKAGE], check=True)  # noqa: S603 - npm absolu, paquet constant
     executable = discovered_codegraph_executable()
     if executable is None:
         raise ConfigurationError(
@@ -173,7 +173,7 @@ class ManagedToolInstaller:
 
     @staticmethod
     def _release(repository: str) -> dict[str, Any]:
-        request = urllib.request.Request(
+        request = urllib.request.Request(  # noqa: S310 - URL GitHub API constante (https)
             GITHUB_API.format(repository=repository),
             headers={"Accept": "application/vnd.github+json", "User-Agent": "AMK-installer"},
         )
@@ -195,7 +195,7 @@ class ManagedToolInstaller:
 
     @staticmethod
     def _download(url: str, destination: Path) -> None:
-        request = urllib.request.Request(url, headers={"User-Agent": "AMK-installer"})
+        request = urllib.request.Request(url, headers={"User-Agent": "AMK-installer"})  # noqa: S310 - URL d'asset de release GitHub (https)
         with (
             urllib.request.urlopen(request, timeout=120) as response,  # noqa: S310
             destination.open("wb") as out,
@@ -217,7 +217,7 @@ class ManagedToolInstaller:
                 for member in package.infolist():
                     target = (destination / member.filename).resolve()
                     target.relative_to(destination.resolve())
-                package.extractall(destination)
+                package.extractall(destination)  # noqa: S202 - chemins contrôlés ci-dessus
             return
         with tarfile.open(archive, "r:gz") as package:
             package.extractall(destination, filter="data")

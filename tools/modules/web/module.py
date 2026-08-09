@@ -191,7 +191,7 @@ def _resolve_binary() -> str | None:
     return discovered_executable("ketch", "AMK_KETCH_BIN")
 
 
-def _build_command(
+def _build_command(  # noqa: C901 - dette: construction de commande multi-cas
     *,
     binary: str,
     action: Action,

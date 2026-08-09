@@ -185,9 +185,8 @@ class GitService:
             if not entry:
                 continue
             xy, path = entry[:2], entry[3:]
-            if "R" in xy or "C" in xy:
-                if index < len(parts):
-                    index += 1
+            if ("R" in xy or "C" in xy) and index < len(parts):
+                index += 1
             result.append((xy, path.replace("\\", "/")))
         return result
 
@@ -270,8 +269,8 @@ class GitService:
     def _run(root: Path, *args: str, check: bool = True) -> str:
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
-            completed = subprocess.run(
-                ["git", *args],
+            completed = subprocess.run(  # noqa: S603 - binaire git fixe, args internes
+                ["git", *args],  # noqa: S607 - git résolu via PATH
                 cwd=root,
                 capture_output=True,
                 text=True,
@@ -290,8 +289,8 @@ class GitService:
     def _run_bytes(root: Path, *args: str) -> bytes:
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
-            completed = subprocess.run(
-                ["git", *args],
+            completed = subprocess.run(  # noqa: S603 - binaire git fixe, args internes
+                ["git", *args],  # noqa: S607 - git résolu via PATH
                 cwd=root,
                 capture_output=True,
                 check=False,

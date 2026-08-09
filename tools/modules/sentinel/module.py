@@ -219,7 +219,7 @@ def _system_roots() -> tuple[Path, ...]:
     d'un scan en espace utilisateur.
     """
     if sys.platform == "win32":
-        systeme = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        systeme = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
         return (systeme, Path(r"C:\Program Files\WindowsApps"))
     if sys.platform == "darwin":
         return (Path("/System"), Path("/usr/bin"), Path("/usr/sbin"), Path("/usr/libexec"))
@@ -541,7 +541,7 @@ def enrich_ai_environment(rapport: SectionReport) -> SectionReport:
 
 
 def _windows_persistence() -> Iterator[Finding]:
-    import winreg  # noqa: PLC0415 - disponible sur Windows uniquement
+    import winreg  # disponible sur Windows uniquement
 
     emplacements = (
         (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", "HKCU\\Run"),
@@ -781,7 +781,7 @@ def scan_sections(sections: Iterable[str]) -> list[SectionReport]:
             continue
         try:
             rapports.append(collecteur())
-        except Exception as exc:  # noqa: BLE001 - une section en échec n'annule pas le scan
+        except Exception as exc:  # une section en échec n'annule pas le scan
             rapports.append(
                 SectionReport(nom, limitations=[f"section interrompue : {type(exc).__name__}"])
             )

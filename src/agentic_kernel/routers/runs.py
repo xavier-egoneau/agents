@@ -37,7 +37,7 @@ class SecurityModeBody(BaseModel):
     security_mode: SecurityMode
 
 
-def create_run_router(
+def create_run_router(  # noqa: C901 - dette: factory à plusieurs endpoints
     kernel: Kernel,
     running_tasks: dict[UUID, asyncio.Task[Any]],
     launch: LaunchRun,

@@ -34,7 +34,7 @@ OPENAI_CODEX = OAuthSpec(
     provider_id="openai-codex",
     client_id="app_EMoamEEZ73f0CkXaXp7hrann",
     authorize_url="https://auth.openai.com/oauth/authorize",
-    token_url="https://auth.openai.com/oauth/token",
+    token_url="https://auth.openai.com/oauth/token",  # noqa: S106 - URL d'endpoint, pas un secret
     redirect_uri="http://localhost:1455/auth/callback",
     scopes="openid profile email offline_access",
 )
@@ -43,7 +43,7 @@ CLAUDE = OAuthSpec(
     provider_id="claude",
     client_id="9d1c250a-e61b-44d9-88ed-5944d1962f5e",
     authorize_url="https://claude.ai/oauth/authorize",
-    token_url="https://platform.claude.com/v1/oauth/token",
+    token_url="https://platform.claude.com/v1/oauth/token",  # noqa: S106 - URL d'endpoint, pas un secret
     redirect_uri="http://localhost:53692/callback",
     scopes=(
         "org:create_api_key user:profile user:inference user:sessions:claude_code "
@@ -97,7 +97,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
     expected_path: ClassVar[str] = "/"
     expected_state: ClassVar[str] = ""
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:  # nom imposé par BaseHTTPRequestHandler
         parsed = urlparse(self.path)
         query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
         valid = (

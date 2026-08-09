@@ -180,7 +180,7 @@ class SessionProjection:
             )
             return sequence
 
-    def _project_event(
+    def _project_event(  # noqa: C901 - dette: projection par type d'événement
         self,
         db: sqlite3.Connection,
         event: Event,
@@ -581,7 +581,7 @@ class SessionProjection:
             artifact_rows = db.execute(
                 f"""SELECT run_id, payload_json FROM projected_artifacts
                     WHERE session_id=? AND run_id IN ({placeholders})
-                    ORDER BY sequence""",
+                    ORDER BY sequence""",  # noqa: S608 - placeholders ?, valeurs paramétrées
                 [str(session_id), *run_ids],
             ).fetchall()
         artifacts: dict[str, list[dict[str, Any]]] = {}
@@ -761,7 +761,7 @@ class SessionProjection:
         if run_ids:
             placeholders = ",".join("?" for _ in run_ids)
             db.execute(
-                f"DELETE FROM projected_run_transitions WHERE run_id IN ({placeholders})",
+                f"DELETE FROM projected_run_transitions WHERE run_id IN ({placeholders})",  # noqa: S608 - placeholders ?, valeurs paramétrées
                 run_ids,
             )
         for table in (
@@ -773,4 +773,4 @@ class SessionProjection:
             "projection_offsets",
             "projected_sessions",
         ):
-            db.execute(f"DELETE FROM {table} WHERE session_id=?", (value,))
+            db.execute(f"DELETE FROM {table} WHERE session_id=?", (value,))  # noqa: S608 - table issue d'un tuple constant

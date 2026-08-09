@@ -417,7 +417,8 @@ class PlanService:
             if plan_ids:
                 placeholders = ",".join("?" for _ in plan_ids)
                 db.execute(
-                    f"DELETE FROM plan_steps WHERE plan_id IN ({placeholders})", plan_ids
+                    f"DELETE FROM plan_steps WHERE plan_id IN ({placeholders})",  # noqa: S608 - placeholders ?, valeurs paramétrées
+                    plan_ids,
                 )
             cursor = db.execute("DELETE FROM plans WHERE session_id = ?", (str(session_id),))
         return cursor.rowcount

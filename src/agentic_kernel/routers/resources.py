@@ -104,7 +104,7 @@ def _validate_skill(project: ProjectConfig, skill_id: str, target: Path) -> None
         raise ConfigurationError(f"Le front matter doit déclarer exactement name: {skill_id}")
 
 
-def create_resource_router(
+def create_resource_router(  # noqa: C901 - dette: factory à plusieurs endpoints
     project: ProjectConfig,
     telegram_store: TelegramConfigStore | None = None,
 ) -> APIRouter:

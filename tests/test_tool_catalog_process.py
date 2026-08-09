@@ -298,3 +298,30 @@ def test_normalising_arguments_never_builds_a_shell_command() -> None:
     normalise = _process_module()._arguments
 
     assert normalise("echo a && rm -rf /") == ["echo", "a", "&&", "rm", "-rf", "/"]
+
+
+def test_http_server_detection() -> None:
+    """Les serveurs HTTP doivent être reconnus pour activer le réseau et les ports."""
+    is_server = _process_module()._is_http_server_command
+    assert is_server(["python", "-m", "http.server", "8000"])
+    assert is_server(["vite", "dev"])
+    assert is_server(["next", "dev"])
+    assert is_server(["npm", "run", "dev"])
+    assert not is_server(["echo", "hello"])
+
+
+def test_http_server_port_extraction() -> None:
+    """Le port du serveur doit être extrait des indicateurs explicites ou des
+    valeurs par défaut par outil."""
+    extract = _process_module()._http_server_port
+    assert extract(["python", "-m", "http.server", "8080"]) == 8080
+    assert extract(["python", "-m", "http.server"]) == 8000
+    assert extract(["npx", "serve", "-p", "3000"]) == 3000
+    assert extract(["npx", "serve", "--port", "5000"]) == 5000
+    assert extract(["vite", "dev"]) == 5173
+    assert extract(["next", "dev"]) == 3000
+    assert extract(["astro", "dev"]) == 5173
+    assert extract(["nuxt", "dev"]) == 3000
+    assert extract(["ng", "serve"]) == 4200
+    assert extract(["npm", "run", "dev"]) is None
+    assert extract(["echo", "hello"]) is None

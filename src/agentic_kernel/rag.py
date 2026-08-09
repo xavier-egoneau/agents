@@ -135,7 +135,7 @@ class RagService:
             )
         return db
 
-    async def index(
+    async def index(  # noqa: C901 - dette: indexation multi-étapes
         self,
         root: Path,
         extensions: set[str],
@@ -438,7 +438,7 @@ class RagService:
         """
         try:
             return (await self.embed([query]))[0], None
-        except Exception as exc:  # noqa: BLE001 — toute panne du service vaut repli
+        except Exception as exc:  # toute panne du service vaut repli
             return None, f"{type(exc).__name__}: {exc}"
 
     async def embed(self, texts: list[str]) -> list[list[float]]:

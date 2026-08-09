@@ -35,7 +35,9 @@ class GeneratedCommit(BaseModel):
     body: str = Field(default="", max_length=4_000)
 
 
-def create_git_router(project: ProjectConfig, service: GitService) -> APIRouter:
+def create_git_router(  # noqa: C901 - dette: factory à plusieurs endpoints
+    project: ProjectConfig, service: GitService
+) -> APIRouter:
     router = APIRouter(prefix="/api/git", tags=["git"])
 
     @router.get("/status")

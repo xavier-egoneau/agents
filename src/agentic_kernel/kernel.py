@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import json
 from dataclasses import asdict
 from datetime import datetime
@@ -48,9 +47,11 @@ from .orchestration import (
 from .providers import ProviderFactory
 from .run_executor import RunExecutor
 from .secrets import SecretStore
+from .session_recovery import recover_stale_sessions
 from .snapshots import SnapshotStore
 from .trace_context import bind_event_run_id
-from .vision import LocalVisionService, VisionUnavailable
+from .vision import LocalVisionService
+from .vision_preparation import VisionPreparation
 from .workflows import WorkflowDefinition, workflow_grants
 from .workspace_map import WorkspaceMapService
 
@@ -63,12 +64,14 @@ class Kernel:
         self.module_registry = ModuleRegistry(self.config.tools_root)
         self.events = JsonlEventStore(self.config.content_root / "sessions")
         self.events.rebuild_projection()
+        recover_stale_sessions(self.events)
         self.snapshots = SnapshotStore(self.config.content_root / "sessions")
         self.approvals = ApprovalStore(self.config.content_root / "sessions")
         self.approval_service = ApprovalService(self.approvals, self.events)
         self.secrets = SecretStore(self.config.content_root / "secrets.json")
         self.workspace_maps = WorkspaceMapService()
         self.vision = LocalVisionService(self.config.content_root)
+        self.vision_preparation = VisionPreparation(self.events, self.vision)
         self.context_registry = ModelContextRegistry(self.config.content_root)
         self.context = ContextService(
             config=self.config,
@@ -96,7 +99,9 @@ class Kernel:
         self.active_runs: dict[Any, RuntimeDeps] = {}
         self.git = GitService()
 
-    async def run(self, request: RunRequest) -> RunResult:
+    async def run(  # noqa: C901 - dette: boucle d'exécution centrale (point 2)
+        self, request: RunRequest
+    ) -> RunResult:
         display_prompt = request.prompt
         workspace = self.config.resolve_workspace(request.agent_id, request.workspace)
         command = self.config.resolve_command(request.prompt, workspace)
@@ -237,9 +242,9 @@ class Kernel:
         # raisonnement repartirait avec l'exception.
         exchanged: list[Any] = []
         try:
-            archived_images = self._archive_input_images(request, run_id)
+            archived_images = self.vision_preparation.archive_input_images(request, run_id)
             if request.images and not supports_vision:
-                request = await self._prepare_images_with_local_vision(
+                request = await self.vision_preparation.prepare_with_local_vision(
                     request, run_id, archived_images
                 )
             root_agent = self._build_agent(
@@ -463,134 +468,10 @@ class Kernel:
                         payload=payload.model_dump(),
                     )
                 )
-        except Exception:
+        except Exception:  # noqa: S110 - repli silencieux volontaire, voir commentaire
             # Git is an optional presentation capability and must never turn
             # an otherwise successful agent response into a failed run.
             pass
-
-    def _archive_input_images(self, request: RunRequest, run_id) -> list[tuple[Any, bytes, Path]]:
-        archived: list[tuple[Any, bytes, Path]] = []
-        artifact_root = self.events.directory / "artifacts" / str(request.session_id)
-        for index, image in enumerate(request.images, 1):
-            try:
-                raw = base64.b64decode(image.data_base64, validate=True)
-            except ValueError as exc:
-                raise VisionUnavailable("image encodée invalide") from exc
-            artifact_id = uuid4().hex
-            directory = artifact_root / artifact_id
-            directory.mkdir(parents=True, exist_ok=True)
-            safe_name = Path(image.name).name or f"image-{index}.png"
-            target = directory / safe_name
-            target.write_bytes(raw)
-            self.events.append(
-                Event(
-                    session_id=request.session_id,
-                    run_id=run_id,
-                    agent_id="kernel",
-                    type="artifact.created",
-                    payload={
-                        "artifact_id": artifact_id,
-                        "name": safe_name,
-                        "media_type": image.media_type,
-                        "kind": "input_image",
-                        "bytes": len(raw),
-                        # Voir `routers/artifacts.py` : le relatif est l'adresse,
-                        # l'absolu n'est qu'une trace de production.
-                        "relative_path": f"{artifact_id}/{safe_name}",
-                        "path": str(target),
-                        "sha256": hashlib.sha256(raw).hexdigest(),
-                    },
-                )
-            )
-            archived.append((image, raw, target))
-        return archived
-
-    async def _prepare_images_with_local_vision(
-        self,
-        request: RunRequest,
-        run_id,
-        archived: list[tuple[Any, bytes, Path]],
-    ) -> RunRequest:
-        observations: list[str] = []
-        for index, (image, raw, target) in enumerate(archived, 1):
-            artifact_id = target.parent.name
-            safe_name = target.name
-            self.events.append(
-                Event(
-                    session_id=request.session_id,
-                    run_id=run_id,
-                    agent_id="kernel",
-                    type="tool.started",
-                    payload={
-                        "tool_name": "image_inspect",
-                        "automatic": True,
-                        "artifact_id": artifact_id,
-                        "path": str(target),
-                    },
-                )
-            )
-            try:
-                observation = await self.vision.analyze_bytes(
-                    raw,
-                    image.media_type,
-                    (f"Analyse cette image pour répondre à la demande suivante : {request.prompt}"),
-                    "balanced",
-                )
-            except VisionUnavailable as exc:
-                self.events.append(
-                    Event(
-                        session_id=request.session_id,
-                        run_id=run_id,
-                        agent_id="kernel",
-                        type="tool.failed",
-                        payload={
-                            "tool_name": "image_inspect",
-                            "automatic": True,
-                            "artifact_id": artifact_id,
-                            "error_type": type(exc).__name__,
-                            "message": str(exc),
-                        },
-                    )
-                )
-                observations.append(
-                    f"## Image {index}: {safe_name}\n"
-                    "Analyse visuelle indisponible. L’image est bien jointe et archivée, "
-                    "mais son contenu n’a pas été observé. Ne déduis aucun détail visuel et "
-                    f"signale cette limite à l’utilisateur. Cause locale : {exc}"
-                )
-                continue
-            self.events.append(
-                Event(
-                    session_id=request.session_id,
-                    run_id=run_id,
-                    agent_id="kernel",
-                    type="tool.completed",
-                    payload={
-                        "tool_name": "image_inspect",
-                        "automatic": True,
-                        "artifact_id": artifact_id,
-                        "observation_chars": len(observation),
-                        "preview": observation[:500],
-                    },
-                )
-            )
-            observations.append(
-                f"## Image {index}: {safe_name}\n"
-                f"Artifact reference: `{artifact_id}`\n\n{observation}"
-            )
-        augmented = "\n\n".join(
-            [
-                request.prompt,
-                (
-                    "# Local vision observations\n\n"
-                    "The active model is text-only. The notes below state whether each "
-                    "attachment was analyzed locally. Use only recorded observations, "
-                    "never infer unavailable visual content, and state any limitation."
-                ),
-                *observations,
-            ]
-        )
-        return request.model_copy(update={"prompt": augmented, "images": []})
 
     def set_security_mode(self, session_id, mode: SecurityMode) -> bool:
         deps = self.active_runs.get(session_id)

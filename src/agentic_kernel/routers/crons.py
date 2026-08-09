@@ -50,7 +50,7 @@ class CronWorkflowAcceptanceBody(BaseModel):
 WorkflowProposalFactory = Callable[[CronJobInput], WorkflowProposalService]
 
 
-def create_cron_router(
+def create_cron_router(  # noqa: C901 - dette: factory à plusieurs endpoints
     service: CronService,
     scheduler: CronScheduler,
     launch: LaunchRun,
@@ -172,7 +172,9 @@ def create_cron_router(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.put("/{job_id}")
-    async def update_cron(job_id: str, payload: CronJobBody) -> dict[str, object]:
+    async def update_cron(  # noqa: C901 - dette: mise à jour multi-cas
+        job_id: str, payload: CronJobBody
+    ) -> dict[str, object]:
         try:
             previous = service.get(job_id)
             cron_payload = CronJobInput.model_validate(
