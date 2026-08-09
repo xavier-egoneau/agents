@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
 import platform
 import shutil
-import sys
+import subprocess
 import tempfile
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -115,36 +113,82 @@ class UnavailableSandbox:
         )
 
 
-class CodexCliSandbox:
-    """Use the open-source Codex CLI as a cross-platform OS sandbox helper."""
+class DockerSandbox:
+    """Exécute les commandes dans un conteneur Linux jetable.
+
+    Le même moteur sur les trois systèmes : le profil de sécurité s'écrit une
+    fois et ne se rejoue pas par plateforme. Sur Windows et macOS, Docker place
+    déjà les conteneurs Linux dans une machine virtuelle, ce qui ajoute une
+    frontière au-dessus des namespaces.
+
+    Le noyau reste partagé sur Linux natif. C'est une barrière solide contre un
+    agent qui se trompe ou qu'on a détourné par injection ; ce n'en est pas une
+    contre quelqu'un armé d'un exploit noyau. Les capacités le disent plutôt que
+    de laisser croire à une isolation de machine virtuelle.
+    """
 
     capabilities = SandboxCapabilities(
-        backend=f"codex-{platform.system().lower()}-sandbox",
+        backend="docker",
         process_tree_isolation=True,
         filesystem_isolation=True,
-        # Windows Firewall blocks public egress for the offline sandbox user,
-        # but loopback remains reachable at the socket layer. The Guardian
-        # still gates declared local/private targets, so do not overstate the
-        # OS-level network guarantee here.
-        network_isolation=platform.system() != "Windows",
+        network_isolation=True,
     )
 
-    def __init__(self, executable: str) -> None:
+    #: Image « tout compris » : Node, Python, Go, Rust, .NET, git. Elle pèse une
+    #: dizaine de gigaoctets, téléchargés une fois — le prix d'un bac à sable qui
+    #: sait exécuter les commandes de n'importe quel projet sans qu'on ait à
+    #: changer d'image en cours de route. `AMK_SANDBOX_IMAGE` permet d'en choisir
+    #: une plus légère, par exemple `node:22-bookworm` pour du web seul.
+    default_image = "mcr.microsoft.com/devcontainers/universal:2-linux"
+
+    def __init__(self, executable: str, image: str | None = None) -> None:
         self.executable = executable
+        self.image = image or os.getenv("AMK_SANDBOX_IMAGE") or self.default_image
 
     @staticmethod
     def discover() -> str | None:
-        if os.getenv("AMK_CODEX_SANDBOX", "1").casefold() in {"0", "false", "no", "off"}:
-            return None
-        executable = shutil.which("codex")
-        if executable is None:
-            return None
-        # Codex's unelevated Windows fallback refuses the restricted read
-        # carve-outs AMK needs to hide provider and credential files. Never
-        # silently weaken the profile just to make a command run.
-        if platform.system() == "Windows" and not _codex_windows_elevated():
-            return None
+        executable, _ = DockerSandbox.status()
         return executable
+
+    @staticmethod
+    def status() -> tuple[str | None, str]:
+        """Chemin du client et raison lisible quand il n'est pas exploitable.
+
+        Un client installé ne suffit pas : le démon doit répondre. Docker Desktop
+        peut être présent et arrêté, et prétendre à l'isolation dans ce cas
+        ferait échouer chaque commande au lieu de retomber proprement sur le
+        régime des autorisations.
+
+        La raison est distinguée parce que les remèdes n'ont rien à voir :
+        « absent du PATH » se règle en rouvrant un terminal, « démon muet » en
+        démarrant Docker. Un diagnostic qui dit seulement « pas d'isolation »
+        laisse chercher au mauvais endroit.
+        """
+        if os.getenv("AMK_DOCKER_SANDBOX", "1").casefold() in {"0", "false", "no", "off"}:
+            return None, "désactivé par AMK_DOCKER_SANDBOX"
+        executable = shutil.which("docker")
+        if executable is None:
+            return None, (
+                "client `docker` introuvable dans le PATH — rouvrir le terminal "
+                "après l'installation de Docker Desktop"
+            )
+        try:
+            probe = subprocess.run(  # noqa: S603 - commande fixe, sans entrée utilisateur
+                [executable, "version", "--format", "{{.Server.Version}}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, f"client `docker` injoignable : {type(exc).__name__}"
+        if probe.returncode != 0 or not probe.stdout.strip():
+            detail = (probe.stderr or probe.stdout).strip().splitlines()
+            return None, (
+                "démon Docker sans réponse — démarrer Docker Desktop"
+                + (f" ({detail[0][:120]})" if detail else "")
+            )
+        return executable, f"docker {probe.stdout.strip()}"
 
     def prepare(
         self,
@@ -155,59 +199,60 @@ class CodexCliSandbox:
         allow_network: bool,
     ) -> PreparedExecution:
         mode = getattr(deps, "security_mode", SecurityMode.LIMITED)
-        parent = ":read-only" if mode is SecurityMode.SAFE else ":workspace"
-        filesystem: dict[str, str] = {
-            ":root": "deny",
-            ":minimal": "read",
-            str(runtime.runtime_root.resolve()): "write",
-            str(runtime.artifact_root.resolve()): "write",
-            str(Path(sys.base_prefix).resolve()): "read",
-        }
-        protected = {
-            runtime.events_root.parent / "providers.json",
-            runtime.events_root.parent / "secrets.json",
-            Path.home() / ".ssh",
-            Path.home() / ".gnupg",
-            Path.home() / ".aws",
-            Path.home() / ".kube",
-            Path.home() / ".codex",
-        }
-        filesystem.update(
-            {str(path.resolve()): "deny" for path in protected if path.exists()}
-        )
-        entries = ", ".join(
-            f"{json.dumps(path)}={json.dumps(permission)}"
-            for path, permission in sorted(filesystem.items())
-        )
-        network = (
-            '{enabled=true, mode="full", allow_local_binding=true}'
-            if allow_network
-            else "{enabled=false}"
-        )
-        profile = (
-            f'{{ extends={json.dumps(parent)}, filesystem={{{entries}}}, '
-            f"network={network} }}"
-        )
-        sandbox_command = [
-                self.executable,
-                "sandbox",
-                "-C",
-                str(runtime.workspace),
-                "-P",
-                "amk-runtime",
-                "-c",
-                f"permissions.amk-runtime={profile}",
-            ]
-        if not allow_network:
-            sandbox_command.append("--sandbox-state-disable-network")
-        sandbox_command.extend(["--", *command])
+        # Le workspace est monté en lecture seule en mode `safe` : l'agent peut
+        # inspecter et compiler, jamais modifier ce qu'il n'a pas le droit de
+        # modifier.
+        workspace_mode = "ro" if mode is SecurityMode.SAFE else "rw"
+        arguments = [
+            self.executable,
+            "run",
+            "--rm",
+            "--interactive",
+            # Ce que le conteneur ne peut pas faire, quoi qu'il exécute.
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--pids-limit=512",
+            "--memory=2g",
+            f"--network={'bridge' if allow_network else 'none'}",
+            "--workdir=/workspace",
+            f"--mount=type=bind,source={runtime.workspace},target=/workspace,"
+            f"{'readonly' if workspace_mode == 'ro' else 'readonly=false'}",
+            # Les artefacts doivent survivre au conteneur : ils sont lus par
+            # l'interface après coup.
+            f"--mount=type=bind,source={runtime.artifact_root},target=/artifacts",
+            f"--mount=type=bind,source={runtime.temporary},target=/tmp",
+            f"--mount=type=bind,source={runtime.cache},target=/cache",
+        ]
+        for key, value in sorted(_container_environment(runtime).items()):
+            arguments.extend(["--env", f"{key}={value}"])
+        arguments.append(self.image)
+        arguments.extend(command)
         return PreparedExecution(
-            command=sandbox_command,
+            command=arguments,
             env=runtime_environment(runtime),
             profile_path=None,
             sandboxed=True,
             backend=self.capabilities.backend,
         )
+
+
+def _container_environment(runtime: RuntimeDirectories) -> dict[str, str]:
+    """Environnement vu depuis l'intérieur, en chemins du conteneur.
+
+    Réutiliser les chemins de l'hôte donnerait des variables qui ne désignent
+    rien une fois franchie la frontière — et des outils qui écrivent leur cache
+    dans un dossier créé au hasard, perdu à la fin du conteneur.
+    """
+    del runtime
+    return {
+        "HOME": "/tmp",
+        "TMPDIR": "/tmp",
+        "XDG_CACHE_HOME": "/cache",
+        "NPM_CONFIG_CACHE": "/cache/npm",
+        "PIP_CACHE_DIR": "/cache/pip",
+        "AMK_ARTIFACTS": "/artifacts",
+        "NO_COLOR": "1",
+    }
 
 
 class MacOSSeatbeltSandbox:
@@ -238,7 +283,6 @@ class MacOSSeatbeltSandbox:
             Path.home() / ".gnupg",
             Path.home() / ".aws",
             Path.home() / ".kube",
-            Path.home() / ".codex",
         }
         lines = [
             "(version 1)",
@@ -276,10 +320,14 @@ class MacOSSeatbeltSandbox:
 
 
 def selected_backend() -> SandboxBackend:
-    if codex := CodexCliSandbox.discover():
-        return CodexCliSandbox(codex)
-    if platform.system() == "Windows" and shutil.which("codex"):
-        return UnavailableSandbox("Windows", "codex-windows-unelevated-insufficient")
+    """Premier backend capable d'isoler réellement, sinon aucun.
+
+    Docker passe devant : c'est le seul qui offre le même profil sur les trois
+    systèmes, et le choix explicite du projet. Le seatbelt macOS reste derrière
+    pour une machine sans démon Docker.
+    """
+    if docker := DockerSandbox.discover():
+        return DockerSandbox(docker)
     if MacOSSeatbeltSandbox.available():
         return MacOSSeatbeltSandbox()
     return UnavailableSandbox(platform.system())
@@ -359,11 +407,3 @@ def _seatbelt(path: Path) -> str:
     return str(path.resolve()).replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _codex_windows_elevated() -> bool:
-    codex_home = Path(os.getenv("CODEX_HOME", Path.home() / ".codex")).expanduser()
-    try:
-        config = tomllib.loads((codex_home / "config.toml").read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return False
-    windows = config.get("windows")
-    return isinstance(windows, dict) and windows.get("sandbox") == "elevated"

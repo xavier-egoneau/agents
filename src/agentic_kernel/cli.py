@@ -25,7 +25,6 @@ from .models import RunRequest, RunStatus, SecurityMode
 from .modules import ModuleRegistry
 from .paths import application_root, runtime_layout
 from .providers import ProviderFactory
-from .sandbox_setup import setup_windows_sandbox
 from .scheduler import CronService
 from .searxng import SearxngService
 from .web_launcher import run_web
@@ -155,22 +154,6 @@ def doctor() -> None:
         typer.echo(f"{check.status:10} {check.name:24} {check.detail}")
     if any(check.required and check.status in {"missing", "error"} for check in checks):
         raise typer.Exit(1)
-
-
-@sandbox_app.command("setup")
-def sandbox_setup() -> None:
-    """Run the official Codex elevated Windows sandbox setup flow."""
-    typer.echo("Configuration du sandbox Windows élevé…")
-    typer.echo("Une confirmation administrateur Windows peut apparaître.")
-    try:
-        result = asyncio.run(setup_windows_sandbox())
-    except KernelError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(2) from exc
-    if not result.success:
-        typer.echo(f"error: {result.detail}", err=True)
-        raise typer.Exit(2)
-    typer.echo(f"Sandbox {result.mode} prêt.")
 
 
 @app.command("run")

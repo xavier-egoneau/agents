@@ -5,9 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
+import agentic_kernel.platform.sandbox as sandbox_module
 from agentic_kernel.models import SecurityMode
 from agentic_kernel.platform.sandbox import (
-    CodexCliSandbox,
+    DockerSandbox,
     MacOSSeatbeltSandbox,
     prepare_execution,
     runtime_directories,
@@ -66,33 +69,94 @@ def test_seatbelt_profile_preserves_existing_macos_policy(tmp_path: Path) -> Non
         prepared.cleanup()
 
 
-def test_codex_profile_is_workspace_scoped_and_offline_by_default(tmp_path: Path) -> None:
+def test_the_container_is_offline_and_stripped_of_capabilities(tmp_path: Path) -> None:
+    """Ce que le conteneur ne peut pas faire compte plus que ce qu'il exécute.
+
+    Sans `--cap-drop=ALL` ni `--network=none`, un conteneur reste une machine
+    complète avec une sortie réseau : l'isolation du système de fichiers seule
+    laisserait passer l'exfiltration.
+    """
     deps = _deps(tmp_path, SecurityMode.LIMITED)
     runtime = runtime_directories(deps)
 
-    prepared = CodexCliSandbox("codex").prepare(
+    prepared = DockerSandbox("docker", image="image:test").prepare(
         ["example", "arg"], deps, runtime, allow_network=False
     )
 
-    override = prepared.command[prepared.command.index("-c") + 1]
-    assert 'extends=":workspace"' in override
-    assert '\":root\"=\"deny\"' in override
-    assert '\":minimal\"=\"read\"' in override
-    assert "network={enabled=false}" in override
-    assert "--sandbox-state-disable-network" in prepared.command
-    assert str(runtime.runtime_root).replace("\\", "\\\\") in override
-    assert prepared.command[-2:] == ["example", "arg"]
+    assert "--cap-drop=ALL" in prepared.command
+    assert "--security-opt=no-new-privileges" in prepared.command
+    assert "--network=none" in prepared.command
+    assert prepared.command[-3:] == ["image:test", "example", "arg"]
+    assert prepared.sandboxed is True
 
 
-def test_codex_safe_profile_remains_read_only(tmp_path: Path) -> None:
+def test_the_workspace_is_mounted_read_only_in_safe_mode(tmp_path: Path) -> None:
     deps = _deps(tmp_path, SecurityMode.SAFE)
     runtime = runtime_directories(deps)
 
-    prepared = CodexCliSandbox("codex").prepare(
+    prepared = DockerSandbox("docker", image="image:test").prepare(
         ["example"], deps, runtime, allow_network=True
     )
 
-    override = prepared.command[prepared.command.index("-c") + 1]
-    assert 'extends=":read-only"' in override
-    assert 'network={enabled=true, mode="full", allow_local_binding=true}' in override
-    assert "--sandbox-state-disable-network" not in prepared.command
+    montage = next(item for item in prepared.command if "target=/workspace" in item)
+    assert montage.endswith(",readonly")
+    # Le réseau demandé explicitement reste ouvert : c'est le Guardian qui a
+    # tranché en amont, le backend n'a pas à le rejuger.
+    assert "--network=bridge" in prepared.command
+
+
+def test_container_paths_replace_host_paths_in_the_environment(tmp_path: Path) -> None:
+    """Réutiliser les chemins de l'hôte donnerait des variables qui ne
+    désignent rien une fois la frontière franchie."""
+    deps = _deps(tmp_path, SecurityMode.LIMITED)
+    runtime = runtime_directories(deps)
+
+    prepared = DockerSandbox("docker", image="image:test").prepare(
+        ["example"], deps, runtime, allow_network=False
+    )
+
+    variables = dict(
+        item.split("=", 1)
+        for index, item in enumerate(prepared.command)
+        if index > 0 and prepared.command[index - 1] == "--env"
+    )
+    assert variables["HOME"] == "/tmp"
+    assert variables["XDG_CACHE_HOME"] == "/cache"
+    assert str(tmp_path) not in " ".join(f"{k}={v}" for k, v in variables.items())
+
+
+def test_a_missing_client_and_a_stopped_daemon_are_told_apart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Les deux remèdes n'ont rien à voir.
+
+    « Absent du PATH » se règle en rouvrant un terminal, « démon muet » en
+    démarrant Docker. Un diagnostic qui dit seulement « pas d'isolation » laisse
+    chercher au mauvais endroit — c'est ce qui s'est produit.
+    """
+    monkeypatch.delenv("AMK_DOCKER_SANDBOX", raising=False)
+    monkeypatch.setattr(sandbox_module.shutil, "which", lambda name: None)
+
+    assert "PATH" in DockerSandbox.status()[1]
+
+    monkeypatch.setattr(sandbox_module.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        sandbox_module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="cannot connect to the Docker daemon"
+        ),
+    )
+
+    executable, raison = DockerSandbox.status()
+    assert executable is None
+    assert "démarrer Docker Desktop" in raison
+    assert "cannot connect" in raison
+
+
+def test_the_backend_can_be_turned_off_without_touching_the_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AMK_DOCKER_SANDBOX", "0")
+
+    assert DockerSandbox.discover() is None
