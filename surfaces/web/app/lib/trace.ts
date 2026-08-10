@@ -57,6 +57,36 @@ export function traceState(event: TraceEvent, isLast: boolean, live: boolean) {
   return "done";
 }
 
+export type RunStats = { outputTokens: number; durationMs: number };
+
+/**
+ * Vitesse d'écriture de chaque run : tokens de réponse rapportés à la durée
+ * mur à mur (session.started → session.completed), lues dans le journal.
+ */
+export function runStatsByRunId(events: TraceEvent[]): Map<string, RunStats> {
+  const startedAt = new Map<string, number>();
+  const stats = new Map<string, RunStats>();
+  for (const event of events) {
+    if (event.type === "session.started") {
+      startedAt.set(event.run_id, Date.parse(event.timestamp));
+      continue;
+    }
+    if (event.type !== "session.completed") continue;
+    const usage = event.payload.usage;
+    const outputTokens = usage && typeof usage === "object"
+      ? Number((usage as Record<string, unknown>).output_tokens)
+      : NaN;
+    const started = startedAt.get(event.run_id);
+    const durationMs = started !== undefined
+      ? Date.parse(event.timestamp) - started
+      : NaN;
+    if (Number.isFinite(outputTokens) && Number.isFinite(durationMs)) {
+      stats.set(event.run_id, { outputTokens, durationMs });
+    }
+  }
+  return stats;
+}
+
 export function traceEventsForRun(events: TraceEvent[], rootRunId?: string) {
   if (!rootRunId) return [];
   const included = new Set([rootRunId]);

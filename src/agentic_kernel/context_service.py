@@ -17,6 +17,15 @@ from .errors import ConfigurationError
 from .models import Event, RunError, RunResult, RunStatus
 
 
+def effective_context_window(declared: int | None, cap: int | None) -> int | None:
+    """Borne la fenêtre déclarée par ce que le serveur alloue vraiment."""
+    if cap is None:
+        return declared
+    if declared is None:
+        return cap
+    return min(declared, cap)
+
+
 class ModelContextRegistry:
     """Durable registry for provider/model context-window metadata."""
 
@@ -193,8 +202,14 @@ class ContextService:
         session_id,
         provider_id: str,
         model_name: str | None,
+        context_window_tokens: int | None = None,
+        compaction_threshold_ratio: float = 0.7,
     ) -> dict[str, Any]:
-        window = self.registry.get(provider_id, model_name)
+        window = (
+            context_window_tokens
+            if context_window_tokens is not None
+            else self.registry.get(provider_id, model_name)
+        )
         estimated = 0
         observed = None
         compaction_count = 0
@@ -233,7 +248,7 @@ class ContextService:
             "estimated_request_tokens": complete_estimate,
             "observed_input_tokens": observed,
             "estimated_ratio": ratio,
-            "compaction_threshold_ratio": 0.7,
+            "compaction_threshold_ratio": compaction_threshold_ratio,
             "compaction_count": compaction_count,
             "measurement": "observed" if observed is not None else "estimated",
             "calibration_factor": calibration_factor,
@@ -247,6 +262,7 @@ class ContextService:
         agent_id="kernel",
         *,
         context_window_tokens: int | None = None,
+        compaction_threshold_ratio: float = 0.7,
         supports_vision: bool = True,
     ):
         events = self.events.read(session_id)
@@ -285,7 +301,7 @@ class ContextService:
                     run_id=run_id,
                     agent_id=agent_id,
                     type="context.window_unknown",
-                    payload={"compaction_threshold": 0.7},
+                    payload={"compaction_threshold": compaction_threshold_ratio},
                 )
             )
         return history or None
@@ -300,6 +316,8 @@ class ContextService:
         model_name: str | None,
         context_window_tokens: int | None,
         workspace: Path,
+        server_cap: int | None = None,
+        trigger_ratio: float = 0.7,
     ) -> RunResult:
         """Execute deterministic context commands without calling a provider."""
         run_id = uuid4()
@@ -330,6 +348,8 @@ class ContextService:
                 command=command,
                 provider_id=provider_id,
                 model_name=model_name,
+                server_cap=server_cap,
+                trigger_ratio=trigger_ratio,
             )
         else:
             status = RunStatus.SUCCESS
@@ -338,6 +358,7 @@ class ContextService:
                 provider_id=provider_id,
                 model_name=model_name,
                 context_window_tokens=context_window_tokens,
+                trigger_ratio=trigger_ratio,
             )
             event_type = "context.inspected"
         self.events.append(
@@ -379,6 +400,8 @@ class ContextService:
         command: str,
         provider_id: str,
         model_name: str | None,
+        server_cap: int | None = None,
+        trigger_ratio: float = 0.7,
     ) -> tuple[RunStatus, str, str, dict[str, Any]]:
         raw_value = display_prompt.lstrip()[len(command) :].strip()
         try:
@@ -394,13 +417,22 @@ class ContextService:
                 "context.window_update_failed",
                 {"error": str(exc)},
             )
+        effective = effective_context_window(size, server_cap)
+        output = (
+            f"Fenêtre enregistrée pour `{provider_id}/{model_name}` : "
+            f"**{size:,} tokens**. La compaction automatique se déclenchera "
+            f"à **{math.floor(effective * trigger_ratio):,} tokens** "
+            f"({trigger_ratio:.0%} de la fenêtre effective)."
+        )
+        if effective != size:
+            output += (
+                f" Attention : le serveur llama.cpp n'alloue que **{server_cap:,} tokens** "
+                "(champ « fenêtre de contexte » du provider) et c'est ce plafond qui "
+                "s'applique. Augmente-le pour utiliser tout l'espace déclaré."
+            )
         return (
             RunStatus.SUCCESS,
-            (
-                f"Fenêtre enregistrée pour `{provider_id}/{model_name}` : "
-                f"**{size:,} tokens**. La compaction automatique se déclenchera "
-                f"à **{math.floor(size * 0.7):,} tokens**."
-            ),
+            output,
             "context.window_updated",
             {
                 "provider_id": provider_id,
@@ -417,6 +449,7 @@ class ContextService:
         provider_id: str,
         model_name: str | None,
         context_window_tokens: int | None,
+        trigger_ratio: float = 0.7,
     ) -> tuple[str, dict[str, Any]]:
         events = self.events.read(session_id)
         snapshot = next(
@@ -454,8 +487,8 @@ class ContextService:
                     else "- Occupation estimée : indisponible"
                 ),
                 (
-                    f"- Seuil automatique (70 %) : "
-                    f"**{math.floor(context_window_tokens * 0.7):,} tokens**"
+                    f"- Seuil automatique ({trigger_ratio:.0%}) : "
+                    f"**{math.floor(context_window_tokens * trigger_ratio):,} tokens**"
                     if context_window_tokens
                     else "- Seuil automatique : inconnu — utilise `/model-context <tokens>`"
                 ),

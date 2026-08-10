@@ -20,6 +20,7 @@ function compactTokens(value: number): string {
 
 export function ContextMeter({ status }: { status: ContextStatus | null }) {
   const ratio = status?.estimated_ratio;
+  const threshold = status?.compaction_threshold_ratio ?? 0.7;
   const windowTokens = status?.context_window_tokens;
   const displayedTokens = status?.observed_input_tokens
     ?? status?.estimated_request_tokens
@@ -30,7 +31,7 @@ export function ContextMeter({ status }: { status: ContextStatus | null }) {
       className={[
         "context-meter",
         ratio == null ? "unknown" : "",
-        (ratio || 0) >= 0.7 ? "critical" : (ratio || 0) >= 0.5 ? "warning" : "",
+        (ratio || 0) >= threshold ? "critical" : (ratio || 0) >= threshold - 0.2 ? "warning" : "",
       ].filter(Boolean).join(" ")}
       title={
         windowTokens
@@ -56,7 +57,11 @@ export function ContextMeter({ status }: { status: ContextStatus | null }) {
           className="context-meter-fill"
           style={{ width: ratio == null ? "100%" : `${Math.min(100, ratio * 100)}%` }}
         />
-        <i className="context-threshold" title="Compaction automatique à 70 %" />
+        <i
+          className="context-threshold"
+          style={{ left: `${threshold * 100}%` }}
+          title={`Compaction automatique à ${Math.round(threshold * 100)} %`}
+        />
       </div>
     </div>
   );

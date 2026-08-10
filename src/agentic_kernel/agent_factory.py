@@ -8,10 +8,12 @@ from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.toolsets import FilteredToolset
 
 from .compaction import ContextWindowCompaction
+from .context_service import effective_context_window
 from .errors import ConfigurationError
 from .guardian import GuardianToolset
 from .models import SecurityMode
 from .orchestration import RuntimeDeps, make_neutral_subagent_toolset, make_subagents
+from .providers import compaction_trigger_ratio, server_context_cap
 from .skills import render_skill, skill_catalog_instruction, skill_toolset
 from .workflows import WorkflowDefinition, render_workflow_instructions
 
@@ -60,14 +62,17 @@ class AgentFactory:
             )
         config = configs[agent_id]
         resolved_provider_id = provider_override or config.provider
+        provider_config = provider_factory.get_config(resolved_provider_id)
         resolved_model_name = (
             model_override
             or config.model
-            or provider_factory.get_config(resolved_provider_id).model
+            or provider_config.model
         )
-        context_window_tokens = self.context_registry.get(
-            resolved_provider_id, resolved_model_name
+        context_window_tokens = effective_context_window(
+            self.context_registry.get(resolved_provider_id, resolved_model_name),
+            server_context_cap(provider_config),
         )
+        trigger_ratio = compaction_trigger_ratio(provider_config)
         loaded_modules = self.module_registry.load_enabled()
         implicit_skills = ["user-memory"] if config.user_memory and "user-memory" in skills else []
         requested_skills = list(
@@ -115,6 +120,7 @@ class AgentFactory:
                 provider_id=resolved_provider_id,
                 model_name=resolved_model_name,
                 context_window_tokens=context_window_tokens,
+                compaction_threshold_ratio=trigger_ratio,
                 agent_id=config.id,
                 agent_description=config.description,
             ),
@@ -200,6 +206,7 @@ class AgentFactory:
                 context_window_tokens=context_window_tokens,
                 all_tool_names=known_tools,
                 overhead_tokens=overhead,
+                trigger_ratio=trigger_ratio,
                 force=force_compaction,
             )
         )
@@ -216,6 +223,7 @@ class AgentFactory:
                     provider_id=resolved_provider_id,
                     model_name=resolved_model_name,
                     context_window_tokens=context_window_tokens,
+                    compaction_threshold_ratio=trigger_ratio,
                     # Le sous-agent neutre tient son rôle du prompt : lui donner
                     # l'identité du parent le ferait répondre à sa place.
                     agent_id=f"{config.id}_subagent",
@@ -236,6 +244,7 @@ class AgentFactory:
                     context_window_tokens=context_window_tokens,
                     all_tool_names=known_tools,
                     overhead_tokens=overhead,
+                    trigger_ratio=trigger_ratio,
                 )
             ],
             output_type=str,

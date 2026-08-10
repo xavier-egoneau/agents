@@ -26,13 +26,19 @@ from .agent_factory import AgentFactory
 from .approval_service import ApprovalResume, ApprovalService, CronTestApprovalBatch
 from .approvals import ApprovalStore
 from .config import ProjectConfig
-from .context_service import ContextService, ModelContextRegistry, without_images
+from .context_service import (
+    ContextService,
+    ModelContextRegistry,
+    effective_context_window,
+    without_images,
+)
 from .errors import AuthenticationError, ConfigurationError, KernelError
 from .events import JsonlEventStore
 from .git_service import GitService
 from .models import (
     ApprovalRequest,
     Event,
+    ProviderConfig,
     RunArtifact,
     RunError,
     RunRequest,
@@ -44,7 +50,11 @@ from .modules import ModuleRegistry
 from .orchestration import (
     RuntimeDeps,
 )
-from .providers import ProviderFactory
+from .providers import (
+    ProviderFactory,
+    compaction_trigger_ratio,
+    server_context_cap,
+)
 from .run_executor import RunExecutor
 from .secrets import SecretStore
 from .session_recovery import recover_stale_sessions
@@ -142,7 +152,9 @@ class Kernel:
         provider_config = provider_factory.get_config(active_provider_id)
         active_model = request.model or agent_config.model or provider_config.model
         supports_vision = bool(getattr(provider_config, "vision", False))
-        context_window_tokens = self._model_context_window(active_provider_id, active_model)
+        context_window_tokens = self._model_context_window(
+            active_provider_id, active_model, provider_config
+        )
         if command and command["command"] in {"/context", "/model-context"}:
             return self._run_native_context_command(
                 request=request,
@@ -152,6 +164,8 @@ class Kernel:
                 model_name=active_model,
                 context_window_tokens=context_window_tokens,
                 workspace=workspace,
+                server_cap=server_context_cap(provider_config),
+                trigger_ratio=compaction_trigger_ratio(provider_config),
             )
         pending = [
             approval
@@ -269,6 +283,7 @@ class Kernel:
                 run_id,
                 request.agent_id,
                 context_window_tokens=context_window_tokens,
+                compaction_threshold_ratio=compaction_trigger_ratio(provider_config),
                 overhead_tokens=self._context_overhead_tokens(
                     agent_config, skills, request.prompt, workspace
                 ),
@@ -571,7 +586,9 @@ class Kernel:
             tool_catalog=self._tool_catalog(),
             provider_id=active_provider_id,
             model_name=active_model,
-            context_window_tokens=self._model_context_window(active_provider_id, active_model),
+            context_window_tokens=self._model_context_window(
+                active_provider_id, active_model, provider_config
+            ),
         )
         deps.approved_scopes.update(prepared.approved_scopes)
         agent = self._build_agent(
@@ -809,6 +826,8 @@ class Kernel:
         model_name: str | None,
         context_window_tokens: int | None,
         workspace: Path,
+        server_cap: int | None = None,
+        trigger_ratio: float = 0.7,
     ) -> RunResult:
         return self.context.run_native_command(
             request=request,
@@ -818,6 +837,8 @@ class Kernel:
             model_name=model_name,
             context_window_tokens=context_window_tokens,
             workspace=workspace,
+            server_cap=server_cap,
+            trigger_ratio=trigger_ratio,
         )
 
     @staticmethod
@@ -837,10 +858,24 @@ class Kernel:
         model_name: str | None,
     ) -> dict[str, Any]:
         """Return a measured context status without creating a model turn."""
+        try:
+            provider_config = ProviderFactory(self.config.providers()).get_config(
+                provider_id
+            )
+        except ConfigurationError:
+            provider_config = None
         return self.context.status(
             session_id=session_id,
             provider_id=provider_id,
             model_name=model_name,
+            context_window_tokens=self._model_context_window(
+                provider_id, model_name, provider_config
+            ),
+            compaction_threshold_ratio=(
+                compaction_trigger_ratio(provider_config)
+                if provider_config is not None
+                else 0.7
+            ),
         )
 
     def _knowledge_instruction(self, request: RunRequest) -> str:
@@ -878,8 +913,18 @@ class Kernel:
             return 1.0
         return max(1.0, float(projected.get("calibration_factor") or 1.0))
 
-    def _model_context_window(self, provider_id: str, model_name: str | None) -> int | None:
-        return self.context_registry.get(provider_id, model_name)
+    def _model_context_window(
+        self,
+        provider_id: str,
+        model_name: str | None,
+        provider_config: ProviderConfig | None = None,
+    ) -> int | None:
+        # La fenêtre déclarée (/model-context) ne peut pas dépasser ce que le
+        # serveur llama.cpp administré alloue au démarrage (`--ctx-size`) :
+        # c'est lui qui rejette la requête, pas le kernel.
+        declared = self.context_registry.get(provider_id, model_name)
+        cap = server_context_cap(provider_config) if provider_config is not None else None
+        return effective_context_window(declared, cap)
 
     @staticmethod
     def _estimate_tokens(value: str) -> int:
@@ -900,6 +945,7 @@ class Kernel:
         agent_id="kernel",
         *,
         context_window_tokens: int | None = None,
+        compaction_threshold_ratio: float = 0.7,
         overhead_tokens: int = 0,
         supports_vision: bool = True,
     ):
@@ -908,6 +954,7 @@ class Kernel:
             run_id,
             agent_id,
             context_window_tokens=context_window_tokens,
+            compaction_threshold_ratio=compaction_threshold_ratio,
             supports_vision=supports_vision,
         )
 
@@ -1181,6 +1228,7 @@ def _runtime_context_instruction(
     provider_id: str | None = None,
     model_name: str | None = None,
     context_window_tokens: int | None = None,
+    compaction_threshold_ratio: float = 0.7,
     agent_id: str | None = None,
     agent_description: str | None = None,
 ) -> str:
@@ -1211,5 +1259,6 @@ def _runtime_context_instruction(
         f"Active provider/model: {provider_id or 'unknown'}/{model_name or 'unknown'}\n"
         f"Model context window: "
         f"{context_window_tokens if context_window_tokens is not None else 'unknown'} tokens\n"
-        "Automatic compaction threshold: 70% of the model context window"
+        f"Automatic compaction threshold: {compaction_threshold_ratio:.0%} "
+        "of the model context window"
     )

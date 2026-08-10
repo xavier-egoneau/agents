@@ -18,6 +18,28 @@ from .provider_adapters import (
 )
 
 
+def compaction_trigger_ratio(config: ProviderConfig) -> float:
+    """Seuil de déclenchement de la compaction, selon la nature du provider.
+
+    Un modèle local sert à volonté et sa fenêtre est connue précisément
+    (allouée par le serveur) : on peut la remplir à 90 % avant de compacter.
+    Un provider cloud facture chaque token et applique ses propres plafonds :
+    on conserve une marge de sécurité plus large.
+    """
+    return 0.9 if config.connection_type == ConnectionType.LOCAL else 0.7
+
+
+def server_context_cap(config: ProviderConfig) -> int | None:
+    """Fenêtre réellement allouée au démarrage d'un serveur llama.cpp administré.
+
+    `--ctx-size` est un plafond dur côté inférence : une déclaration plus
+    grande via /model-context ne peut pas être servie.
+    """
+    if config.kind not in {"llama-cpp", "llama.cpp"} or not config.models_dir:
+        return None
+    return config.num_ctx
+
+
 class ProviderFactory:
     def __init__(
         self,

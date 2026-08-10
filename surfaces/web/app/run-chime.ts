@@ -21,17 +21,22 @@ let context: AudioContext | null = null;
  * et non à la fin du run, où plus aucun geste ne le couvrirait.
  */
 export function primeRunChime(): void {
-  if (typeof window === "undefined" || context) return;
-  const Constructor =
-    window.AudioContext
-    || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!Constructor) return;
-  try {
-    context = new Constructor();
-  } catch {
-    // Un contexte refusé n'est pas une panne : l'application marche sans son.
-    context = null;
+  if (typeof window === "undefined") return;
+  if (!context) {
+    const Constructor =
+      window.AudioContext
+      || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Constructor) return;
+    try {
+      context = new Constructor();
+    } catch {
+      // Un contexte refusé n'est pas une panne : l'application marche sans son.
+      context = null;
+    }
   }
+  // Un contexte créé avant le premier geste reste suspendu : le réveiller
+  // pendant le clic, seul moment où le navigateur l'autorise sans discuter.
+  if (context && context.state === "suspended") void context.resume();
 }
 
 const TIMBRES: Record<ChimeKind, { frequencies: number[]; gain: number }> = {

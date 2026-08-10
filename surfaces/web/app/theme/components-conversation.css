@@ -92,6 +92,12 @@
 .message-meta span { color: var(--text-faint); font: var(--text-sm) var(--font-mono); }
 .message p { margin: 6px 0 0; white-space: pre-wrap; line-height: var(--leading-relaxed); }
 .message.error p { color: var(--danger); }
+.message-speed {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-faint);
+  font: var(--text-sm) var(--font-mono);
+}
 
 .user-message-images {
   display: flex;

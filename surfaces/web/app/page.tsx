@@ -73,7 +73,7 @@ import {
   readApiPayload,
 } from "./lib/api";
 import { normalizeResourceId } from "./lib/format";
-import { traceEventsForRun, type TraceEvent } from "./lib/trace";
+import { runStatsByRunId, traceEventsForRun, type RunStats, type TraceEvent } from "./lib/trace";
 import {
   cronEditorFromJob,
   describeCron,
@@ -526,6 +526,14 @@ function gitSnapshotForRun(events: TraceEvent[], runId?: string): GitSnapshot | 
   if (!event) return null;
   const payload = event.payload as Partial<GitSnapshot>;
   return payload.available && Array.isArray(payload.files) ? payload as GitSnapshot : null;
+}
+
+function RunSpeed({ stats, runId }: { stats: Map<string, RunStats>; runId?: string }) {
+  const entry = runId ? stats.get(runId) : undefined;
+  if (!entry || entry.durationMs <= 0 || entry.outputTokens <= 0) return null;
+  const perSecond = Math.round(entry.outputTokens / (entry.durationMs / 1000));
+  if (perSecond <= 0) return null;
+  return <small className="message-speed">{perSecond} tokens/s</small>;
 }
 
 function MarkdownMessage({ content }: { content: string }) {
@@ -1029,6 +1037,8 @@ export default function Home() {
     setUnreadSessionIds,
     setSavingResource,
   });
+
+  const runStats = useMemo(() => runStatsByRunId(traceEvents), [traceEvents]);
 
   const commandMatches = useMemo(() => {
     const value = prompt.trimStart();
@@ -1919,6 +1929,13 @@ export default function Home() {
     }
   }
 
+  // Une demande d'autorisation n'est pas une fin : le run est suspendu et
+  // n'ira pas plus loin sans toi. Deux timbres pour deux réactions.
+  function playEndOfRunChime() {
+    if (!soundEnabled) return;
+    playRunChime(approvalsRef.current > 0 ? "attention" : "done");
+  }
+
   async function resumeSession(sessionId: string) {
     setManagementError("");
     primeRunChime();
@@ -1938,6 +1955,7 @@ export default function Home() {
     } catch (error) {
       setAttachmentError(error instanceof Error ? error.message : "Reprise impossible");
     } finally {
+      playEndOfRunChime();
       setRunning(false);
       runningSessionId.current = null;
     }
@@ -2297,11 +2315,7 @@ export default function Home() {
       eventSource.close();
       await refreshSessions();
       await refreshPlan(sessionId);
-      if (soundEnabled) {
-        // Une demande d'autorisation n'est pas une fin : le run est suspendu et
-        // n'ira pas plus loin sans toi. Deux timbres pour deux réactions.
-        playRunChime(approvalsRef.current > 0 ? "attention" : "done");
-      }
+      playEndOfRunChime();
       setRunning(false);
       runningSessionId.current = null;
       setStopRequested(false);
@@ -2360,6 +2374,7 @@ export default function Home() {
       eventSource.close();
       setApprovalProgress("");
       await refreshSessions();
+      playEndOfRunChime();
       setRunning(false);
       runningSessionId.current = null;
     }
@@ -2419,6 +2434,7 @@ export default function Home() {
       eventSource.close();
       setApprovalProgress("");
       await refreshSessions();
+      playEndOfRunChime();
       setRunning(false);
       runningSessionId.current = null;
     }
@@ -4168,6 +4184,7 @@ export default function Home() {
                             artifacts={message.artifacts}
                             onImageOpen={setImagePreview}
                           />
+                          <RunSpeed stats={runStats} runId={message.runId} />
                           {gitSnapshotForRun(traceEvents, message.runId) && (
                             <GitChangeCard
                               snapshot={gitSnapshotForRun(traceEvents, message.runId)!}
