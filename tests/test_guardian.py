@@ -417,3 +417,77 @@ def test_a_command_without_arguments_is_reviewed_rather_than_crashing(tmp_path: 
     )
 
     assert decision.verdict is not GuardianVerdict.DENY
+
+
+def test_an_orchestrator_cannot_write_where_its_children_work(tmp_path: Path) -> None:
+    """Une consigne ne contraint pas; le périmètre d'écriture, si.
+
+    Avec « Écrire un fichier de code toi-même est une erreur » en tête de son
+    prompt, l'orchestrateur observé a produit vingt-sept `patch` et trois
+    `write` dans un projet, sans jamais appeler `agent_delegate`. Le refus
+    porte le remède : à qui confier, et avec quoi.
+    """
+    donnees = tmp_path / "content-agents"
+    projet = tmp_path / "projets" / "test8"
+    projet.mkdir(parents=True)
+    (projet / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    decision = review_tool_call(
+        tool_name="patch",
+        tool_call_id="call-1",
+        agent_id="main",
+        arguments={"path": str(projet / "index.html"), "justification": "Corriger le skip-link."},
+        risks=[ToolRisk.WRITE],
+        mode=SecurityMode.POWER,
+        workspace=projet,
+        delegates=("dev", "reviewer"),
+        delegated_write_exemptions=(donnees,),
+    )
+
+    assert decision.verdict is GuardianVerdict.DENY
+    assert "dev, reviewer" in decision.reason
+    assert "agent_delegate" in decision.reason
+
+
+def test_an_orchestrator_still_keeps_its_own_files(tmp_path: Path) -> None:
+    """Mémoire, bibliothèque, routines et notes ne se délèguent pas."""
+    donnees = tmp_path / "content-agents"
+    personnel = donnees / "workspaces" / "main"
+    personnel.mkdir(parents=True)
+
+    decision = review_tool_call(
+        tool_name="write",
+        tool_call_id="call-2",
+        agent_id="main",
+        arguments={
+            "path": str(personnel / "knowledge" / "incoming" / "note.md"),
+            "justification": "Archiver une source.",
+        },
+        risks=[ToolRisk.WRITE],
+        mode=SecurityMode.POWER,
+        workspace=personnel,
+        delegates=("dev", "reviewer"),
+        delegated_write_exemptions=(donnees,),
+    )
+
+    assert decision.verdict is not GuardianVerdict.DENY
+
+
+def test_an_agent_without_children_writes_as_before(tmp_path: Path) -> None:
+    """Refuser l'écriture à qui n'a personne à qui la confier ne mènerait nulle part."""
+    projet = tmp_path / "projets" / "test8"
+    projet.mkdir(parents=True)
+
+    decision = review_tool_call(
+        tool_name="write",
+        tool_call_id="call-3",
+        agent_id="dev",
+        arguments={"path": str(projet / "app.js"), "justification": "Implémenter la tâche."},
+        risks=[ToolRisk.WRITE],
+        mode=SecurityMode.POWER,
+        workspace=projet,
+        delegates=(),
+        delegated_write_exemptions=(tmp_path / "content-agents",),
+    )
+
+    assert decision.verdict is not GuardianVerdict.DENY

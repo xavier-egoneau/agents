@@ -113,6 +113,15 @@
 .trace-toggle:hover { background: var(--ctx-hover); }
 .trace-toggle > strong { color: var(--text-strong); font-size: var(--text-base); }
 .trace-summary { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font: var(--text-xs) var(--font-mono); }
+/* Les agents enfants qui ont travaillé dans ce run, visibles sans dérouler. */
+.trace-delegate {
+  padding: 2px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-pill);
+  background: var(--ctx-hover);
+  color: var(--text-strong);
+  font-style: normal;
+}
 .trace-summary b {
   display: grid;
   place-items: center;

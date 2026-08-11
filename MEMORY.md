@@ -24,6 +24,11 @@
   vitesse plutôt que d'en déduire une du temps mur à mur.
 - Guardian, sandbox d'exécution et politique réseau encadrent les outils
   sensibles; les valeurs de secrets connues sont masquées par valeur.
+- Un agent qui déclare des `delegates` ne peut écrire que dans le dossier de
+  données du kernel — son espace personnel, sa bibliothèque, ses routines. Toute
+  écriture ailleurs est refusée, avec le nom de ses enfants dans le message. La
+  consigne équivalente, placée en tête du prompt, ne suffisait pas : l'agent
+  produisait vingt-sept `patch` dans un projet sans jamais déléguer.
 - Compaction du contexte à 70 % de la fenêtre connue, snapshot exact compressé
   écrit avant réduction.
 - L'occupation avant conversation compte les instructions, les skills inscrites

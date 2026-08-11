@@ -199,6 +199,11 @@ class AgentFactory:
                 timeouts,
                 path_parameters,
                 url_parameters,
+                # Un orchestrateur ne prend pas le travail de ses enfants : le
+                # Guardian lui refuse l'écriture hors de son espace personnel.
+                # Le sous-agent neutre plus bas ne délègue à personne, donc rien
+                # ne le restreint.
+                delegates=tuple(config.delegates),
             )
             self._append_toolsets(
                 neutral_toolsets,
@@ -332,6 +337,7 @@ class AgentFactory:
         timeouts,
         path_parameters,
         url_parameters,
+        delegates: tuple[str, ...] = (),
     ) -> None:
         for toolset in source:
             target.append(
@@ -347,6 +353,7 @@ class AgentFactory:
                     timeouts=timeouts,
                     path_parameters=path_parameters,
                     url_parameters=url_parameters,
+                    delegates=delegates,
                 )
             )
 

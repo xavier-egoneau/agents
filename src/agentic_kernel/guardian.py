@@ -78,6 +78,8 @@ def review_tool_call(  # noqa: C901 - dette: moteur de décision multi-critères
     workflow_grants: frozenset[tuple[str, str]] = frozenset(),
     path_parameters: tuple[str, ...] = (),
     url_parameters: tuple[str, ...] = (),
+    delegates: tuple[str, ...] = (),
+    delegated_write_exemptions: tuple[Path, ...] = (),
 ) -> GuardianDecision:
     justification = arguments.get("justification")
     if not isinstance(justification, str) or not justification.strip():
@@ -127,6 +129,10 @@ def review_tool_call(  # noqa: C901 - dette: moteur de décision multi-critères
         verdict, reason = GuardianVerdict.DENY, "Protected or secret paths are denied."
     elif ToolRisk.SECRET in risks or ToolRisk.SYSTEM in risks:
         verdict, reason = GuardianVerdict.DENY, "Secret and system actions are denied."
+    elif (hors := _hors_du_perimetre_d_orchestrateur(
+        paths, risks, delegates, delegated_write_exemptions
+    )) is not None:
+        verdict, reason = GuardianVerdict.DENY, hors
     elif (portee := _network_scope(arguments, url_keys)) == "private":
         verdict, reason = (
             GuardianVerdict.ASK,
@@ -338,6 +344,48 @@ def action_family(risks: list[ToolRisk]) -> str:
     return "other"
 
 
+def _hors_du_perimetre_d_orchestrateur(
+    paths: list[Path | None],
+    risks: list[ToolRisk],
+    delegates: tuple[str, ...],
+    exemptions: tuple[Path, ...],
+) -> str | None:
+    """Refuse à un orchestrateur d'écrire là où un de ses enfants doit écrire.
+
+    Un orchestrateur à qui l'on demande par consigne de ne pas coder code quand
+    même : sur une session mesurée, avec « Écrire un fichier de code toi-même
+    est une erreur » en tête de son prompt, il a produit quatorze `patch` et
+    deux `write` sans jamais appeler `agent_delegate`. Une instruction ne
+    contraint rien; le périmètre d'écriture, si.
+
+    Restent ouverts son espace personnel et le dossier de données du kernel :
+    c'est là que vivent sa mémoire, sa bibliothèque, ses notes et ses routines,
+    et rien de tout cela ne se délègue. Le reste appartient aux enfants.
+
+    Un agent sans enfant n'est pas concerné : lui refuser l'écriture ne
+    laisserait personne pour la faire.
+    """
+    if not delegates:
+        return None
+    if not any(risk in {ToolRisk.WRITE, ToolRisk.DESTRUCTIVE} for risk in risks):
+        return None
+    autorises = [root.resolve() for root in exemptions]
+    dehors = [
+        candidate
+        for candidate in paths
+        if candidate is not None
+        and not any(_inside(candidate, root) for root in autorises)
+    ]
+    if not dehors:
+        return None
+    return (
+        f"Cet agent délègue l'écriture hors de son espace personnel. "
+        f"Confie la modification de {dehors[0]} à l'un de ses agents : "
+        f"{', '.join(delegates)} — via `agent_delegate`, en lui donnant le chemin, "
+        f"la contrainte et le critère de réussite."
+    )
+
+
 def _review_execution(arguments: dict[str, Any], mode: SecurityMode) -> tuple[GuardianVerdict, str]:
     program = str(arguments.get("program", "")).strip()
     executable = Path(program).name.casefold()
@@ -455,6 +503,9 @@ class GuardianToolset(WrapperToolset[Any]):
     timeouts: dict[str, float | None]
     path_parameters: dict[str, list[str]]
     url_parameters: dict[str, list[str]]
+    # Les enfants de cet agent. Non vide, ils font de lui un orchestrateur dont
+    # les écritures se limitent à son espace personnel et aux données du kernel.
+    delegates: tuple[str, ...] = ()
 
     async def get_tools(self, ctx: RunContext[Any]) -> dict[str, ToolsetTool[Any]]:
         tools = await super().get_tools(ctx)
@@ -511,6 +562,14 @@ class GuardianToolset(WrapperToolset[Any]):
             ),
             path_parameters=tuple(self.path_parameters.get(name, ())),
             url_parameters=tuple(self.url_parameters.get(name, ())),
+            delegates=self.delegates,
+            # `state_db` vit à la racine des données du kernel : son parent
+            # couvre d'un coup l'espace personnel de l'agent, sa bibliothèque,
+            # ses routines et les artefacts de session. Tout ce qu'un
+            # orchestrateur tient lui-même est là-dedans.
+            delegated_write_exemptions=(
+                (deps.state_db.parent,) if deps.state_db is not None else ()
+            ),
         )
         deps.events.append(
             Event(

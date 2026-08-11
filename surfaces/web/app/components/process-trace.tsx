@@ -23,6 +23,17 @@ function ProcessTraceState({
 }) {
   const [expanded, setExpanded] = useState(live);
   const visible = events.filter((event) => visibleTraceTypes.has(event.type));
+  // Qui a réellement travaillé. L'identité de l'agent n'apparaissait que dans
+  // le détail de chaque étape, replié par défaut : impossible de savoir si un
+  // run avait été délégué sans le dérouler et le lire ligne à ligne.
+  const racine = visible[0]?.agent_id;
+  const enfants = [
+    ...new Set(
+      visible
+        .map((event) => event.agent_id)
+        .filter((agent) => agent && agent !== racine),
+    ),
+  ];
   if (visible.length === 0) return null;
   return (
     <section className={`process-trace ${expanded ? "expanded" : "collapsed"}`} aria-label="Traces d’exécution" aria-live="polite">
@@ -34,6 +45,9 @@ function ProcessTraceState({
       >
         <strong>Processus</strong>
         <span className="trace-summary">
+          {enfants.map((agent) => (
+            <em className="trace-delegate" key={agent}>{agent}</em>
+          ))}
           {live && <i className="trace-live-indicator" />}
           {live ? "en cours" : `${visible.length} étape${visible.length > 1 ? "s" : ""}`}
           <b aria-hidden="true">{expanded ? "−" : "+"}</b>
