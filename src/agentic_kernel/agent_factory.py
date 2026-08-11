@@ -14,7 +14,12 @@ from .guardian import GuardianToolset
 from .models import SecurityMode
 from .orchestration import RuntimeDeps, make_neutral_subagent_toolset, make_subagents
 from .providers import compaction_trigger_ratio, server_context_cap
-from .skills import render_skill, skill_catalog_instruction, skill_toolset
+from .skills import (
+    inlined_skills,
+    render_skill,
+    skill_catalog_instruction,
+    skill_toolset,
+)
 from .workflows import WorkflowDefinition, render_workflow_instructions
 
 
@@ -134,7 +139,31 @@ class AgentFactory:
         # matériel de référence, pas une consigne de comportement.
         if knowledge_instruction:
             instructions.append(knowledge_instruction)
-        for skill_id in requested_skills:
+        # Les skills rattachées à l'agent n'entrent plus en entier dans le
+        # prompt : seules celles qui se déclarent `load: always` et celles
+        # demandées pour ce run précis y figurent. Les autres sont annoncées par
+        # l'index plus bas et arrivent par `load_skill` au moment utile.
+        #
+        # Sauf si ce run n'a justement pas le droit d'appeler `load_skill` :
+        # l'index désignerait alors des instructions inatteignables, et l'agent
+        # perdrait en silence des consignes qu'on lui a rattachées. Dans ce cas
+        # on retombe sur l'inscription complète.
+        differe_les_skills = _allows_internal_tool("load_skill", runtime_allowlist)
+        # `implicit_skills` est forcée pour la même raison qu'une skill demandée
+        # à l'exécution : c'est un réglage de l'agent qui l'a fait entrer, pas
+        # une éventualité que le modèle pourrait reconnaître. Activer la mémoire
+        # utilisateur puis laisser le modèle décider s'il la lit reviendrait à
+        # ne pas l'activer.
+        eager_skills = (
+            inlined_skills(
+                skills,
+                requested_skills,
+                forced=[*(runtime_skills or []), *implicit_skills],
+            )
+            if differe_les_skills
+            else list(requested_skills)
+        )
+        for skill_id in eager_skills:
             instructions.append(render_skill(skills, skill_id))
         workflow_instruction = _render_workflow(workflow)
         if workflow_instruction:
@@ -184,11 +213,11 @@ class AgentFactory:
                 url_parameters,
             )
             capabilities.extend(module.capabilities())
-        catalog = skill_catalog_instruction(skills)
+        catalog = skill_catalog_instruction(skills, requested_skills, eager_skills)
         loader = skill_toolset(skills)
-        if catalog and _allows_internal_tool("load_skill", runtime_allowlist):
+        if catalog and differe_les_skills:
             instructions.append(catalog)
-        if loader and _allows_internal_tool("load_skill", runtime_allowlist):
+        if loader and differe_les_skills:
             toolsets.append(loader)
         if child_agents and _allows_internal_tool("agent_delegate", runtime_allowlist):
             capabilities.append(make_subagents(config.id, child_agents, budgets))
@@ -197,9 +226,12 @@ class AgentFactory:
             skills,
             workflow_instruction or "",
             workspace,
+            inlined_skill_names=eager_skills,
         )
         if user_memory_instruction:
             overhead += self.context.estimate_tokens(user_memory_instruction)
+        if catalog and differe_les_skills:
+            overhead += self.context.estimate_tokens(catalog)
         capabilities.append(
             ContextWindowCompaction(
                 agent_id=config.id,

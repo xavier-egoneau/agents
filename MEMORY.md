@@ -13,10 +13,24 @@
   `providers.json` primant sur `DEEPSEEK_API_KEY`.
 - Les agents et skills de Claude, Codex et du standard `.agents` sont découverts
   directement, avec chargement progressif des skills.
+- Une skill rattachée à un agent est annoncée par l'index et chargée par
+  `load_skill` à l'usage. Son corps n'entre dans le prompt que si elle déclare
+  `load: always`, si le run la demande explicitement, si la mémoire utilisateur
+  l'a rendue implicite, ou si `load_skill` est hors de l'allowlist du run.
+- Le débit réel d'un run local vient des compteurs `/metrics` de llama-server,
+  relevés avant et après l'appel : `prefill_tokens_per_second` et
+  `generation_tokens_per_second` rejoignent `usage.details`. Les providers
+  distants n'en publient pas, et l'interface s'abstient alors d'afficher une
+  vitesse plutôt que d'en déduire une du temps mur à mur.
 - Guardian, sandbox d'exécution et politique réseau encadrent les outils
   sensibles; les valeurs de secrets connues sont masquées par valeur.
 - Compaction du contexte à 70 % de la fenêtre connue, snapshot exact compressé
   écrit avant réduction.
+- L'occupation avant conversation compte les instructions, les skills inscrites
+  et le nom, la description et le schéma d'entrée des outils exposés à l'agent.
+  Jamais `tools/index.json` en entier : ce catalogue interne ne part pas vers le
+  modèle et le compter faisait dépasser le seuil de compaction dès le premier
+  message, avec une cible de réduction négative donc inatteignable.
 - Routines planifiées avec workflow optionnel, prévalidées avant activation.
   Leur cron reste évalué dans le fuseau du workflow après chaque occurrence;
   les métadonnées de sécurité Guardian font partie du contrat versionné.
@@ -40,6 +54,13 @@
   `elevated` est requis et `unelevated` est refusé sans fallback silencieux.
 - Une routine dont le workspace n'existe pas sur cette machine reste visible et
   modifiable; elle est signalée au démarrage et par `amk crons list`.
+- `.venv/` est l'environnement Windows du dépôt. Un `uv run` ou `uv sync` lancé
+  depuis un autre système d'exploitation sur ce même dossier considère cet
+  environnement comme invalide, vide `Lib/site-packages`, puis échoue à
+  supprimer `Scripts/` — le dépôt reste alors sans dépendances et toute commande
+  répond `ModuleNotFoundError: No module named 'agentic_kernel'`. Depuis un
+  environnement Linux monté sur le dépôt, passer `UV_PROJECT_ENVIRONMENT` sur un
+  chemin hors du dépôt. Réparation : `uv sync` relancé sous Windows.
 
 ## Mémoire
 

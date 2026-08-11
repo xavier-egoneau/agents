@@ -133,8 +133,14 @@ def store_home(home: Path | None) -> None:
     os.replace(temporary, path)
 
 
-def content_root(application: Path) -> Path:
+def content_root(application_fallback: Path) -> Path:
     """Return the stable user-content directory.
+
+    Le paramètre est un **repli**, pas une décision : l'emplacement configuré
+    par l'utilisateur l'emporte. La signature laissait croire l'inverse, et un
+    appelant qui passait une racine arbitraire — un dossier temporaire de test —
+    se retrouvait branché sur les données réelles sans le savoir. Pour forcer
+    une racine, utiliser `AMK_HOME`, qui est prévu pour ça.
 
     Existing source checkouts keep their legacy ``content-agents`` directory so
     credentials and sessions are not silently abandoned. Fresh installations
@@ -150,7 +156,7 @@ def content_root(application: Path) -> Path:
     configured = configured_home()
     if configured:
         return configured / "content-agents"
-    legacy = application.resolve() / "content-agents"
+    legacy = application_fallback.resolve() / "content-agents"
     if legacy.exists():
         return legacy
     return data_home().resolve() / "content-agents"

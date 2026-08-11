@@ -43,6 +43,68 @@ class LlamaServerState:
     started_at: str
 
 
+@dataclass(frozen=True)
+class ThroughputCounters:
+    """Compteurs cumulés publiés par `/metrics`, en tokens et en secondes.
+
+    Ce sont des cumuls depuis le démarrage du serveur, pas des moyennes : la
+    différence entre deux relevés donne le débit exact du travail accompli
+    entre les deux, y compris quand un run a enchaîné plusieurs requêtes.
+    """
+
+    prompt_tokens: float
+    prompt_seconds: float
+    predicted_tokens: float
+    predicted_seconds: float
+
+    def since(self, earlier: ThroughputCounters | None) -> dict[str, float]:
+        """Débits observés depuis un relevé antérieur, en tokens par seconde."""
+        base = earlier or ThroughputCounters(0.0, 0.0, 0.0, 0.0)
+        mesures: dict[str, float] = {}
+        lecture = self.prompt_seconds - base.prompt_seconds
+        if lecture > 0:
+            mesures["prefill_tokens_per_second"] = round(
+                (self.prompt_tokens - base.prompt_tokens) / lecture, 1
+            )
+        ecriture = self.predicted_seconds - base.predicted_seconds
+        if ecriture > 0:
+            mesures["generation_tokens_per_second"] = round(
+                (self.predicted_tokens - base.predicted_tokens) / ecriture, 1
+            )
+        return mesures
+
+
+_METRIC_FIELDS = {
+    "llamacpp:prompt_tokens_total": "prompt_tokens",
+    "llamacpp:prompt_seconds_total": "prompt_seconds",
+    "llamacpp:tokens_predicted_total": "predicted_tokens",
+    "llamacpp:tokens_predicted_seconds_total": "predicted_seconds",
+}
+
+
+def parse_throughput_counters(body: str) -> ThroughputCounters | None:
+    """Lit les quatre compteurs utiles dans une réponse Prometheus.
+
+    Renvoie `None` dès qu'il en manque un : un débit calculé sur des compteurs
+    partiels serait plus trompeur que pas de débit du tout.
+    """
+    valeurs: dict[str, float] = {}
+    for ligne in body.splitlines():
+        if ligne.startswith("#"):
+            continue
+        nom, _, brut = ligne.partition(" ")
+        champ = _METRIC_FIELDS.get(nom)
+        if champ is None:
+            continue
+        try:
+            valeurs[champ] = float(brut)
+        except ValueError:
+            return None
+    if len(valeurs) != len(_METRIC_FIELDS):
+        return None
+    return ThroughputCounters(**valeurs)
+
+
 def scan_gguf_models(models_dir: Path) -> list[str]:
     """Return logical GGUF names, collapsing multi-file shards."""
     if not models_dir.is_dir():
@@ -118,6 +180,23 @@ class LlamaServerManager:
     def status(self) -> LlamaServerState | None:
         state = self._read_state()
         return state if state and process_running(state.pid) else None
+
+    def throughput_counters(self, timeout_seconds: float = 2.0) -> ThroughputCounters | None:
+        """Relevé courant des compteurs de débit, ou `None` s'ils sont indisponibles.
+
+        Mesurer ne doit jamais faire échouer un run : un serveur démarré sans
+        `--metrics`, une version qui ne publie pas ces compteurs ou un simple
+        délai dépassé rendent `None`, et l'appelant se passe de la mesure.
+        """
+        url = f"http://127.0.0.1:{self.port}/metrics"
+        try:
+            with urllib.request.urlopen(url, timeout=timeout_seconds) as reponse:  # noqa: S310
+                if reponse.status != 200:
+                    return None
+                corps = reponse.read().decode("utf-8", errors="replace")
+        except (OSError, urllib.error.URLError, ValueError):
+            return None
+        return parse_throughput_counters(corps)
 
     def stop(self) -> bool:
         state = self._read_state()

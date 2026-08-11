@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import uuid4
@@ -274,6 +275,28 @@ async def metrics_summary(ctx: RunContext[Any], justification: str = "") -> dict
     }
 
 
+_AUTO_LIVRAISON = re.compile(
+    r"api\.telegram\.org|telegram_[a-z0-9_]*_(?:bot_token|user_id)|bot_token",
+    re.IGNORECASE,
+)
+
+
+def _refabrique_la_livraison(prompt: str) -> bool:
+    """Détecte un prompt qui tente d'expédier le message lui-même.
+
+    La détection vise les identifiants de la messagerie de l'agent — jeton de
+    bot, hôte de l'API. Un prompt qui les nomme ne peut pas viser autre chose
+    que sa propre livraison, alors qu'elle est déjà assurée. On ne refuse pas
+    « appeler une API » en général : un webhook métier reste légitime.
+    """
+    return bool(_AUTO_LIVRAISON.search(prompt))
+
+
+def _refus(message: str) -> dict[str, Any]:
+    return {"ok": False, "data": None, "error": {"type": "validation", "message": message},
+            "metadata": {}}
+
+
 async def cron_list(ctx: RunContext[Any], justification: str = "") -> dict[str, Any]:
     """List persistent scheduled jobs and their latest runtime state."""
     jobs = [job.model_dump(mode="json") for job in _crons(ctx).list()]
@@ -283,19 +306,82 @@ async def cron_list(ctx: RunContext[Any], justification: str = "") -> dict[str, 
 async def cron_create(
     ctx: RunContext[Any],
     name: str,
-    schedule: str,
     prompt: str,
+    schedule: str = "",
+    one_shot_at: str = "",
+    kind: str = "",
     agent_id: str = "main",
     enabled: bool = True,
     auto_resume: bool = True,
     justification: str = "",
 ) -> dict[str, Any]:
-    """Create a persistent cron job scoped to the current workspace."""
+    """Schedule work: a recurring routine, or a reminder that fires once.
+
+    Give exactly one of the two.
+
+    `schedule` is a five-field cron expression, for work that repeats:
+    `0 9 * * *` every morning at nine, `0 8 * * 1` every Monday.
+
+    `one_shot_at` is an ISO 8601 datetime for something that must happen once
+    and never again — a reminder, a deadline, a follow-up on a precise date.
+    Example: `2026-08-11T07:00:00+02:00`. Include the offset, or the local
+    timezone of the kernel is assumed.
+
+    A reminder expressed as cron would come back every year: `0 7 11 8 *` fires
+    each 11 August. Use `one_shot_at` for anything the user described as
+    happening on a given date.
+
+    `kind` decides whether a model runs at all.
+
+    Use `kind="reminder"` when the message is already known now — a reminder, an
+    alert, a note to self. `prompt` is then the message itself, delivered
+    verbatim without invoking any model: no tokens, no latency, and it still
+    arrives if the provider is down. Write the text the user should read:
+    "Rendez-vous médecin à 13h40", not "envoie un message pour rappeler...".
+
+    Use `kind="agent"` when the content depends on the state of the world at
+    trigger time — a watch, a summary, "remind me to look at the open PRs".
+    `prompt` is then the request made to the agent, and its answer is delivered.
+
+    In both cases delivery is the kernel's job: the answer reaches the user's
+    canonical session and Telegram. Never send it yourself.
+    """
+    if kind not in {"agent", "reminder"}:
+        return _refus(
+            "`kind` est obligatoire : 'reminder' si le message est déjà connu "
+            "maintenant, 'agent' s'il dépend de l'état du monde au déclenchement. "
+            f"Reçu {kind!r}."
+        )
+    # Garde-fou : une description, aussi claire soit-elle, se laisse ignorer.
+    # Trois routines de suite ont été créées avec un prompt qui refabriquait la
+    # livraison — appel à l'API Telegram, jeton nommé en clair — alors qu'elle
+    # est automatique. Le refus, lui, ne se laisse pas ignorer.
+    if _refabrique_la_livraison(prompt):
+        return _refus(
+            "Ce prompt envoie le message lui-même. La livraison est automatique : "
+            "la réponse d'une routine atteint la session canonique de l'agent et "
+            "son Telegram. Utilise `kind='reminder'` avec le texte du message "
+            "comme `prompt` — « Rendez-vous médecin à 13h40 » — sans consigne "
+            "d'envoi ni jeton."
+        )
+    if bool(schedule.strip()) == bool(one_shot_at.strip()):
+        return _refus(
+            "Fournir soit `schedule` pour une répétition, soit `one_shot_at` "
+            "pour une occurrence unique — exactement l'un des deux."
+        )
+    try:
+        moment = datetime.fromisoformat(one_shot_at) if one_shot_at.strip() else None
+    except ValueError:
+        return _refus(
+            f"Date invalide : {one_shot_at!r}. Format attendu ISO 8601, "
+            "par exemple 2026-08-11T07:00:00+02:00."
+        )
     try:
         job = _crons(ctx).create(
             CronJobInput(
                 name=name,
-                schedule=schedule,
+                schedule=schedule.strip(),
+                one_shot_at=moment,
                 prompt=prompt,
                 workspace=ctx.deps.workspace,
                 agent_id=agent_id,
@@ -304,6 +390,7 @@ async def cron_create(
                 model=ctx.deps.model_name,
                 enabled=enabled,
                 auto_resume=auto_resume,
+                kind=kind,
             )
         )
     except SchedulerError as exc:
@@ -396,7 +483,17 @@ class OperationsModule:
 
     def instructions(self):
         return [
-            "Use plan tools for multi-step work and keep plan states aligned with actual execution."
+            "Use plan tools for multi-step work and keep plan states aligned with actual "
+            "execution.",
+            # Sans cette précision, l'agent reconstruit une livraison : appel HTTP
+            # à l'API Telegram, jeton nommé dans le prompt, autorisation réseau à
+            # accorder. L'utilisateur demandait un rappel et se retrouve à valider
+            # une requête sortante. La livraison existe déjà, en dessous de lui.
+            "A scheduled job's final answer is delivered to the user automatically: it is "
+            "posted to the agent's canonical session and pushed to Telegram when the agent "
+            "has it configured. Never build your own delivery — no http_request to a "
+            "messaging API, no bot token in the prompt. Write the routine prompt so that the "
+            "answer *is* the message the user should receive.",
         ]
 
     def capabilities(self):

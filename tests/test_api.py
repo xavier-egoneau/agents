@@ -1474,3 +1474,192 @@ def test_a_relative_artifact_path_is_the_address(project: Path) -> None:
     reponse = TestClient(create_app(project)).get(f"/api/artifacts/{session_id}/abc")
 
     assert reponse.status_code == 200
+
+
+def test_a_reminder_is_delivered_without_calling_a_model(project: Path) -> None:
+    """Le texte est fixé quand l'utilisateur demande le rappel.
+
+    Le soumettre à un modèle au déclenchement coûterait des tokens et une
+    latence pour reproduire une chaîne connue d'avance, et ajouterait trois
+    façons d'échouer : reformulation, préambule, fournisseur indisponible à 7 h
+    du matin. Un rappel qui n'arrive pas est un rappel raté.
+    """
+    client = TestClient(create_app(project))
+    cree = client.post(
+        "/api/crons",
+        json={
+            "name": "rappel-medecin",
+            "prompt": "Rendez-vous médecin à 13h40",
+            "one_shot_at": "2026-08-11T13:40:00+02:00",
+            "kind": "reminder",
+            "enabled": False,
+        },
+    )
+
+    assert cree.status_code == 200
+    assert cree.json()["kind"] == "reminder"
+
+    teste = client.post(f"/api/crons/{cree.json()['id']}/test")
+
+    assert teste.status_code == 200
+    # Le prompt ressort mot pour mot : aucun modèle n'est intervenu, et le
+    # provider de test n'aurait de toute façon répondu à rien. La livraison,
+    # elle, n'a pas lieu sur un test — c'est voulu, un essai ne notifie pas.
+    assert teste.json()["output"] == "Rendez-vous médecin à 13h40"
+    assert teste.json()["status"] == "success"
+
+
+def test_a_routine_still_goes_through_the_agent(project: Path) -> None:
+    """`kind` par défaut ne change rien : une veille a besoin du modèle."""
+    client = TestClient(create_app(project))
+
+    cree = client.post(
+        "/api/crons",
+        json={"name": "veille", "prompt": "Cherche", "schedule": "0 8 * * *", "enabled": False},
+    )
+
+    assert cree.json()["kind"] == "agent"
+
+
+def test_the_catalog_exposes_the_tools_a_skill_asks_for(project: Path) -> None:
+    """`allowed-tools` d'une skill n'autorise rien par elle-même.
+
+    Elle ne produit qu'une phrase dans les instructions ; seul l'agent décide de
+    ses outils. L'exposer permet à l'interface d'inscrire ces outils dans
+    l'agent au moment où on y coche la skill, au lieu de laisser la skill en
+    réclamer un qu'elle n'aura jamais — un échec qui ne se voit qu'à
+    l'exécution, loin de la case cochée.
+    """
+    skill = project / "content-agents" / "skills" / "veille"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: veille\ndescription: Faire la veille.\n"
+        "allowed-tools: [web_search, knowledge_ingest]\n---\nChercher.\n",
+        encoding="utf-8",
+    )
+
+    catalogue = TestClient(create_app(project)).get("/api/catalog").json()
+
+    trouvee = next(item for item in catalogue["skills"] if item["name"] == "veille")
+    assert trouvee["tools"] == ["web_search", "knowledge_ingest"]
+
+
+def test_without_a_project_the_history_is_the_agent_view(project: Path) -> None:
+    """« Aucun projet » n'est pas « toutes les sessions ».
+
+    C'est la vue de l'agent hors projet : son canal permanent et ce qu'il a fait
+    dans son espace personnel. Sans cette distinction, choisir « aucun »
+    déverserait l'historique de tous les projets à la fois.
+    """
+    store = JsonlEventStore(project / "content-agents" / "sessions")
+    for prompt, workspace in (("dans un projet", str(project)), ("hors projet", None)):
+        store.append(
+            Event(
+                session_id=uuid4(),
+                run_id=uuid4(),
+                agent_id="main",
+                type="session.started",
+                payload={"prompt": prompt, "workspace": workspace, "trigger": "user"},
+            )
+        )
+
+    client = TestClient(create_app(project))
+    sessions = client.get("/api/sessions", params={"agent_id": "main"}).json()
+
+    prompts = {item["prompt"] for item in sessions}
+    assert "hors projet" in prompts
+    assert "dans un projet" not in prompts
+    # Le canal reste visible : c'est précisément ce qu'on vient chercher.
+    assert any(item["trigger"] == "agent_channel" for item in sessions)
+
+
+def test_purging_clears_the_current_view_only(project: Path) -> None:
+    """« Tout supprimer » vise ce que l'utilisateur a sous les yeux.
+
+    Effacer tout au sens de la base emporterait des conversations d'autres
+    projets, qu'il ne voit pas et dont il ne peut donc pas juger.
+    """
+    store = JsonlEventStore(project / "content-agents" / "sessions")
+    ailleurs = uuid4()
+    # Un chemin réel : le kernel normalise les workspaces, et une chaîne
+    # fabriquée ne se retrouverait pas à la lecture.
+    autre_projet = str((project / "autre-projet").resolve())
+    for identifiant, workspace in ((uuid4(), str(project)), (ailleurs, autre_projet)):
+        store.append(
+            Event(
+                session_id=identifiant,
+                run_id=uuid4(),
+                agent_id="main",
+                type="session.started",
+                payload={"prompt": "essai", "workspace": workspace, "trigger": "user"},
+            )
+        )
+
+    client = TestClient(create_app(project))
+    purge = client.post("/api/sessions/purge", params={"workspace": str(project)})
+
+    assert purge.status_code == 200
+    assert purge.json()["deleted"] == 1
+    # Le canal reste : il est permanent, et c'est pour ça qu'il est « conservé ».
+    assert purge.json()["kept"] >= 1
+    restantes = client.get("/api/sessions", params={"workspace": autre_projet}).json()
+    assert any(item["session_id"] == str(ailleurs) for item in restantes)
+
+
+def test_purging_never_removes_an_agent_channel(project: Path) -> None:
+    client = TestClient(create_app(project))
+
+    client.post("/api/sessions/purge", params={"agent_id": "main"})
+
+    detail = client.get(f"/api/sessions/{agent_session_id('main')}")
+    assert detail.status_code == 200
+
+
+def test_a_session_whose_log_vanished_can_still_be_deleted(project: Path) -> None:
+    """La projection est ce que l'utilisateur voit; c'est elle qui doit partir.
+
+    Elle n'était nettoyée que si le journal existait encore : une session dont
+    le fichier avait disparu devenait indélébile, et chaque tentative répondait
+    « introuvable » sur une conversation affichée à l'écran.
+    """
+    session_id = uuid4()
+    store = JsonlEventStore(project / "content-agents" / "sessions")
+    store.append(
+        Event(
+            session_id=session_id,
+            run_id=uuid4(),
+            agent_id="main",
+            type="session.started",
+            payload={"prompt": "fantôme", "workspace": str(project), "trigger": "user"},
+        )
+    )
+    (project / "content-agents" / "sessions" / f"{session_id}.jsonl").unlink()
+
+    client = TestClient(create_app(project))
+    supprime = client.delete(f"/api/sessions/{session_id}")
+
+    assert supprime.status_code == 200
+    assert client.get(f"/api/sessions/{session_id}").status_code == 404
+
+
+def test_the_channel_of_a_removed_agent_is_deletable(project: Path) -> None:
+    """Protéger un canal a du sens tant que son agent existe.
+
+    Sinon il ne sera pas recréé au démarrage, et le protéger le rendrait
+    éternel : un agent supprimé laissait un fil que rien ne pouvait retirer.
+    """
+    disparu = uuid4()
+    JsonlEventStore(project / "content-agents" / "sessions").append(
+        Event(
+            session_id=disparu,
+            run_id=uuid4(),
+            agent_id="fantome",
+            type="agent.channel.created",
+            payload={"prompt": "fantome"},
+        )
+    )
+    client = TestClient(create_app(project))
+
+    assert client.delete(f"/api/sessions/{disparu}").status_code == 200
+    # Celui d'un agent vivant reste protégé.
+    assert client.delete(f"/api/sessions/{agent_session_id('main')}").status_code == 409

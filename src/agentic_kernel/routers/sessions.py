@@ -69,6 +69,7 @@ def create_session_router(  # noqa: C901 - dette: factory à plusieurs endpoints
         offset: int = 0,
         include_automations: bool = False,
         include_channels: bool = False,
+        agent_id: str | None = None,
     ) -> list[dict[str, object]]:
         resolved_workspace = str(Path(workspace).expanduser().resolve()) if workspace else None
         default_workspace_agent: str | None = None
@@ -86,6 +87,7 @@ def create_session_router(  # noqa: C901 - dette: factory à plusieurs endpoints
             include_automations=include_automations,
             include_channels=include_channels,
             default_workspace_agent=default_workspace_agent,
+            personal_agent=agent_id,
         )
         return [public_session(row) for row in rows]
 
@@ -147,6 +149,39 @@ def create_session_router(  # noqa: C901 - dette: factory à plusieurs endpoints
         )
         return {"messages": messages, "has_more": len(messages) == limit}
 
+    @router.post("/purge")
+    async def purge_sessions(
+        workspace: str | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, object]:
+        """Efface toutes les conversations de la vue courante.
+
+        Le périmètre est celui que l'utilisateur a sous les yeux : le projet
+        actif, ou la vue hors projet d'un agent. Effacer « tout » au sens de la
+        base emporterait des conversations qu'il ne voit même pas, et dont il ne
+        peut donc pas juger.
+
+        Deux exceptions, pour la même raison qu'à l'unité : un canal d'agent est
+        permanent, et un run en cours ne s'interrompt pas par un effacement.
+        """
+        resolved = str(Path(workspace).expanduser().resolve()) if workspace else None
+        candidates = kernel.events.projection.list_sessions(
+            resolved,
+            limit=500,
+            include_automations=True,
+            include_channels=True,
+            personal_agent=agent_id,
+        )
+        supprimees, conservees = 0, 0
+        for row in candidates:
+            identifiant = UUID(str(row["session_id"]))
+            if row.get("trigger") == "agent_channel" or identifiant in running_tasks:
+                conservees += 1
+                continue
+            if lifecycle.delete(identifiant):
+                supprimees += 1
+        return {"deleted": supprimees, "kept": conservees}
+
     @router.delete("/{session_id}")
     async def delete_session(session_id: UUID) -> dict[str, str]:
         # Le canal d'un agent est permanent : c'est son fil, pas une
@@ -154,10 +189,15 @@ def create_session_router(  # noqa: C901 - dette: factory à plusieurs endpoints
         # démarrage, en ayant perdu son historique pour rien.
         canal = kernel.events.projection.session(session_id)
         if canal is not None and canal.get("trigger") == "agent_channel":
-            raise HTTPException(
-                status_code=409,
-                detail=f"Le canal de {canal.get('agent_id', 'agent')} est permanent",
-            )
+            # Sauf si son agent n'existe plus : le canal ne sera pas recréé au
+            # démarrage, et le protéger le rendrait éternel. Un agent supprimé
+            # laissait ainsi un fil que rien ne pouvait retirer.
+            proprietaire = str(canal.get("agent_id", ""))
+            if proprietaire in kernel.config.agents():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Le canal de {proprietaire} est permanent tant que l'agent existe",
+                )
         if session_id in running_tasks:
             raise HTTPException(status_code=409, detail="Impossible de supprimer un run actif")
         if not lifecycle.delete(session_id):

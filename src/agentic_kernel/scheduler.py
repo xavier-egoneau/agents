@@ -25,6 +25,14 @@ from .workflows import WorkflowDefinition, workflow_tool_allowlist
 LEGACY_ROUTINE_INBOX = uuid5(NAMESPACE_URL, "agentic-kernel:routine-inbox")
 
 
+def _kind_of(row: Any) -> str:
+    """Type d'une routine, `agent` pour toutes celles créées avant le champ."""
+    try:
+        return str(row["kind"] or "agent")
+    except (IndexError, KeyError):
+        return "agent"
+
+
 def agent_session_id(agent_id: str) -> UUID:
     """Session canonique d'un agent : son fil permanent, quelle que soit la surface.
 
@@ -52,6 +60,12 @@ class CronJobInput(BaseModel):
     reasoning: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None
     enabled: bool = True
     auto_resume: bool = True
+    # Un rappel n'a rien à décider : son texte est fixé quand on le crée.
+    # Le faire passer par un modèle au moment du déclenchement coûterait des
+    # tokens et une latence pour reproduire une chaîne connue la veille — et
+    # ajouterait trois façons d'échouer : reformulation, préambule, fournisseur
+    # indisponible. `reminder` livre le prompt tel quel, sans modèle.
+    kind: Literal["agent", "reminder"] = "agent"
     # Non renseignée, elle suit l'agent : le défaut ne peut pas être une
     # constante de classe, puisqu'il dépend d'un autre champ.
     notification_session_id: UUID | None = None
@@ -174,6 +188,10 @@ class CronService:
                 )
             if "notification_session_id" not in columns:
                 connection.execute("ALTER TABLE cron_jobs ADD COLUMN notification_session_id TEXT")
+            if "kind" not in columns:
+                connection.execute(
+                    "ALTER TABLE cron_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'agent'"
+                )
             if "workflow_json" not in columns:
                 connection.execute("ALTER TABLE cron_jobs ADD COLUMN workflow_json TEXT")
             if "workflow_revision" not in columns:
@@ -418,10 +436,10 @@ class CronService:
                     session_id, created_at, updated_at, next_run_at, last_run_at,
                     last_status, last_error, last_retryable, in_flight,
                     notification_session_id, workflow_json, workflow_revision,
-                    workflow_basis_hash, workflow_updated_at, one_shot_at
+                    workflow_basis_hash, workflow_updated_at, one_shot_at, kind
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0,
-                    ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?
                 )""",
                 (
                     job_id,
@@ -450,6 +468,7 @@ class CronService:
                     workflow_basis_hash if workflow is not None else None,
                     now.isoformat() if workflow is not None else None,
                     payload.one_shot_at.isoformat() if payload.one_shot_at is not None else None,
+                    payload.kind,
                 ),
             )
         return self.get(job_id)
@@ -471,16 +490,23 @@ class CronService:
         self.validate_schedule(payload.schedule)
         workspace = self._validated_workspace(payload, current=existing.workspace)
         now = datetime.now(UTC)
-        next_run = self.next_fire(
-            payload.schedule,
-            timezone=self._workflow_timezone(existing.workflow),
-        )
+        if payload.one_shot_at is not None:
+            next_run = (
+                payload.one_shot_at
+                if payload.one_shot_at.tzinfo
+                else payload.one_shot_at.replace(tzinfo=UTC)
+            )
+        else:
+            next_run = self.next_fire(
+                payload.schedule,
+                timezone=self._workflow_timezone(existing.workflow),
+            )
         with self._connect() as connection:
             connection.execute(
                 """UPDATE cron_jobs SET name=?, schedule=?, prompt=?, workspace=?,
                    agent_id=?, skills_json=?, security_mode=?, provider_id=?, model=?,
                    reasoning=?, enabled=?, auto_resume=?, updated_at=?, next_run_at=?,
-                   notification_session_id=?
+                   notification_session_id=?, one_shot_at=?
                    WHERE id=?""",
                 (
                     payload.name.strip(),
@@ -498,6 +524,7 @@ class CronService:
                     now.isoformat(),
                     next_run.isoformat(),
                     str(payload.notification_session_id),
+                    payload.one_shot_at.isoformat() if payload.one_shot_at is not None else None,
                     job_id,
                 ),
             )
@@ -518,16 +545,23 @@ class CronService:
         self.validate_schedule(payload.schedule)
         workspace = self._validated_workspace(payload, current=job.workspace)
         now = datetime.now(UTC)
-        next_run = self.next_fire(
-            payload.schedule,
-            timezone=self._workflow_timezone(workflow),
-        )
+        if payload.one_shot_at is not None:
+            next_run = (
+                payload.one_shot_at
+                if payload.one_shot_at.tzinfo
+                else payload.one_shot_at.replace(tzinfo=UTC)
+            )
+        else:
+            next_run = self.next_fire(
+                payload.schedule,
+                timezone=self._workflow_timezone(workflow),
+            )
         with self._connect() as connection:
             cursor = connection.execute(
                 """UPDATE cron_jobs SET name=?, schedule=?, prompt=?, workspace=?,
                    agent_id=?, skills_json=?, security_mode=?, provider_id=?, model=?,
                    reasoning=?, enabled=?, auto_resume=?, updated_at=?, next_run_at=?,
-                   notification_session_id=?, workflow_json=?,
+                   notification_session_id=?, one_shot_at=?, workflow_json=?,
                    workflow_revision=workflow_revision+1, workflow_basis_hash=?,
                    workflow_updated_at=?
                    WHERE id=? AND in_flight=0""",
@@ -547,6 +581,7 @@ class CronService:
                     now.isoformat(),
                     next_run.isoformat(),
                     str(payload.notification_session_id),
+                    payload.one_shot_at.isoformat() if payload.one_shot_at is not None else None,
                     json.dumps(workflow, ensure_ascii=False),
                     workflow_basis_hash,
                     now.isoformat(),
@@ -733,6 +768,33 @@ class CronService:
                         occurrence_id,
                     ),
                 )
+        self._retire_completed_reminder(job_id, status, retryable)
+
+    def _retire_completed_reminder(self, job_id: str, status: str, retryable: bool) -> None:
+        """Efface un rappel une fois délivré.
+
+        Un rappel est ponctuel par nature : passée sa date, il n'a plus rien à
+        faire. Le laisser en place produisait ce que l'interface montrait — une
+        routine active, sans exécution prévue, qui s'accumule à chaque rappel
+        demandé.
+
+        Le supprimer ne perd rien : le message vit dans la session canonique de
+        l'agent, là où l'utilisateur le lit. La ligne de planification n'était
+        que la mécanique qui l'y a porté.
+
+        Un échec, lui, est conservé. Effacer un rappel qui n'est jamais arrivé
+        priverait l'utilisateur de la seule trace lui disant qu'il l'attend
+        encore.
+        """
+        if status != RunStatus.SUCCESS.value or retryable:
+            return
+        with self._connect() as connection:
+            ligne = connection.execute(
+                "SELECT kind, one_shot_at FROM cron_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            if ligne is None or not ligne["one_shot_at"] or _kind_of(ligne) != "reminder":
+                return
+            connection.execute("DELETE FROM cron_jobs WHERE id=?", (job_id,))
 
     def record_test_result(self, job_id: str, result: RunResult) -> None:
         """Store test diagnostics without changing scheduler blocking state."""
@@ -920,6 +982,7 @@ class CronService:
             reasoning=row["reasoning"],
             enabled=bool(row["enabled"]),
             auto_resume=bool(row["auto_resume"]),
+            kind=_kind_of(row),
             notification_session_id=UUID(
                 row["notification_session_id"] or str(agent_session_id(row["agent_id"]))
             ),

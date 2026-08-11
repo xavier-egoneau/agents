@@ -91,12 +91,21 @@ class JsonlEventStore:
         return self.directory / f"{session_id}.jsonl"
 
     def delete(self, session_id: UUID) -> bool:
+        """Efface une session, journal et projection, dans cet ordre.
+
+        La projection était nettoyée seulement si le journal existait encore.
+        Une session dont le fichier avait disparu devenait donc indélébile : la
+        ligne restait affichée, et chaque tentative de suppression répondait
+        « introuvable » — sur une conversation que l'utilisateur voyait.
+
+        La projection est ce qu'il voit ; c'est elle qui doit toujours partir.
+        """
         path = self.path_for(session_id)
-        if not path.exists():
-            return False
-        path.unlink()
+        connue = path.exists() or self.projection.session(session_id) is not None
+        if path.exists():
+            path.unlink()
         self.projection.delete_session(session_id)
-        return True
+        return connue
 
     def reset(self, event: Event) -> None:
         """Atomically replace a session log, then transactionally reproject it."""

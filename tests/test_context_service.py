@@ -87,3 +87,92 @@ def test_a_manual_compaction_ignores_the_threshold() -> None:
 
 def test_an_unknown_window_cannot_trigger_a_threshold() -> None:
     assert _capacite(0).should_compact(10_000_000, None, 3.0) is False
+
+
+def test_the_internal_catalog_is_not_counted_as_prompt(project: Path) -> None:
+    """L'overhead ne doit compter que ce qui part vers le modèle.
+
+    `tools/index.json` est un catalogue interne — sources, catégories, schémas
+    de sortie, métadonnées — et pesait 246 ko chez un utilisateur, soit 70 500
+    tokens. Le compter en entier plaçait l'occupation au-dessus du seuil de
+    compaction avant même le premier message, rendait la cible de réduction
+    négative donc inatteignable, et faisait payer à chaque run un instantané et
+    une passe de compaction qui ne réduisaient rien.
+
+    Ce qui part réellement, c'est le nom, la description et le schéma d'entrée
+    de chaque outil exposé.
+    """
+    from agentic_kernel.kernel import Kernel
+
+    kernel = Kernel(project)
+    remplissage = {"type": "object", "properties": {f"champ_{i}": {"type": "string",
+                   "description": "x" * 200} for i in range(60)}}
+    kernel.module_registry.index_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "modules": [
+                    {
+                        "schema_version": 1,
+                        "id": "clock",
+                        "name": "Clock",
+                        "description": "Test module",
+                        "version": "1.0.0",
+                        "entrypoint": "module.py:module",
+                        "capabilities": ["tools"],
+                        "enabled": True,
+                        "config": None,
+                        "tools": [
+                            {
+                                "name": "now",
+                                "description": "Return the time.",
+                                "category": "test",
+                                "risk_tags": ["read"],
+                                "timeout_seconds": 5,
+                                "input_schema": {"type": "object", "properties": {}},
+                                "output_schema": remplissage,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    catalogue = kernel.context.estimate_tokens(
+        kernel.module_registry.index_path.read_text(encoding="utf-8")
+    )
+    agent = kernel.config.agents()["main"]
+
+    overhead = kernel.context.overhead_tokens(agent, {}, "", project)
+
+    # Le schéma de sortie, que le modèle ne voit jamais, domine le fichier.
+    assert catalogue > 3_000
+    assert overhead < catalogue / 3
+    # Mais l'outil exposé pèse : l'ignorer ferait sous-estimer dans l'autre sens.
+    assert overhead > kernel.context.estimate_tokens(
+        kernel.config.system_instructions() + agent.instructions
+    )
+
+
+def test_a_file_read_can_be_reclaimed_from_the_context() -> None:
+    """Sans `read`, la compaction n'avait rien à récupérer dans une session de code.
+
+    Les résultats de `read` sont ce qui remplit le contexte quand on travaille
+    sur du code. Ils étaient pourtant protégés, alors qu'ils remplissent le
+    critère annoncé : une observation déterministe, en lecture seule, qui rend
+    le même contenu si on la rejoue. Sur une session observée, douze compactions
+    d'affilée n'ont rien réduit et l'historique est monté à 130 000 tokens pour
+    une fenêtre de 65 536.
+    """
+    from agentic_kernel.compaction import ContextWindowCompaction
+
+    capacite = ContextWindowCompaction(
+        agent_id="main",
+        context_window_tokens=65_536,
+        all_tool_names={"read", "write", "patch", "command_run", "list", "stat"},
+    )
+
+    assert "read" not in capacite.protected_tools
+    # Les mutations et les sorties non reproductibles restent protégées.
+    assert {"write", "patch", "command_run"} <= capacite.protected_tools

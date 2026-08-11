@@ -234,3 +234,31 @@ async def test_codex_model_discovery_uses_catalog_contract(monkeypatch) -> None:
     assert models == ["gpt-5.6-sol", "gpt-5.6-terra"]
     assert source == "live"
     assert error is None
+
+
+def test_a_managed_server_always_publishes_its_metrics(tmp_path) -> None:
+    """Sans `--metrics`, la vitesse d'écriture reste invisible.
+
+    L'interface ne pouvait alors qu'afficher des tokens divisés par la durée du
+    run — un nombre qui s'effondre quand le prompt grossit, sans que rien ne
+    ralentisse, et qui a fait diagnostiquer une panne matérielle inexistante.
+    """
+    modeles = tmp_path / "models"
+    modeles.mkdir()
+    (modeles / "model.gguf").write_bytes(b"")
+    factory = ProviderFactory(
+        registry("local", port=8125, models_dir=str(modeles), num_ctx=65536),
+        runtime_dir=tmp_path / "runtime",
+    )
+
+    manager = factory._managed_llama(factory.get_config("provider"))
+
+    assert manager is not None
+    assert "--metrics" in manager.server_args
+
+
+def test_a_remote_provider_reports_no_throughput() -> None:
+    """DeepSeek ne distingue pas la lecture du prompt de l'écriture : on n'invente pas."""
+    factory = ProviderFactory(registry("api_key", api_key="k"))
+
+    assert factory.throughput_counters("provider") is None

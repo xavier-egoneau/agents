@@ -443,9 +443,13 @@ class PlanService:
                     index,
                     step["title"],
                     step.get("status", "pending"),
-                    json.dumps(step.get("dependencies", [])),
+                    # `or []` et non un défaut de `get` : un modèle écrit
+                    # volontiers `"dependencies": null` pour dire « aucune », et
+                    # la clé étant présente le défaut ne s'applique pas. Le
+                    # `None` était alors persisté, puis parcouru au tour suivant.
+                    json.dumps(step.get("dependencies") or []),
                     int(bool(step.get("parallelizable"))),
-                    json.dumps(step.get("write_scopes", [])),
+                    json.dumps(step.get("write_scopes") or []),
                     step.get("note"),
                     step.get("claimed_by"),
                     step.get("claimed_at"),

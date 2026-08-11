@@ -6148,7 +6148,7 @@
         },
         {
           "name": "cron_create",
-          "description": "Créer un cronjob persistant dans le workspace courant.",
+          "description": "Programmer un travail : routine répétée via `schedule` cron, ou rappel unique via `one_shot_at`. Un rappel à une date donnée exige `one_shot_at` — exprimé en cron, il reviendrait chaque année. `kind='reminder'` livre le prompt tel quel sans appeler de modèle, pour un message déjà connu.",
           "category": "scheduler",
           "risk_tags": [
             "write"
@@ -6161,10 +6161,19 @@
               "name": {
                 "type": "string"
               },
-              "schedule": {
+              "prompt": {
                 "type": "string"
               },
-              "prompt": {
+              "schedule": {
+                "default": "",
+                "type": "string"
+              },
+              "one_shot_at": {
+                "default": "",
+                "type": "string"
+              },
+              "kind": {
+                "default": "",
                 "type": "string"
               },
               "agent_id": {
@@ -6186,7 +6195,6 @@
             },
             "required": [
               "name",
-              "schedule",
               "prompt"
             ],
             "type": "object"

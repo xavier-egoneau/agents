@@ -117,6 +117,65 @@ def test_windows_ambiguous_and_device_paths_are_denied(tmp_path: Path, path: str
     )
 
 
+def test_loopback_is_allowed_in_power_mode(tmp_path: Path) -> None:
+    """`localhost` désigne cette machine, celle que `power` autorise déjà.
+
+    L'agent y exécute des commandes et y lit des fichiers : lui redemander
+    l'ouverture du serveur qu'il vient de lancer n'ajoute aucune protection,
+    seulement une confirmation de plus — et trois d'affilée pour une seule
+    vérification de rendu.
+    """
+    decision = review_tool_call(
+        tool_name="browser_open",
+        tool_call_id="call-open",
+        agent_id="main",
+        arguments={
+            "url": "http://localhost:8123",
+            "justification": "Vérifier le rendu servi en local.",
+        },
+        risks=[ToolRisk.NETWORK, ToolRisk.EXTERNAL],
+        mode=SecurityMode.POWER,
+        workspace=tmp_path,
+    )
+
+    assert decision.verdict == GuardianVerdict.ALLOW
+
+
+def test_loopback_still_asks_outside_power(tmp_path: Path) -> None:
+    decision = review_tool_call(
+        tool_name="browser_open",
+        tool_call_id="call-open",
+        agent_id="main",
+        arguments={"url": "http://localhost:8123", "justification": "Vérifier."},
+        risks=[ToolRisk.NETWORK, ToolRisk.EXTERNAL],
+        mode=SecurityMode.LIMITED,
+        workspace=tmp_path,
+    )
+
+    assert decision.verdict == GuardianVerdict.ASK
+
+
+def test_another_machine_on_the_lan_always_asks(tmp_path: Path) -> None:
+    """Une adresse privée non locale désigne le routeur, un NAS, un service
+    interne — pas cette machine. La confirmation garde son sens, même en
+    `power`."""
+    decision = review_tool_call(
+        tool_name="web",
+        tool_call_id="call-web",
+        agent_id="main",
+        arguments={
+            "action": "scrape",
+            "url": "http://192.168.1.1/admin",
+            "justification": "Lire la page.",
+        },
+        risks=[ToolRisk.NETWORK, ToolRisk.EXTERNAL],
+        mode=SecurityMode.POWER,
+        workspace=tmp_path,
+    )
+
+    assert decision.verdict == GuardianVerdict.ASK
+
+
 def test_private_web_target_always_requires_approval(tmp_path: Path) -> None:
     decision = review_tool_call(
         tool_name="web",
@@ -128,7 +187,7 @@ def test_private_web_target_always_requires_approval(tmp_path: Path) -> None:
             "justification": "Inspect a local service.",
         },
         risks=[ToolRisk.NETWORK, ToolRisk.EXTERNAL],
-        mode=SecurityMode.POWER,
+        mode=SecurityMode.LIMITED,
         workspace=tmp_path,
     )
     assert decision.verdict == GuardianVerdict.ASK
@@ -162,7 +221,7 @@ def test_declared_url_parameter_catches_private_target(tmp_path: Path) -> None:
             "justification": "Archive this page.",
         },
         risks=[ToolRisk.READ, ToolRisk.NETWORK, ToolRisk.WRITE],
-        mode=SecurityMode.POWER,
+        mode=SecurityMode.LIMITED,
         workspace=tmp_path,
         path_parameters=("source",),
         url_parameters=("source",),
@@ -331,3 +390,30 @@ def test_the_contract_never_lifts_a_refusal(tmp_path: Path) -> None:
     )
 
     assert decision.verdict is GuardianVerdict.DENY
+
+
+def test_a_command_without_arguments_is_reviewed_rather_than_crashing(tmp_path: Path) -> None:
+    """`"args": null` est la façon normale d'un modèle de dire « sans argument ».
+
+    `arguments.get("args", [])` ne protège que de la clé absente : la clé étant
+    présente avec `None`, la boucle recevait `None` et le run entier tombait sur
+    un `TypeError` avant même que le Guardian ait rendu son avis. Un `dir` sans
+    argument suffisait à condamner la conversation.
+    """
+    decision = review_tool_call(
+        tool_name="command_run",
+        tool_call_id="call-1",
+        agent_id="main",
+        arguments={
+            "program": "dir",
+            "args": None,
+            "cwd": ".",
+            "network": False,
+            "justification": "Lister le dossier.",
+        },
+        risks=[ToolRisk.EXECUTE],
+        mode=SecurityMode.POWER,
+        workspace=tmp_path,
+    )
+
+    assert decision.verdict is not GuardianVerdict.DENY

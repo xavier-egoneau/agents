@@ -106,6 +106,9 @@
   background: var(--surface-panel);
 }
 .management-row.active { border-color: var(--accent); background: var(--accent-soft); }
+/* La ligne « Aucun projet » n'a rien à oublier : sans seconde colonne, son
+   bouton occupe toute la largeur au lieu de laisser un vide à droite. */
+.management-row:not(:has(.management-remove)) { grid-template-columns: minmax(0, 1fr); }
 .management-row > button:first-child {
   min-width: 0;
   display: grid;
@@ -963,4 +966,17 @@ label.resource-select { cursor: pointer; }
   padding: 0 3px;
   text-align: center;
   font: var(--weight-bold) var(--text-2xs) var(--font-sans);
+}
+
+/* Un outil imposé par une skill : coché, verrouillé, et dit pourquoi. Sans
+   l'étiquette, la case grisée passerait pour une panne. */
+.tool-required {
+  margin-left: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--ctx-hover);
+  padding: 1px 5px;
+  color: var(--ctx-text-muted);
+  font: var(--weight-medium) var(--text-2xs) var(--font-sans);
+  font-style: normal;
+  letter-spacing: 0.04em;
 }

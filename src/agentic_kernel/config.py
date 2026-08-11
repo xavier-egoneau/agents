@@ -76,16 +76,29 @@ For each entry, include the date, decision, brief context and current status.
 """
 
 
-def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
+def split_front_matter(text: str, source: Path | str | None = None) -> tuple[dict[str, Any], str]:
+    """Sépare l'en-tête YAML du corps, en nommant le fichier fautif.
+
+    Sans `source`, l'erreur disait « agent definition must start with YAML front
+    matter » sans dire lequel : avec une dizaine d'agents et de skills, il
+    fallait les ouvrir un par un pour trouver le coupable.
+    """
+    ou = f" ({source})" if source else ""
     if not text.startswith("---\n"):
-        raise ConfigurationError("agent definition must start with YAML front matter")
+        raise ConfigurationError(
+            f"le fichier doit commencer par un front matter YAML délimité par `---`{ou}"
+        )
     try:
         _, raw_header, body = text.split("---", 2)
     except ValueError as exc:
-        raise ConfigurationError("agent definition has unterminated front matter") from exc
+        raise ConfigurationError(
+            f"front matter non refermé : il manque la ligne `---` de fin{ou}"
+        ) from exc
     header = yaml.safe_load(raw_header) or {}
     if not isinstance(header, dict):
-        raise ConfigurationError("agent front matter must be an object")
+        raise ConfigurationError(
+            f"le front matter doit être une suite de `clé: valeur`{ou}"
+        )
     return header, body.strip()
 
 
@@ -155,7 +168,12 @@ class ProjectConfig:
     def system_instructions(self) -> str:
         path = self.content_root / "system.md"
         if not path.is_file():
-            raise ConfigurationError(f"missing system instructions: {path}")
+            raise ConfigurationError(
+                f"instructions système introuvables : {path}. "
+                "Lancer `amk init` pour créer le socle, ou corriger l'emplacement "
+                "du dossier de données dans Paramètres — un chemin qui ne pointe "
+                "pas sur un `content-agents` valide donne exactement cette erreur."
+            )
         return path.read_text(encoding="utf-8").strip()
 
     def providers(self) -> ProviderRegistry:
@@ -164,7 +182,10 @@ class ProjectConfig:
             data = json.loads(path.read_text(encoding="utf-8"))
             return ProviderRegistry.model_validate(data)
         except (OSError, json.JSONDecodeError, ValidationError) as exc:
-            raise ConfigurationError(f"invalid providers file {path}: {exc}") from exc
+            raise ConfigurationError(
+                f"fichier de providers illisible : {path} — {exc}. "
+                "Comparer avec `providers.example.json` livré par `amk init`."
+            ) from exc
 
     def agents(self) -> dict[str, AgentConfig]:
         result: dict[str, AgentConfig] = {}
@@ -336,7 +357,7 @@ class ProjectConfig:
         return result
 
     def _skill_from_markdown(self, path: Path) -> SkillConfig:
-        header, body = split_front_matter(path.read_text(encoding="utf-8"))
+        header, body = split_front_matter(path.read_text(encoding="utf-8"), path)
         name = header.get("name") or path.parent.name
         description = header.get("description")
         if not description:
@@ -433,7 +454,7 @@ class ProjectConfig:
                 {
                     "id": skill.name,
                     "description": skill.description,
-                    "source": str(Path(skill.source).relative_to(self.root)),
+                    "source": self._relative_source(skill.source),
                     "sha256": hashlib.sha256(Path(skill.source).read_bytes()).hexdigest(),
                 }
                 for skill in sorted(skills.values(), key=lambda item: item.name)
@@ -449,6 +470,26 @@ class ProjectConfig:
         os.replace(temporary, target)
         return payload
 
+    def _relative_source(self, source: str) -> str:
+        """Chemin lisible d'une skill, relatif à la racine qui la contient.
+
+        L'index se calculait relativement à la racine applicative. Depuis que le
+        dossier de données est déplaçable, une skill vit ailleurs et
+        `relative_to` lève une `ValueError` — qui n'est pas une
+        `ConfigurationError`, échappe donc au filtre du routeur et ressort en
+        « Internal Server Error » à l'enregistrement.
+
+        On essaie les deux racines, et à défaut on garde l'absolu : un index
+        moins joli vaut mieux qu'une sauvegarde refusée.
+        """
+        chemin = Path(source)
+        for racine in (self.content_root, self.root):
+            try:
+                return str(chemin.relative_to(racine))
+            except ValueError:
+                continue
+        return str(chemin)
+
     def disabled_tools(self, agent_id: str) -> set[str]:
         path = self.content_root / "agents" / f"{agent_id}.tools-disabled.json"
         if not path.exists():
@@ -463,7 +504,7 @@ class ProjectConfig:
         return set(values)
 
     def _markdown_agent(self, path: Path, default_provider: str) -> AgentConfig:
-        header, body = split_front_matter(path.read_text(encoding="utf-8"))
+        header, body = split_front_matter(path.read_text(encoding="utf-8"), path)
         agent_id = header.get("id") or header.get("name") or path.stem
         model = header.get("model")
         provider = header.get("provider") or _provider_for_model(model, default_provider)

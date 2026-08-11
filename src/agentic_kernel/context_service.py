@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-import contextlib
 import json
 import math
 import os
+from collections.abc import Collection
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from pydantic import ValidationError
 from pydantic_ai import BinaryContent, ModelMessagesTypeAdapter
 from pydantic_ai.messages import ImageUrl, ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from .errors import ConfigurationError
-from .models import Event, RunError, RunResult, RunStatus
+from .models import Event, ModuleIndex, RunError, RunResult, RunStatus
 
 
 def effective_context_window(declared: int | None, cap: int | None) -> int | None:
@@ -181,7 +182,15 @@ class ContextService:
         skills,
         prompt: str,
         workspace: Path | None = None,
+        inlined_skill_names: Collection[str] | None = None,
     ) -> int:
+        """Tokens occupés par le prompt avant le premier message de la conversation.
+
+        `inlined_skill_names` dit quelles skills entrent réellement dans le
+        prompt de ce run. Compter toutes celles rattachées à l'agent surestimait
+        l'occupation dès lors que leur corps est chargé à la demande, et faisait
+        déclencher la compaction plus tôt que nécessaire.
+        """
         components = [
             self.config.system_instructions(),
             agent_config.instructions,
@@ -189,12 +198,55 @@ class ContextService:
             self.workspace_maps.build(workspace or self.config.root).render(),
             self.secret_catalog_instruction(),
         ]
-        components.extend(
-            skills[name].instructions for name in agent_config.skills if name in skills
+        noms = agent_config.skills if inlined_skill_names is None else inlined_skill_names
+        components.extend(skills[name].instructions for name in noms if name in skills)
+        return self.estimate_tokens("\n".join(components)) + self._tool_schema_tokens(agent_config)
+
+    def _tool_schema_tokens(self, agent_config) -> int:
+        """Ce que pèsent les définitions d'outils envoyées au modèle.
+
+        On comptait ici `tools/index.json` en entier : 246 ko, soit 70 500
+        tokens. Ce fichier est un catalogue interne — sources, catégories,
+        schémas de sortie, métadonnées — dont le modèle ne voit rien. Ce qui
+        part sur le fil, c'est le nom, la description et le schéma d'entrée de
+        chaque outil exposé : 8 800 tokens pour les 76 outils du dépôt.
+
+        L'écart de 61 700 tokens ne restait pas théorique. Sur une fenêtre de
+        65 536, il suffisait à faire dépasser le seuil de compaction avant même
+        le premier message, à rendre la cible de réduction négative — donc
+        inatteignable — et à faire payer à chaque run un instantané et une passe
+        de compaction qui ne réduisaient rien.
+        """
+        declares = set(agent_config.declared_tools or ())
+        desactives = self.config.disabled_tools(agent_config.id)
+        # L'index porte déjà les schémas d'entrée résolus depuis les fonctions
+        # réelles : c'est la même forme que celle transmise au modèle.
+        try:
+            index = ModuleIndex.model_validate_json(
+                self.module_registry.index_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValidationError):
+            return 0
+        expose = [
+            tool
+            for manifest in index.modules
+            if manifest.enabled
+            for tool in manifest.tools
+            if tool.name not in desactives and (not declares or tool.name in declares)
+        ]
+        return sum(
+            self.estimate_tokens(
+                json.dumps(
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.input_schema,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            for tool in expose
         )
-        with contextlib.suppress(OSError):
-            components.append(self.module_registry.index_path.read_text(encoding="utf-8"))
-        return self.estimate_tokens("\n".join(components))
 
     def status(
         self,

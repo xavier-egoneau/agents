@@ -93,7 +93,14 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
         # Only deterministic, read-only observations may be cleared. Mutation,
         # approval, memory, plan, browser and network evidence stays available
         # to the summarizer and remains fully preserved in the JSONL audit.
-        reclaimable = {"list", "stat", "search_text", "process_output"}
+        #
+        # `read` appartient à cette famille et en était pourtant absent. C'est
+        # précisément ce qui remplit une session de code : sans lui, le tier ne
+        # récupérait rien et la compaction repartait à la requête suivante sans
+        # avoir rien réduit — douze fois de suite sur une session observée, avec
+        # un historique monté à 130 000 tokens pour une fenêtre de 65 536.
+        # Un fichier relu donne le même contenu; le perdre coûte un appel.
+        reclaimable = {"list", "read", "stat", "search_text", "process_output"}
         self.protected_tools = frozenset(all_tool_names - reclaimable)
 
     @staticmethod
@@ -203,7 +210,13 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
                 ),
                 SummarizingCompaction(
                     max_messages=1,
-                    keep_messages=20,
+                    # Une queue mesurée en messages ne veut rien dire : vingt
+                    # messages font 3 000 tokens dans une conversation et
+                    # 120 000 dans une session de code, où chaque résultat
+                    # d'outil pèse un fichier entier. Le seuil était alors
+                    # atteint sans qu'il reste quoi que ce soit à résumer.
+                    # Mesurée en tokens, la queue s'adapte à ce qu'elle contient.
+                    keep_tokens=max(1, math.floor(target * 0.6)),
                     preserve_first_user_message=True,
                     incremental=True,
                     summary_prompt=SUMMARY_PROMPT,

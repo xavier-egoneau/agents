@@ -338,3 +338,49 @@ def test_an_agent_declares_its_default_permission_level(project: Path) -> None:
     assert agents["prudent"].security_mode.value == "safe"
     # Non déclaré, il reste au niveau intermédiaire plutôt qu'au plus permissif.
     assert agents["main"].security_mode.value == "limited"
+
+
+def test_a_broken_front_matter_names_its_file(project: Path) -> None:
+    """Sans le chemin, il fallait ouvrir les fichiers un par un.
+
+    Le message disait « agent definition must start with YAML front matter »
+    sans dire lequel, alors qu'un dossier en compte une dizaine.
+    """
+    fautif = project / "content-agents" / "agents" / "casse.md"
+    fautif.write_text("id: casse\ndescription: sans delimiteur\n", encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="casse.md"):
+        ProjectConfig(project).agents()
+
+
+def test_a_missing_system_prompt_points_at_the_likely_cause(project: Path) -> None:
+    """L'emplacement des données est configurable : une erreur « fichier
+    introuvable » vient le plus souvent d'un chemin mal réglé, pas d'un fichier
+    effacé. Le dire épargne la mauvaise piste."""
+    (project / "content-agents" / "system.md").unlink()
+
+    with pytest.raises(ConfigurationError, match="dossier de données"):
+        ProjectConfig(project).system_instructions()
+
+
+def test_the_skill_index_survives_a_relocated_data_folder(project: Path) -> None:
+    """L'index se calculait relativement à la racine applicative.
+
+    Depuis que le dossier de données est déplaçable, une skill vit ailleurs et
+    `relative_to` lève une `ValueError` — qui n'est pas une `ConfigurationError`,
+    échappe donc au filtre du routeur et ressort en « Internal Server Error » au
+    moment d'enregistrer une skill.
+    """
+    directory = project / "content-agents" / "skills" / "veille"
+    directory.mkdir(parents=True)
+    (directory / "SKILL.md").write_text(
+        "---\nname: veille\ndescription: Faire la veille.\n---\nChercher.\n",
+        encoding="utf-8",
+    )
+    config = ProjectConfig(project)
+    # La skill vit hors de la racine applicative, comme après un déplacement.
+    config.root = project / "ailleurs"
+
+    index = config.build_skills_index()
+
+    assert index["skills"][0]["source"].endswith("SKILL.md")

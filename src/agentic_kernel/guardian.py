@@ -127,8 +127,16 @@ def review_tool_call(  # noqa: C901 - dette: moteur de décision multi-critères
         verdict, reason = GuardianVerdict.DENY, "Protected or secret paths are denied."
     elif ToolRisk.SECRET in risks or ToolRisk.SYSTEM in risks:
         verdict, reason = GuardianVerdict.DENY, "Secret and system actions are denied."
-    elif _targets_private_network(arguments, url_keys):
-        verdict, reason = GuardianVerdict.ASK, "Private or local network targets require approval."
+    elif (portee := _network_scope(arguments, url_keys)) == "private":
+        verdict, reason = (
+            GuardianVerdict.ASK,
+            "Une cible du réseau local désigne une autre machine : confirmation requise.",
+        )
+    elif portee == "loopback" and mode is not SecurityMode.POWER:
+        verdict, reason = (
+            GuardianVerdict.ASK,
+            "Une cible locale demande confirmation hors du mode power.",
+        )
     elif (
         paths
         and ToolRisk.READ in risks
@@ -218,7 +226,19 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def _targets_private_network(arguments: dict[str, Any], url_keys: tuple[str, ...]) -> bool:
+def _network_scope(arguments: dict[str, Any], url_keys: tuple[str, ...]) -> str:
+    """Classe une cible réseau : `public`, `loopback` ou `private`.
+
+    La distinction compte. `localhost` désigne cette machine — celle où l'agent
+    exécute déjà des commandes et lit déjà des fichiers : lui interdire d'ouvrir
+    le serveur qu'il vient de lancer n'ajoute aucune protection, seulement une
+    confirmation de plus.
+
+    Une adresse privée non locale désigne en revanche **une autre machine** :
+    routeur, NAS, imprimante, service interne. Là, la confirmation garde son
+    sens, y compris en `power`.
+    """
+    portee = "public"
     for key in url_keys:
         value = arguments.get(key)
         if not isinstance(value, str):
@@ -226,20 +246,21 @@ def _targets_private_network(arguments: dict[str, Any], url_keys: tuple[str, ...
         hostname = urlparse(value).hostname
         if not hostname:
             continue
-        if hostname.lower() == "localhost" or hostname.lower().endswith(".local"):
-            return True
+        minuscule = hostname.lower()
+        if minuscule == "localhost":
+            portee = "private" if portee == "private" else "loopback"
+            continue
+        if minuscule.endswith(".local"):
+            return "private"
         try:
             address = ipaddress.ip_address(hostname)
         except ValueError:
             continue
-        if (
-            address.is_private
-            or address.is_loopback
-            or address.is_link_local
-            or address.is_reserved
-        ):
-            return True
-    return False
+        if address.is_loopback:
+            portee = "private" if portee == "private" else "loopback"
+        elif address.is_private or address.is_link_local or address.is_reserved:
+            return "private"
+    return portee
 
 
 def _covered_by_workflow(
@@ -324,7 +345,11 @@ def _review_execution(arguments: dict[str, Any], mode: SecurityMode) -> tuple[Gu
         if executable.endswith(suffix):
             executable = executable[: -len(suffix)]
             break
-    args = [str(value) for value in arguments.get("args", [])]
+    # `get(clé, défaut)` ne protège que de la clé absente. Un modèle qui envoie
+    # explicitement `"args": null` — ce que fait couramment un appel à `dir` ou
+    # `ls` sans argument — passait alors `None` à la boucle, et le run entier
+    # tombait sur un `TypeError` avant même que le Guardian ait rendu son avis.
+    args = [str(value) for value in arguments.get("args") or []]
     lowered = [executable, *(value.casefold() for value in args)]
     command = " ".join(lowered)
     destructive = (

@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from agentic_kernel.models import RunError, RunRequest, RunResult, RunStatus, SecurityMode
 from agentic_kernel.scheduler import (
@@ -739,3 +740,123 @@ def test_regular_cron_is_not_affected_by_one_shot_logic(tmp_path: Path) -> None:
     assert fresh.next_run_at is not None
     # La prochaine échéance doit être après la date de claim
     assert fresh.next_run_at > datetime(2026, 8, 15, 9, 0, tzinfo=UTC)
+
+
+def test_a_reminder_fires_once_and_never_again(tmp_path: Path) -> None:
+    """Un rappel n'est pas une routine annuelle.
+
+    `cron_create` n'acceptait qu'un `schedule` cron : demander « rappelle-moi le
+    11 août » ne pouvait produire que `0 7 11 8 *`, qui revient chaque année.
+    Ce n'était pas une erreur de compréhension de l'agent, c'était un paramètre
+    absent de l'outil.
+    """
+    service = CronService(tmp_path / "state.db")
+
+    job = service.create(
+        CronJobInput(
+            name="rappel",
+            prompt="Prépare le planning",
+            one_shot_at=datetime(2026, 8, 11, 7, 0, tzinfo=UTC),
+        )
+    )
+
+    assert job.schedule == ""
+    assert job.one_shot_at is not None
+
+
+def test_a_routine_still_requires_one_of_the_two(tmp_path: Path) -> None:
+    """Ni l'un ni l'autre laisserait une routine qui ne part jamais."""
+    with pytest.raises(ValidationError):
+        CronJobInput(name="vide", prompt="rien")
+
+
+def test_a_prompt_that_ships_the_message_itself_is_refused() -> None:
+    """Une description se laisse ignorer; un refus, non.
+
+    Trois routines de suite ont été créées avec un prompt qui refabriquait la
+    livraison — appel à l'API Telegram, jeton nommé en clair — alors qu'elle est
+    automatique. Chaque fois, l'utilisateur devait aller accorder une
+    autorisation réseau pour un rappel de deux lignes.
+    """
+    from tools.modules.operations.module import _refabrique_la_livraison
+
+    assert _refabrique_la_livraison(
+        "Envoie un message Telegram : Médecin ! Utilise http_request avec "
+        "TELEGRAM_MAIN_BOT_TOKEN et TELEGRAM_MAIN_USER_ID."
+    )
+    assert _refabrique_la_livraison("POST https://api.telegram.org/bot123/sendMessage")
+
+
+def test_a_legitimate_outbound_call_stays_allowed() -> None:
+    """On refuse l'auto-livraison, pas l'idée d'appeler une API."""
+    from tools.modules.operations.module import _refabrique_la_livraison
+
+    assert not _refabrique_la_livraison("Rendez-vous médecin à 13h40")
+    assert not _refabrique_la_livraison(
+        "Publie le rapport sur le webhook interne https://hooks.exemple.test/rapport"
+    )
+
+
+def _resultat(statut: RunStatus, *, retryable: bool = False) -> RunResult:
+    return RunResult(
+        session_id=uuid4(),
+        run_id=uuid4(),
+        agent_id="main",
+        status=statut,
+        output="Rendez-vous médecin à 13h40",
+        errors=[RunError(type="tool", message="échec", retryable=retryable)]
+        if statut is not RunStatus.SUCCESS
+        else [],
+    )
+
+
+def test_a_delivered_reminder_disappears(tmp_path: Path) -> None:
+    """Un rappel est ponctuel : passée sa date, il n'a plus rien à faire.
+
+    Le laisser en place produisait une routine active sans exécution prévue,
+    qui s'accumulait à chaque rappel demandé. Le supprimer ne perd rien — le
+    message vit dans la session canonique de l'agent, là où on le lit.
+    """
+    service = CronService(tmp_path / "state.db")
+    job = service.create(
+        CronJobInput(
+            name="rappel",
+            prompt="Rendez-vous médecin à 13h40",
+            one_shot_at=datetime.now(UTC) + timedelta(minutes=1),
+            kind="reminder",
+        )
+    )
+
+    service.finish(job.id, _resultat(RunStatus.SUCCESS))
+
+    assert [item.id for item in service.list()] == []
+
+
+def test_a_failed_reminder_is_kept(tmp_path: Path) -> None:
+    """Effacer un rappel qui n'est jamais arrivé priverait l'utilisateur de la
+    seule trace lui disant qu'il l'attend encore."""
+    service = CronService(tmp_path / "state.db")
+    job = service.create(
+        CronJobInput(
+            name="rappel",
+            prompt="Rendez-vous",
+            one_shot_at=datetime.now(UTC) + timedelta(minutes=1),
+            kind="reminder",
+        )
+    )
+
+    service.finish(job.id, _resultat(RunStatus.FAILED))
+
+    assert [item.id for item in service.list()] == [job.id]
+
+
+def test_a_recurring_routine_survives_its_run(tmp_path: Path) -> None:
+    """La suppression vise le ponctuel; une veille quotidienne doit rester."""
+    service = CronService(tmp_path / "state.db")
+    job = service.create(
+        CronJobInput(name="veille", prompt="Cherche", schedule="0 8 * * *")
+    )
+
+    service.finish(job.id, _resultat(RunStatus.SUCCESS))
+
+    assert [item.id for item in service.list()] == [job.id]

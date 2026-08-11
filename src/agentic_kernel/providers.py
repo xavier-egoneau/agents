@@ -9,7 +9,12 @@ import httpx
 
 from .auth import OAuthManager
 from .errors import AuthenticationError, ConfigurationError
-from .llama_server import LlamaServerError, LlamaServerManager, scan_gguf_models
+from .llama_server import (
+    LlamaServerError,
+    LlamaServerManager,
+    ThroughputCounters,
+    scan_gguf_models,
+)
 from .models import ConnectionType, ProviderConfig, ProviderRegistry
 from .provider_adapters import (
     ProviderAdapterRegistry,
@@ -74,6 +79,18 @@ class ProviderFactory:
                 raise ConfigurationError(str(exc)) from exc
         adapter = self.adapters.for_config(config)
         return adapter.build(config, model_name, self.oauth)
+
+    def throughput_counters(self, provider_id: str) -> ThroughputCounters | None:
+        """Compteurs de débit du serveur local qui sert ce provider, s'il y en a un.
+
+        Renvoie `None` pour tout provider distant : DeepSeek et consorts ne
+        publient pas la décomposition entre traitement du prompt et écriture.
+        """
+        try:
+            manager = self._managed_llama(self.get_config(provider_id))
+        except ConfigurationError:
+            return None
+        return manager.throughput_counters() if manager is not None else None
 
     async def check(self, provider_id: str) -> tuple[bool, str]:
         config = self.get_config(provider_id)
@@ -224,6 +241,10 @@ class ProviderFactory:
             server_args.extend(["--flash-attn", "on"])
         elif config.flash_attn is False:
             server_args.extend(["--flash-attn", "off"])
+        # Sans cet indicateur, `/metrics` répond 501 et la vitesse réelle
+        # d'écriture reste invisible : l'interface ne peut alors qu'afficher des
+        # tokens divisés par une durée, ce qui n'est pas une vitesse.
+        server_args.append("--metrics")
         server_args.extend(config.llama_args)
         return LlamaServerManager(
             state_dir=self.runtime_dir,

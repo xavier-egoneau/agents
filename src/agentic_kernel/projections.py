@@ -508,11 +508,19 @@ class SessionProjection:
         include_automations: bool = False,
         include_channels: bool = False,
         default_workspace_agent: str | None = None,
+        personal_agent: str | None = None,
     ) -> list[dict[str, Any]]:
         query = "SELECT * FROM projected_sessions"
         params: list[Any] = []
         clauses: list[str] = []
-        if workspace is not None:
+        if workspace is None and personal_agent:
+            # « Aucun projet » n'est pas « toutes les sessions » : c'est la vue
+            # de l'agent hors projet — son canal permanent et ce qu'il a fait
+            # dans son espace personnel. Sans cette distinction, choisir
+            # « aucun » déversait l'historique de tous les projets à la fois.
+            clauses.append("(trigger = 'agent_channel' OR (workspace IS NULL AND agent_id = ?))")
+            params.append(personal_agent)
+        elif workspace is not None:
             workspace_clauses = ["workspace = ?", "trigger = 'agent_channel'"]
             params.append(workspace)
             if default_workspace_agent:

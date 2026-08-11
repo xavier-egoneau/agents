@@ -23,12 +23,25 @@ type ToolSelectorProps = {
   tools: ToolEntry[];
   modules: ModuleEntry[];
   selected: string[];
+  /**
+   * Outils imposés par une skill cochée : présentés cochés et verrouillés.
+   * Les décocher n'aurait aucun effet — la skill les réinscrirait — et laisser
+   * croire le contraire serait pire que de l'interdire.
+   */
+  locked?: string[];
   onToggleTools: (names: string[], next: boolean) => void;
 };
 
-export function ToolSelector({ tools, modules, selected, onToggleTools }: ToolSelectorProps) {
+export function ToolSelector({
+  tools,
+  modules,
+  selected,
+  locked = [],
+  onToggleTools,
+}: ToolSelectorProps) {
   const [expanded, setExpanded] = useState<string[]>([]);
   const chosen = useMemo(() => new Set(selected), [selected]);
+  const imposes = useMemo(() => new Set(locked), [locked]);
 
   const groups = useMemo(() => {
     const byModule = new Map<string, ToolEntry[]>();
@@ -58,6 +71,9 @@ export function ToolSelector({ tools, modules, selected, onToggleTools }: ToolSe
         const partial = active > 0 && !all;
         const open = expanded.includes(group.id);
         const names = group.tools.map((tool) => tool.name);
+        // Un module dont tous les outils sont imposés ne peut pas être décoché
+        // en bloc : le bouton du haut suivrait, et rien ne se passerait.
+        const moduleImpose = names.every((name) => imposes.has(name));
 
         return (
           <div className="tool-group" key={group.id}>
@@ -71,6 +87,7 @@ export function ToolSelector({ tools, modules, selected, onToggleTools }: ToolSe
                   ref={(node) => {
                     if (node) node.indeterminate = partial;
                   }}
+                  disabled={moduleImpose}
                   onChange={() => onToggleTools(names, !all)}
                 />
                 <span>
@@ -105,9 +122,13 @@ export function ToolSelector({ tools, modules, selected, onToggleTools }: ToolSe
                     <input
                       type="checkbox"
                       checked={chosen.has(tool.name)}
+                      disabled={imposes.has(tool.name)}
                       onChange={() => onToggleTools([tool.name], !chosen.has(tool.name))}
                     />
-                    <span>{tool.name}</span>
+                    <span>
+                      {tool.name}
+                      {imposes.has(tool.name) && <em className="tool-required">skill</em>}
+                    </span>
                   </label>
                 ))}
               </div>

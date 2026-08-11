@@ -20,6 +20,18 @@ from .platform.processes import (
 
 
 def is_amk_web_launcher(pid: int) -> bool:
+    """Reconnaît une instance d'AMK, surface ou serveur d'API.
+
+    `amk web` lance `amk serve` en enfant. Quand le parent meurt sans l'emporter
+    — fermeture brutale, terminal fermé —, le serveur survit et garde le port.
+    Ne reconnaître que `web` laissait cet orphelin en travers du démarrage
+    suivant, avec un message qui le disait « hors surface Web » : vrai de son
+    argv, faux de sa nature.
+
+    `agents start` reprend la machine : une seule instance à la fois, quel que
+    soit le projet ou le port. Un `amk serve` lancé à la main tombe donc aussi,
+    et c'est la politique voulue.
+    """
     try:
         arguments = [item.strip('"') for item in shlex.split(process_command(pid), posix=False)]
     except ValueError:
@@ -28,16 +40,21 @@ def is_amk_web_launcher(pid: int) -> bool:
         return False
     executable = arguments[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
     values = [item.lower() for item in arguments[1:]]
+    moitiés = {"web", "serve"}
     if executable in {"uv", "uv.exe"}:
-        return values[:3] in (["run", "amk", "web"], ["run", "amk.exe", "web"])
-    if executable in {"amk", "amk.exe"}:
-        return values[:1] == ["web"]
+        return (
+            values[:2] in (["run", "amk"], ["run", "amk.exe"])
+            and values[2:3] != []
+            and values[2] in moitiés
+        )
+    if executable in {"amk", "amk.exe", "agents", "agents.exe"}:
+        return values[:1] != [] and values[0] in moitiés
     if executable.startswith(("python", "pypy")):
-        if values[:3] == ["-m", "agentic_kernel.cli", "web"]:
+        if values[:2] == ["-m", "agentic_kernel.cli"] and values[2:3] and values[2] in moitiés:
             return True
         if len(values) >= 2:
             script = values[0].replace("\\", "/").rsplit("/", 1)[-1]
-            return script in {"amk", "amk.exe"} and values[1] == "web"
+            return script in {"amk", "amk.exe", "agents", "agents.exe"} and values[1] in moitiés
     return False
 
 
@@ -65,6 +82,12 @@ def stop_previous_instances() -> list[int]:
 
 
 def ensure_api_port_available(port: int) -> None:
+    """Ne reste ici que ce qui n'appartient pas à AMK.
+
+    `stop_previous_instances` a déjà emporté les instances précédentes, serveur
+    d'API compris. Ce qui tient encore le port est donc un programme tiers, et
+    l'arrêter serait une décision qui ne nous revient pas.
+    """
     conflicts = [pid for pid in listening_pids(port) if pid != os.getpid()]
     if not conflicts:
         return
@@ -147,10 +170,16 @@ def run_web(  # noqa: C901 - dette: orchestration multi-services
     ModuleRegistry(root / "tools").build_index()
     web_root = root / "surfaces" / "web"
     if not (web_root / "package.json").is_file():
-        raise ConfigurationError(f"missing web surface: {web_root}")
+        raise ConfigurationError(
+            f"surface web introuvable : {web_root}. Le dépôt est incomplet — "
+            "vérifier que `surfaces/web` existe, ou relancer depuis la racine du projet."
+        )
     npm = shutil.which("npm")
     if npm is None:
-        raise ConfigurationError("npm is required to launch the web surface")
+        raise ConfigurationError(
+            "`npm` introuvable dans le PATH. Installer Node.js, puis rouvrir le "
+            "terminal — une session ouverte avant l'installation garde l'ancien PATH."
+        )
     amk = shutil.which("amk") or str(Path(sys.executable).parent / "amk")
     stopped = stop_previous_instances()
     if stopped:

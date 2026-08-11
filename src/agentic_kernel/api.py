@@ -240,10 +240,38 @@ def create_app(  # noqa: C901 - dette: factory montant tous les routers
             }
         )
 
+    def _reminder_result(request: RunRequest) -> RunResult | None:
+        """Résultat d'un rappel, produit sans appeler le moindre modèle.
+
+        Le texte est fixé au moment où l'utilisateur demande le rappel. Le
+        soumettre à un modèle au déclenchement coûterait des tokens et une
+        latence pour reproduire une chaîne connue d'avance, et ajouterait trois
+        façons d'échouer : reformulation, préambule, fournisseur indisponible à
+        7 h du matin. Un rappel qui n'arrive pas est un rappel raté.
+
+        Le résultat emprunte ensuite le chemin de livraison ordinaire — session
+        canonique, puis Telegram : rien de particulier à câbler.
+        """
+        if not request.cron_job_id:
+            return None
+        job = cron_service.get(request.cron_job_id)
+        if job.kind != "reminder":
+            return None
+        return RunResult(
+            session_id=request.session_id,
+            run_id=uuid4(),
+            agent_id=job.agent_id,
+            status=RunStatus.SUCCESS,
+            output=job.prompt,
+        )
+
     async def launch(request: RunRequest) -> RunResult:
         if request.session_id in running_tasks:
             raise SchedulerError(f"Un run est déjà actif pour la session {request.session_id}")
         validate_cron_request(request)
+        if request.trigger.startswith("cron") and (rappel := _reminder_result(request)):
+            deliver_cron_result(request, rappel)
+            return rappel
         request = with_routine_conversation(request)
         task = asyncio.create_task(kernel.run(request))
         running_tasks[request.session_id] = task
@@ -327,12 +355,17 @@ def create_app(  # noqa: C901 - dette: factory montant tous les routers
         agents = project.agents()
         agent = agents.get(payload.agent_id)
         if agent is None:
-            raise ConfigurationError(f"unknown agent: {payload.agent_id}")
+            raise ConfigurationError(
+                f"agent inconnu : {payload.agent_id}. Disponibles : "
+                f"{', '.join(sorted(agents)) or 'aucun'}."
+            )
         skills = project.skills(payload.workspace)
         creator = skills.get("workflow-creator")
         if creator is None:
             raise ConfigurationError(
-                "Le skill workflow-creator doit être installé pour proposer un workflow"
+                "Le skill `workflow-creator` est absent de content-agents/skills/. "
+                "Il est livré par `amk init` : le restaurer, ou garder la routine "
+                "en mode libre — un workflow n'est pas obligatoire."
             )
         provider_id = payload.provider_id or agent.provider
         model = ProviderFactory(
@@ -501,7 +534,16 @@ def create_app(  # noqa: C901 - dette: factory montant tous les routers
                 for agent in agents.values()
             ],
             "skills": [
-                {"name": skill.name, "description": skill.description}
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    # `allowed-tools` d'une skill n'autorise rien par lui-même :
+                    # seul l'agent décide de ses outils. L'exposer permet à
+                    # l'interface d'inscrire ces outils dans l'agent quand on y
+                    # coche la skill, plutôt que de la laisser réclamer à
+                    # l'exécution quelque chose qu'elle n'aura pas.
+                    "tools": skill.allowed_tools,
+                }
                 for skill in project.skills().values()
             ],
             "providers": [

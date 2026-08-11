@@ -46,6 +46,24 @@ def test_runtime_context_contains_timestamp_timezone_and_workspace(tmp_path: Pat
     assert "Security mode: limited" in instruction
 
 
+def test_the_runtime_clock_states_that_it_needs_no_confirmation(tmp_path: Path) -> None:
+    """Sans cette phrase, l'agent revérifiait l'heure qu'il avait déjà.
+
+    `system.md` demande de vérifier plutôt que d'affirmer. Le modèle appliquait
+    la règle à l'horodatage du contexte : une valeur inscrite dans le prompt est
+    une affirmation, un appel d'outil est une vérification. Sur les journaux de
+    production, 450 runs sur 710 appelaient l'horloge, pour 454 appels — le
+    premier outil de l'agent, loin devant lire et écrire.
+
+    Le bloc étant réécrit à chaque requête, la valeur est toujours juste : il
+    manquait seulement de le dire.
+    """
+    instruction = _runtime_context_instruction(tmp_path, SecurityMode.LIMITED)
+
+    assert "authoritative" in instruction
+    assert "do not call a clock tool" in instruction
+
+
 async def test_kernel_run_writes_complete_session(project: Path, monkeypatch) -> None:
     ModuleRegistry(project / "tools").build_index()
     monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: TestModel(call_tools=[]))
@@ -500,6 +518,69 @@ Answer with concise prose.
     assert "Answer with concise prose." in rendered
     assert f"Skill root: {skill_dir}" in rendered
     assert "Requested tools: read." in rendered
+
+
+async def test_an_attached_skill_is_announced_rather_than_recopied(
+    project: Path, monkeypatch
+) -> None:
+    """Le corps d'une skill rattachée n'entre plus dans le prompt par défaut.
+
+    Onze skills rattachées à l'orchestrateur pesaient près de 10 000 tokens
+    recopiés à chaque requête, soit plusieurs secondes de traitement du prompt
+    avant que le modèle écrive quoi que ce soit — y compris pour répondre
+    « ça va ? ». L'index les annonce, `load_skill` apporte le corps à l'usage.
+
+    Celles qui se déclarent `load: always` restent inscrites : elles
+    conditionnent le comportement avant que le modèle sache qu'il en a besoin.
+    """
+    skills_root = project / "content-agents" / "skills"
+    (skills_root / "on-occasion").mkdir(parents=True)
+    (skills_root / "on-occasion" / "SKILL.md").write_text(
+        """---
+name: on-occasion
+description: Explains how to answer a rare question.
+---
+Body of the occasional skill.
+""",
+        encoding="utf-8",
+    )
+    (skills_root / "at-all-times").mkdir(parents=True)
+    (skills_root / "at-all-times" / "SKILL.md").write_text(
+        """---
+name: at-all-times
+description: Conditions every answer.
+load: always
+---
+Body of the permanent skill.
+""",
+        encoding="utf-8",
+    )
+    agent_path = project / "content-agents" / "agents" / "main.md"
+    agent_path.write_text(
+        agent_path.read_text(encoding="utf-8").replace(
+            "provider: test\n",
+            "provider: test\nskills:\n  - on-occasion\n  - at-all-times\n",
+        ),
+        encoding="utf-8",
+    )
+    ModuleRegistry(project / "tools").build_index()
+    observed_instructions: list[str] = []
+
+    def respond(_messages, info):
+        observed_instructions.append(info.instructions or "")
+        return ModelResponse(parts=[TextPart("done")])
+
+    monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(respond))
+
+    result = await Kernel(project).run(RunRequest(prompt="Bonjour"))
+
+    assert result.status == RunStatus.SUCCESS
+    rendered = "\n".join(observed_instructions)
+    assert "Body of the permanent skill." in rendered
+    assert "Body of the occasional skill." not in rendered
+    # Annoncée, et signalée comme faisant partie du répertoire de l'agent :
+    # sans cela le modèle n'a aucune raison d'aller la chercher.
+    assert "- on-occasion [attached to you]: Explains how to answer a rare question." in rendered
 
 
 async def test_enabled_user_memory_and_implicit_skill_are_injected(

@@ -19,7 +19,7 @@
     {"name": "trace_query", "description": "Interroger les traces d'audit bornées de la session.", "category": "observability", "risk_tags": ["read"], "timeout_seconds": 15},
     {"name": "metrics_summary", "description": "Agréger les métriques d'outils de la session.", "category": "observability", "risk_tags": ["read"], "timeout_seconds": 15}
     ,{"name": "cron_list", "description": "Lister les cronjobs persistants et leur état.", "category": "scheduler", "risk_tags": ["read"], "timeout_seconds": 15}
-    ,{"name": "cron_create", "description": "Créer un cronjob persistant dans le workspace courant.", "category": "scheduler", "risk_tags": ["write"], "timeout_seconds": 15, "persistent": true}
+    ,{"name": "cron_create", "description": "Programmer un travail : routine répétée via `schedule` cron, ou rappel unique via `one_shot_at`. Un rappel à une date donnée exige `one_shot_at` — exprimé en cron, il reviendrait chaque année. `kind='reminder'` livre le prompt tel quel sans appeler de modèle, pour un message déjà connu.", "category": "scheduler", "risk_tags": ["write"], "timeout_seconds": 15, "persistent": true}
     ,{"name": "cron_set_enabled", "description": "Activer ou mettre en pause un cronjob.", "category": "scheduler", "risk_tags": ["write"], "timeout_seconds": 15, "persistent": true}
     ,{"name": "cron_delete", "description": "Supprimer une définition de cronjob.", "category": "scheduler", "risk_tags": ["destructive"], "timeout_seconds": 15, "persistent": true}
   ],

@@ -69,7 +69,9 @@ def test_seatbelt_profile_preserves_existing_macos_policy(tmp_path: Path) -> Non
         prepared.cleanup()
 
 
-def test_the_container_is_offline_and_stripped_of_capabilities(tmp_path: Path) -> None:
+def test_the_container_is_offline_and_stripped_of_capabilities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Ce que le conteneur ne peut pas faire compte plus que ce qu'il exécute.
 
     Sans `--cap-drop=ALL` ni `--network=none`, un conteneur reste une machine
@@ -79,7 +81,9 @@ def test_the_container_is_offline_and_stripped_of_capabilities(tmp_path: Path) -
     deps = _deps(tmp_path, SecurityMode.LIMITED)
     runtime = runtime_directories(deps)
 
-    prepared = DockerSandbox("docker", image="image:test").prepare(
+    bac = DockerSandbox("docker", image="image:test")
+    monkeypatch.setattr(bac, "image_available", lambda: (True, ""))
+    prepared = bac.prepare(
         ["example", "arg"], deps, runtime, allow_network=False
     )
 
@@ -90,11 +94,15 @@ def test_the_container_is_offline_and_stripped_of_capabilities(tmp_path: Path) -
     assert prepared.sandboxed is True
 
 
-def test_the_workspace_is_mounted_read_only_in_safe_mode(tmp_path: Path) -> None:
+def test_the_workspace_is_mounted_read_only_in_safe_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     deps = _deps(tmp_path, SecurityMode.SAFE)
     runtime = runtime_directories(deps)
 
-    prepared = DockerSandbox("docker", image="image:test").prepare(
+    bac = DockerSandbox("docker", image="image:test")
+    monkeypatch.setattr(bac, "image_available", lambda: (True, ""))
+    prepared = bac.prepare(
         ["example"], deps, runtime, allow_network=True
     )
 
@@ -105,13 +113,17 @@ def test_the_workspace_is_mounted_read_only_in_safe_mode(tmp_path: Path) -> None
     assert "--network=bridge" in prepared.command
 
 
-def test_container_paths_replace_host_paths_in_the_environment(tmp_path: Path) -> None:
+def test_container_paths_replace_host_paths_in_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Réutiliser les chemins de l'hôte donnerait des variables qui ne
     désignent rien une fois la frontière franchie."""
     deps = _deps(tmp_path, SecurityMode.LIMITED)
     runtime = runtime_directories(deps)
 
-    prepared = DockerSandbox("docker", image="image:test").prepare(
+    bac = DockerSandbox("docker", image="image:test")
+    monkeypatch.setattr(bac, "image_available", lambda: (True, ""))
+    prepared = bac.prepare(
         ["example"], deps, runtime, allow_network=False
     )
 

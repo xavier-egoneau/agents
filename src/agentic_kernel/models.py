@@ -133,6 +133,26 @@ class AgentConfig(BaseModel):
     source: str
 
 
+class SkillLoad(StrEnum):
+    """Quand le corps d'une skill entre dans le prompt.
+
+    `ON_DEMAND` — le prompt ne porte que le nom et la description; le modèle
+    charge le corps avec `load_skill` quand l'occasion se présente. C'est le
+    défaut, parce que la plupart des skills décrivent une procédure dont
+    l'occasion s'annonce d'elle-même (« crée un workflow », `/plan`).
+
+    `ALWAYS` — le corps est inséré à chaque requête. Réservé aux skills dont
+    l'oubli ne se voit pas : elles conditionnent le comportement avant que le
+    modèle sache qu'il en a besoin. Il ne peut pas décider de charger la mémoire
+    utilisateur pour savoir comment s'appelle la personne : il faut déjà le
+    savoir. Une skill `ALWAYS` se paie à chaque tour, en tokens et en temps de
+    traitement du prompt.
+    """
+
+    ALWAYS = "always"
+    ON_DEMAND = "on-demand"
+
+
 class SkillConfig(BaseModel):
     """Normalized Agent Skill compatible with OpenAI and Claude SKILL.md files."""
 
@@ -144,6 +164,7 @@ class SkillConfig(BaseModel):
     source: str
     root: str
     allowed_tools: list[str] = Field(default_factory=list)
+    load: SkillLoad = SkillLoad.ON_DEMAND
 
 
 class ToolRisk(StrEnum):

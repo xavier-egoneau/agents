@@ -19,13 +19,19 @@ function compactTokens(value: number): string {
 }
 
 export function ContextMeter({ status }: { status: ContextStatus | null }) {
-  const ratio = status?.estimated_ratio;
   const threshold = status?.compaction_threshold_ratio ?? 0.7;
   const windowTokens = status?.context_window_tokens;
   const displayedTokens = status?.observed_input_tokens
     ?? status?.estimated_request_tokens
     ?? status?.estimated_history_tokens
     ?? 0;
+  // Trois états, et non deux. Une conversation vide n'a pas de ratio mesuré,
+  // mais sa fenêtre est connue : afficher « fenêtre inconnue » y était faux, et
+  // envoyait chercher du côté de `/model-context` un réglage déjà fait.
+  const enAttente = status === null;
+  const ratio = windowTokens
+    ? status?.estimated_ratio ?? displayedTokens / windowTokens
+    : null;
   return (
     <div
       className={[
@@ -36,7 +42,9 @@ export function ContextMeter({ status }: { status: ContextStatus | null }) {
       title={
         windowTokens
           ? `${displayedTokens.toLocaleString("fr-FR")} tokens sur ${windowTokens.toLocaleString("fr-FR")}`
-          : "Fenêtre de contexte inconnue — utilise /model-context"
+          : enAttente
+            ? "Mesure du contexte en cours"
+            : "Fenêtre de contexte inconnue — utilise /model-context"
       }
     >
       <div className="context-meter-label">
@@ -48,6 +56,8 @@ export function ContextMeter({ status }: { status: ContextStatus | null }) {
               {compactTokens(displayedTokens)} / {compactTokens(windowTokens)}
             </small>
           </strong>
+        ) : enAttente ? (
+          <strong><small>mesure en cours…</small></strong>
         ) : (
           <strong>Fenêtre inconnue <small>/model-context</small></strong>
         )}

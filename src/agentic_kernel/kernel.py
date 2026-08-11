@@ -35,6 +35,7 @@ from .context_service import (
 from .errors import AuthenticationError, ConfigurationError, KernelError
 from .events import JsonlEventStore
 from .git_service import GitService
+from .llama_server import ThroughputCounters
 from .models import (
     ApprovalRequest,
     Event,
@@ -289,6 +290,10 @@ class Kernel:
                 ),
                 supports_vision=supports_vision,
             )
+            # Relevé pris après la construction de l'agent, donc après le
+            # démarrage éventuel du serveur local : le débit du run se lira
+            # comme la différence avec le relevé de fin.
+            debit_avant = provider_factory.throughput_counters(active_provider_id)
             with capture_run_messages() as captured:
                 try:
                     async with asyncio.timeout(budgets.session_timeout_seconds):
@@ -314,6 +319,11 @@ class Kernel:
                 self.active_runs.pop(request.session_id, None)
                 return response
             usage = asdict(result.usage)
+            _merge_throughput(
+                usage,
+                debit_avant,
+                provider_factory.throughput_counters(active_provider_id),
+            )
             messages = json.loads(result.all_messages_json())
             output = str(result.output)
             if command and command["command"] == "/compact":
@@ -1207,6 +1217,29 @@ def _transient_http_status(status_code: int) -> bool:
     return status_code == 429 or status_code >= 500
 
 
+def _merge_throughput(
+    usage: dict[str, Any],
+    avant: ThroughputCounters | None,
+    apres: ThroughputCounters | None,
+) -> None:
+    """Ajoute au relevé d'usage les débits réels du serveur local.
+
+    Le nombre de tokens divisé par la durée du run n'est pas une vitesse : il
+    met au même dénominateur la lecture du prompt, l'écriture de la réponse,
+    les appels d'outils et l'attente d'une autorisation. Un serveur llama.cpp,
+    lui, chronomètre séparément la lecture et l'écriture; on lui demande ses
+    chiffres plutôt que d'en fabriquer un.
+
+    Sans serveur local, sans `--metrics`, ou si le relevé de départ manque,
+    l'usage repart tel quel : mieux vaut pas de vitesse qu'une vitesse fausse.
+    """
+    if apres is None:
+        return
+    mesures = apres.since(avant)
+    if mesures:
+        usage.setdefault("details", {}).update(mesures)
+
+
 def _workflow_grants(workflow: dict[str, Any] | None) -> frozenset[tuple[str, str]]:
     """Concessions d'un workflow accepté; vide quand la routine n'en a pas.
 
@@ -1252,6 +1285,15 @@ def _runtime_context_instruction(
     return (
         "# Runtime context\n\n"
         f"{identite}"
+        # Le bloc est réécrit à chaque requête, donc toujours juste. Sans cette
+        # phrase, la consigne « vérifier plutôt qu'affirmer » du système
+        # s'appliquait aussi à l'heure : le modèle traitait une valeur inscrite
+        # dans le prompt comme une affirmation à contrôler et appelait l'horloge.
+        # 450 runs sur 710 le faisaient, pour 454 appels — 29 % de toute son
+        # activité d'outils passée à redemander ce qu'il avait sous les yeux.
+        "The date and time below are regenerated for this request and are "
+        "authoritative. Use them directly; do not call a clock tool to confirm "
+        "them.\n"
         f"Current local date and time: {current.isoformat(timespec='seconds')}\n"
         f"Timezone: {current.tzname() or current.strftime('%z')}\n"
         f"Workspace/CWD: {workspace.resolve()}\n"

@@ -6,6 +6,23 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Aucun test ne doit pouvoir atteindre les données réelles.
+
+    `content_root()` consulte un réglage global enregistré hors du dépôt, et cet
+    emplacement l'emporte sur la racine qu'on lui passe. Un test construisant un
+    `ProjectConfig` sur un dossier temporaire écrivait donc dans le
+    `content-agents` réel de l'utilisateur : 96 routines de test s'y sont
+    accumulées avant qu'on s'en aperçoive, dont 72 activées.
+
+    `AMK_HOME` est le mécanisme prévu pour « un lancement ponctuel sur un autre
+    jeu de données ». Le harnais ne s'en servait pas ; il s'en sert maintenant,
+    pour tous les tests, sans qu'aucun ait à y penser.
+    """
+    monkeypatch.setenv("AMK_HOME", str(tmp_path))
+
+
 @pytest.fixture
 def project(tmp_path: Path) -> Path:
     content = tmp_path / "content-agents"

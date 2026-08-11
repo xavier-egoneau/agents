@@ -11,10 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
-import ReactMarkdown from "react-markdown";
 import { playRunChime, primeRunChime } from "./run-chime";
-import remarkGfm from "remark-gfm";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   ApprovalPanel,
   type Approval,
@@ -39,7 +36,9 @@ import {
   type CurrentPlan,
   type PlanStep,
 } from "./components/current-plan-panel";
-import { RoutineWorkflowPanel } from "./components/routine-workflow-panel";
+import { RoutineEditor } from "./components/routine-editor";
+import { ProviderEditor } from "./components/provider-editor";
+import { ResourceEditorForm } from "./components/resource-editor-form";
 import {
   GitChangeCard,
   GitCommitDialog,
@@ -64,597 +63,59 @@ import { FileExplorer } from "./components/layout/file-explorer";
 import { ThemePicker } from "./components/layout/theme-picker";
 import { AgentAvatar } from "./components/agent-avatar";
 import { CompactionIndicator } from "./components/compaction-indicator";
-import { ToolSelector } from "./components/tool-selector";
+import { ModuleSettingsPanel } from "./components/module-settings-panel";
 import { Icon } from "./theme/theme-context";
 import {
-  apiErrorDetail,
   fileExplorerKernelUrl,
   formatApiDetail,
   readApiPayload,
 } from "./lib/api";
 import { normalizeResourceId } from "./lib/format";
-import { runStatsByRunId, traceEventsForRun, type RunStats, type TraceEvent } from "./lib/trace";
+import { conversationReducer } from "./lib/conversation";
 import {
-  cronEditorFromJob,
-  describeCron,
-  type CronFrequencyKind,
-  type CronJob,
-} from "./lib/cron";
+  DockTabId,
+  SlashCommand,
+  routineClearCommand,
+  Catalog,
+  ConfigurableModule,
+  Message,
+  Workspace,
+  ComposerImage,
+  toImageMediaType,
+  ImagePreview,
+  ManagedResource,
+  TelegramAgentConfig,
+  ResourceEditor,
+  ManagedProvider,
+  codexAuthHelpUrl,
+  codexApiUrl,
+  KnowledgePage,
+  ContentHome,
+  ComposerPreferences,
+  composerPreferencesKey,
+  parseMarkdownResource,
+  buildMarkdownResource,
+  resourceList,
+  SessionSummary,
+  gitSnapshotForRun,
+} from "./lib/model";
+import { runStatsByRunId, traceEventsForRun, type TraceEvent } from "./lib/trace";
+import { cronEditorFromJob, describeCron } from "./lib/cron";
 import { ProcessTrace } from "./components/process-trace";
+import {
+  MarkdownMessage,
+  MessageArtifacts,
+  RunCost,
+  UserMessageImages,
+} from "./components/message-parts";
 import { useGitReview } from "./components/use-git-review";
 import { useRoutines } from "./components/use-routines";
-
-type DockTabId = "git" | "files";
-
-type Agent = {
-  id: string;
-  description: string;
-  provider: string;
-  model: string | null;
-  skills: string[];
-  delegates: string[];
-  has_avatar?: boolean;
-  /** Niveau appliqué par les surfaces sans sélecteur, et défaut du composer. */
-  security_mode?: SecurityMode;
-  /** Exécutant appelé par un orchestrateur; il ne délègue à personne. */
-  subagent?: boolean;
-};
-
-type Skill = { name: string; description: string };
-type SlashCommand = {
-  command: string;
-  description: string;
-  kind: string;
-  skill: string;
-  source: string;
-};
-/** Traitée par la surface, jamais transmise au modèle : elle purge le journal
- *  de la session côté kernel. */
-const routineClearCommand: SlashCommand = {
-  command: "/clear",
-  description: "Vider définitivement le fil de cette conversation.",
-  kind: "native",
-  skill: "",
-  source: "interface",
-};
-type Catalog = {
-  default_provider: string;
-  /** Délégations écartées au chargement — signalées, jamais bloquantes. */
-  agent_warnings?: {
-    agent_id: string;
-    source: string;
-    dropped: string[];
-    message: string;
-    remedy: string;
-  }[];
-  agents: Agent[];
-  skills: Skill[];
-  providers: {
-    id: string;
-    connection_type: string;
-    model: string | null;
-    models: string[];
-    vision: boolean;
-  }[];
-  tools: { name: string; description: string; module: string; risks: string[] }[];
-  modules: { id: string; name: string; description: string }[];
-  configurable_modules: { id: string; name: string }[];
-};
-
-type ModuleSettingField = {
-  name: string;
-  label: string;
-  type: "text" | "secret" | "file" | "directory" | "integer" | "number" | "boolean" | "select" | "string_list";
-  description?: string | null;
-  required: boolean;
-  default?: unknown;
-  options: string[];
-  minimum?: number | null;
-  maximum?: number | null;
-  configured?: boolean;
-  value?: unknown;
-};
-
-type ConfigurableModule = {
-  id: string;
-  name: string;
-  title: string;
-  description: string;
-  applies_to: string[];
-  state: "configured" | "defaults" | "required";
-  fields: ModuleSettingField[];
-};
-
-function ModuleSettingsPanel({
-  modules,
-  saving,
-  onChange,
-  onSave,
-  header,
-}: {
-  modules: ConfigurableModule[];
-  saving: boolean;
-  onChange: (moduleId: string, fieldName: string, value: unknown) => void;
-  onSave: (module: ConfigurableModule) => void;
-  /** Rendu au-dessus des modules, dans le même corps défilant. La modale place
-   *  tous ses enfants directs dans une seule cellule de grille : un second bloc
-   *  frère s'y serait rangé en colonne, à côté de celui-ci. */
-  header?: React.ReactNode;
-}) {
-  const stateLabel = {
-    configured: "Configuré",
-    defaults: "Prêt avec les valeurs par défaut",
-    required: "Configuration requise",
-  };
-  return (
-    <div className="management-body module-settings-list">
-      {header}
-      {modules.map((module) => (
-        <section className="module-settings-card" key={module.id}>
-          <header>
-            <div>
-              <strong>{module.title}</strong>
-              <small>{module.description}</small>
-            </div>
-            <span className="module-settings-state" data-state={module.state}>
-              {stateLabel[module.state]}
-            </span>
-          </header>
-          {module.applies_to.length > 0 && (
-            <p className="module-settings-tools">
-              Tools : {module.applies_to.join(", ")}
-            </p>
-          )}
-          <div className="resource-fields">
-            {module.fields.map((field) => {
-              const fieldId = `${module.id}-${field.name}`;
-              const description = field.description && <small>{field.description}</small>;
-              if (field.type === "boolean") {
-                return (
-                  <label className="provider-vision" key={field.name} htmlFor={fieldId}>
-                    <input
-                      id={fieldId}
-                      type="checkbox"
-                      checked={Boolean(field.value)}
-                      onChange={(event) => onChange(module.id, field.name, event.target.checked)}
-                    />
-                    {field.label}
-                    {description}
-                  </label>
-                );
-              }
-              if (field.type === "select") {
-                return (
-                  <label key={field.name} htmlFor={fieldId}>
-                    {field.label}{field.required && " *"}
-                    <select
-                      id={fieldId}
-                      value={String(field.value ?? "")}
-                      onChange={(event) => onChange(module.id, field.name, event.target.value)}
-                    >
-                      {!field.required && <option value="">Valeur par défaut</option>}
-                      {field.options.map((option) => <option key={option}>{option}</option>)}
-                    </select>
-                    {description}
-                  </label>
-                );
-              }
-              if (field.type === "string_list") {
-                return (
-                  <label className="field-wide" key={field.name} htmlFor={fieldId}>
-                    {field.label}{field.required && " *"}
-                    <textarea
-                      id={fieldId}
-                      className="module-settings-list-input"
-                      value={Array.isArray(field.value) ? field.value.join("\n") : ""}
-                      onChange={(event) => onChange(
-                        module.id,
-                        field.name,
-                        event.target.value.split(/\r?\n/).filter(Boolean),
-                      )}
-                    />
-                    {description}
-                  </label>
-                );
-              }
-              const numeric = field.type === "integer" || field.type === "number";
-              return (
-                <label
-                  className={field.type === "secret" || field.type === "file" || field.type === "directory" ? "field-wide" : ""}
-                  key={field.name}
-                  htmlFor={fieldId}
-                >
-                  {field.label}{field.required && " *"}
-                  <input
-                    id={fieldId}
-                    type={field.type === "secret" ? "password" : numeric ? "number" : "text"}
-                    min={field.minimum ?? undefined}
-                    max={field.maximum ?? undefined}
-                    step={field.type === "number" ? "any" : undefined}
-                    value={String(field.value ?? "")}
-                    placeholder={field.type === "secret" && field.configured
-                      ? "Valeur configurée — laisser vide pour la conserver"
-                      : field.type === "file" || field.type === "directory"
-                        ? "Chemin absolu"
-                        : undefined}
-                    onChange={(event) => onChange(
-                      module.id,
-                      field.name,
-                      numeric && event.target.value !== ""
-                        ? Number(event.target.value)
-                        : event.target.value,
-                    )}
-                  />
-                  {description}
-                </label>
-              );
-            })}
-          </div>
-          <footer>
-            <button
-              className="primary"
-              disabled={saving}
-              onClick={() => onSave(module)}
-            >
-              {saving ? "Enregistrement…" : "Enregistrer"}
-            </button>
-          </footer>
-        </section>
-      ))}
-      {modules.length === 0 && (
-        <div className="management-empty">
-          <strong>Aucun module configurable</strong>
-          <p>Les tools sans paramètres restent disponibles dans le catalogue.</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-type Message = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  images?: ComposerImage[];
-  meta?: string;
-  error?: boolean;
-  runId?: string;
-  artifacts?: RunArtifact[];
-};
-
-type RunArtifact = {
-  artifact_id: string;
-  name: string;
-  media_type: string;
-  kind: string;
-  bytes?: number;
-};
-
-type Workspace = {
-  path: string;
-  name: string;
-  readable: boolean;
-  writable: boolean;
-};
-
-type ComposerImage = {
-  id: string;
-  name: string;
-  mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
-  dataUrl: string;
-};
-
-const SUPPORTED_IMAGE_TYPES = [
-  "image/png", "image/jpeg", "image/webp", "image/gif",
-] as const satisfies readonly ComposerImage["mediaType"][];
-
-/**
- * Le type déclaré par un artefact vient du serveur : c'est une chaîne libre.
- * L'affecter directement au type restreint revenait à affirmer une garantie que
- * personne ne vérifie. On retombe sur le PNG, que tous les navigateurs affichent.
- */
-function toImageMediaType(value: string): ComposerImage["mediaType"] {
-  return SUPPORTED_IMAGE_TYPES.find((item) => item === value) ?? "image/png";
-}
-
-type ImagePreview = {
-  source: string;
-  name: string;
-};
-
-type ManagedResource = {
-  id: string;
-  description: string;
-  content: string;
-  telegram?: TelegramAgentConfig;
-  has_avatar?: boolean;
-  subagent?: boolean;
-};
-
-type TelegramAgentConfig = {
-  enabled: boolean;
-  hide_session: boolean;
-  user_id: string;
-  bot_token: string;
-  user_id_configured?: boolean;
-  bot_token_configured?: boolean;
-};
-
-type ResourceEditor = {
-  kind: "agents" | "skills";
-  id: string;
-  frontmatter: Record<string, unknown>;
-  body: string;
-  creating: boolean;
-  telegram?: TelegramAgentConfig;
-};
-
-type ManagedProvider = {
-  id: string;
-  kind: string;
-  connection_type?: "local" | "api_key" | "auth";
-  base_url?: string | null;
-  model?: string | null;
-  models?: string[];
-  api_key?: string;
-  api_key_configured?: boolean;
-  vision?: boolean;
-  timeout_seconds?: number;
-  auth_help_url?: string;
-  models_dir?: string | null;
-  server_binary?: string | null;
-  port?: number;
-  n_gpu_layers?: number;
-  num_ctx?: number;
-  flash_attn?: boolean;
-  startup_timeout_seconds?: number;
-  llama_args?: string[];
-  temperature?: number;
-  top_k?: number;
-  top_p?: number;
-  num_predict?: number;
-};
-
-const codexAuthHelpUrl = "https://learn.chatgpt.com/docs/auth?surface=cli";
-const codexApiUrl = "https://chatgpt.com/backend-api/codex";
-const providerKindLabels: Record<string, string> = {
-  "openai-codex": "Codex — connexion ChatGPT",
-  openai: "OpenAI API — clé API",
-  deepseek: "DeepSeek — clé API",
-  qwen: "Qwen — clé API",
-  "llama-cpp": "llama.cpp — local",
-  "claude-oauth": "Claude — connexion OAuth",
-  anthropic: "Anthropic API — clé API",
-};
-
-/**
- * Le modèle ne figure volontairement pas ici.
- *
- * Il appartient à l'agent, qui en fait son défaut; le sélecteur du composer ne
- * sert qu'à en changer ponctuellement. Persisté, ce choix ponctuel masquait
- * définitivement le défaut de l'agent — on pouvait lire `deepseek-v4-pro` dans
- * la configuration de `main` et voir `deepseek-v4-flash` dans le composer, sans
- * rien pour expliquer l'écart.
- */
-type KnowledgePage = {
-  slug: string;
-  title: string;
-  tags: string[];
-  ingested: string;
-  source: string;
-  summary: string;
-  bytes: number;
-};
-
-type ContentHome = {
-  /** Dossier réellement utilisé par le kernel en cours d'exécution. */
-  current: string;
-  /** Choix enregistré, ou null tant que l'emplacement par défaut s'applique. */
-  configured: string | null;
-  default: string;
-  /** `AMK_HOME` l'emporte sur le réglage : le taire rendrait l'écran menteur. */
-  environment_override: string | null;
-};
-
-type ComposerPreferences = {
-  securityMode: "safe" | "limited" | "power";
-  providerId: string;
-  reasoning: "minimal" | "low" | "medium" | "high" | "xhigh";
-  /** Signal sonore en fin de run. Un run long se surveille mal des yeux. */
-  soundEnabled: boolean;
-};
-
-const composerPreferencesKey = "amk.composer.preferences.v1";
-
-function parseMarkdownResource(content: string) {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  if (!match) return { frontmatter: {}, body: content };
-  return {
-    frontmatter: (parseYaml(match[1]) || {}) as Record<string, unknown>,
-    body: match[2].replace(/\s+$/, ""),
-  };
-}
-
-function buildMarkdownResource(editor: ResourceEditor) {
-  const frontmatter = {
-    ...editor.frontmatter,
-    [editor.kind === "agents" ? "id" : "name"]: editor.id,
-  };
-  return `---\n${stringifyYaml(frontmatter).trimEnd()}\n---\n${editor.body.trimEnd()}\n`;
-}
-
-function resourceList(value: unknown) {
-  if (Array.isArray(value)) return value.map(String);
-  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
-  return [];
-}
-
-function parseListFieldValue(value: string) {
-  return value.split(",").map((item) => item.trim()).filter(Boolean);
-}
-
-type SessionSummary = {
-  session_id: string;
-  agent_id: string;
-  prompt: string;
-  workspace: string | null;
-  effective_workspace?: string;
-  workspace_kind?: "project" | "agent_default";
-  created_at: string;
-  updated_at: string;
-  status: string;
-  output: string | null;
-  errors: { message: string }[];
-  event_count: number;
-  trigger?: "user" | "resume" | "cron" | "cron_resume" | "cron_test" | "agent_channel" | "telegram";
-  cron_job_id?: string | null;
-  messages?: {
-    role: "user" | "assistant";
-    content: string;
-    error?: boolean;
-    run_id?: string;
-    artifacts?: RunArtifact[];
-  }[];
-  events?: TraceEvent[];
-};
-
-function gitSnapshotForRun(events: TraceEvent[], runId?: string): GitSnapshot | null {
-  if (!runId) return null;
-  const event = [...events].reverse().find((item) =>
-    item.run_id === runId && item.type === "git.snapshot"
-  );
-  if (!event) return null;
-  const payload = event.payload as Partial<GitSnapshot>;
-  return payload.available && Array.isArray(payload.files) ? payload as GitSnapshot : null;
-}
-
-function RunSpeed({ stats, runId }: { stats: Map<string, RunStats>; runId?: string }) {
-  const entry = runId ? stats.get(runId) : undefined;
-  if (!entry || entry.durationMs <= 0 || entry.outputTokens <= 0) return null;
-  const perSecond = Math.round(entry.outputTokens / (entry.durationMs / 1000));
-  if (perSecond <= 0) return null;
-  return <small className="message-speed">{perSecond} tokens/s</small>;
-}
-
-function MarkdownMessage({ content }: { content: string }) {
-  return (
-    <div className="markdown-message">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          a: ({ href, children, ...props }) => (
-            <a
-              {...props}
-              href={href}
-              target={href?.startsWith("http") ? "_blank" : undefined}
-              rel={href?.startsWith("http") ? "noreferrer noopener" : undefined}
-            >
-              {children}
-            </a>
-          ),
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-function MessageArtifacts({
-  sessionId, artifacts, onImageOpen,
-}: {
-  sessionId: string | null;
-  artifacts?: RunArtifact[];
-  onImageOpen: (image: ImagePreview) => void;
-}) {
-  const visibleArtifacts = artifacts?.filter((artifact) => artifact.kind !== "input_image");
-  if (!sessionId || !visibleArtifacts?.length) return null;
-  return (
-    <div className="message-artifacts">
-      {visibleArtifacts.map((artifact) => {
-        const source = `/api/kernel/artifacts/${encodeURIComponent(sessionId)}/${encodeURIComponent(artifact.artifact_id)}`;
-        return artifact.kind === "image" || artifact.media_type.startsWith("image/") ? (
-          <figure key={artifact.artifact_id}>
-            <button
-              type="button"
-              className="message-image-button"
-              aria-label={`Agrandir ${artifact.name}`}
-              onClick={() => onImageOpen({ source, name: artifact.name })}
-            >
-              {/* Runtime artifact URLs are not statically optimizable by Next Image. */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={source} alt={artifact.name} loading="lazy" />
-            </button>
-            <figcaption>{artifact.name}</figcaption>
-          </figure>
-        ) : (
-          <a key={artifact.artifact_id} href={source} download={artifact.name}>
-            {artifact.name}
-          </a>
-        );
-      })}
-    </div>
-  );
-}
-
-function UserMessageImages({
-  images, onImageOpen,
-}: {
-  images?: ComposerImage[];
-  onImageOpen: (image: ImagePreview) => void;
-}) {
-  if (!images?.length) return null;
-  return (
-    <div className="user-message-images" aria-label="Images envoyées">
-      {images.map((image) => (
-        <figure key={image.id}>
-          <button
-            type="button"
-            className="message-image-button"
-            aria-label={`Agrandir ${image.name}`}
-            onClick={() => onImageOpen({ source: image.dataUrl, name: image.name })}
-          >
-            {/* User-provided data URLs cannot be handled by Next Image. */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={image.dataUrl} alt={image.name} />
-          </button>
-          <figcaption>{image.name}</figcaption>
-        </figure>
-      ))}
-    </div>
-  );
-}
 
 const starterPrompts = [
   "Cartographie les risques et les inconnues de ce projet.",
   "Propose trois sous-tâches indépendantes et délègue-les.",
   "Résume les décisions récentes avec leurs conséquences.",
 ];
-
-type ConversationState = {
-  messages: Message[];
-  approvals: Approval[];
-  activeSessionId: string | null;
-  traceEvents: TraceEvent[];
-  activeRunId: string | null;
-};
-
-type ConversationAction = {
-  type: "set";
-  field: keyof ConversationState;
-  value: unknown;
-};
-
-function conversationReducer(
-  state: ConversationState,
-  action: ConversationAction,
-): ConversationState {
-  const current = state[action.field];
-  const next = typeof action.value === "function"
-    ? (action.value as (previous: typeof current) => typeof current)(current)
-    : action.value;
-  return { ...state, [action.field]: next };
-}
 
 export default function Home() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -885,13 +346,24 @@ export default function Home() {
         // The kernel CWD is only the first-run default. Once the user has made
         // a project list, do not silently add it again on every launch.
         const known = recent.length > 0 ? recent : [current];
+        // « Aucun projet » est le point de départ : on ouvre sur ce que l'agent
+        // a fait, pas sur le dernier dossier où l'on codait. Un projet mémorisé
+        // est restitué, la chaîne vide comprise — elle signifie « aucun ».
         const remembered = window.localStorage.getItem("amk.activeWorkspace");
-        const active = known.some((item) => item.path === remembered)
-          ? remembered || known[0].path
-          : known[0].path;
+        const active = remembered !== null && (remembered === "" || known.some(
+          (item) => item.path === remembered,
+        ))
+          ? remembered
+          : "";
         setWorkspaces(known);
-        setActiveWorkspace(active);
         window.localStorage.setItem("amk.workspaces", JSON.stringify(known));
+        // La liste des projets arrive après le premier chargement des sessions,
+        // donc parfois après l'atterrissage sur le canal. Restaurer le projet
+        // mémorisé à ce moment-là écrasait l'alignement que l'ouverture de
+        // session venait de faire : l'en-tête montrait le canal, la modale
+        // affichait l'ancien projet. La session ouverte a le dernier mot.
+        if (activeSessionIdRef.current) return;
+        setActiveWorkspace(active);
         window.localStorage.setItem("amk.activeWorkspace", active);
       })
       .catch((error) => setWorkspaceError(error instanceof Error ? error.message : "Erreur workspace"));
@@ -977,47 +449,7 @@ export default function Home() {
     selectedModel,
   });
 
-  const {
-    cronJobs,
-    cronEditor,
-    cronTestApprovals,
-    cronTestMessage,
-    cronTestFeedback,
-    cronTestDecision,
-    cronApprovalStatus,
-    testingCron,
-    cronWorkflowProposal,
-    cronWorkflowAction,
-    cronWorkflowFeedback,
-    cronWorkflowMessage,
-    setCronEditor,
-    workflowCreatorAvailable,
-    cronApprovalGroups,
-    cronPermissionConfigDirty,
-    cronWorkflowBasisDirty,
-    cronWorkflowProposalReady,
-    cronWorkflowMutationAvailable,
-    cronWorkflowMutationBusy,
-    cronWorkflowCanAccept,
-    cronWorkflowCanPropose,
-    cronCanSave,
-    cronWorkflowCanContinue,
-    unreadCronCount,
-    invalidateCronWorkflowProposal,
-    closeCronEditor,
-    createCron,
-    openCronEditor,
-    proposeCronWorkflow,
-    deleteCronWorkflow,
-    continueWithoutCronWorkflow,
-    acceptCronWorkflowChoice,
-    saveCron,
-    deleteCron,
-    runCronNow,
-    toggleCron,
-    testCron,
-    resolveCronTestApprovals,
-  } = useRoutines({
+  const routines = useRoutines({
     managementModal,
     agentId,
     selectedSkills,
@@ -1037,6 +469,23 @@ export default function Home() {
     setUnreadSessionIds,
     setSavingResource,
   });
+
+  const {
+    cronJobs,
+    cronEditor,
+    testingCron,
+    cronWorkflowMutationBusy,
+    unreadCronCount,
+    closeCronEditor,
+    createCron,
+    openCronEditor,
+    saveCron,
+    deleteCron,
+    runCronNow,
+    toggleCron,
+  } = routines;
+
+
 
   const runStats = useMemo(() => runStatsByRunId(traceEvents), [traceEvents]);
 
@@ -1247,10 +696,14 @@ export default function Home() {
   }
 
   const refreshSessions = useCallback(async (workspace = activeWorkspace) => {
-    if (!workspace) return;
-    const response = await fetch(
-      `/api/kernel/sessions?workspace=${encodeURIComponent(workspace)}&include_channels=true`,
-    );
+    // Sans projet actif, la vue est celle de l'agent hors projet : son canal
+    // permanent et son espace personnel. C'est un état à part entière, pas une
+    // absence de filtre — sans `agent_id`, le kernel renverrait l'historique de
+    // tous les projets à la fois.
+    const requete = workspace
+      ? `workspace=${encodeURIComponent(workspace)}`
+      : `agent_id=${encodeURIComponent(agentId)}`;
+    const response = await fetch(`/api/kernel/sessions?${requete}&include_channels=true`);
     if (!response.ok) return;
     const nextSessions: SessionSummary[] = await response.json();
     const previous = sessionSnapshots.current.get(workspace);
@@ -1283,6 +736,24 @@ export default function Home() {
   // callback on every render without changing the synchronized inputs.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWorkspace]);
+
+  // Au démarrage, atterrir dans le canal de l'agent plutôt que dans le dernier
+  // projet ouvert. Le projet est un contexte de travail qu'on choisit ; le
+  // canal est l'endroit où l'agent parle — routines, Telegram, échanges hors
+  // projet. C'est là qu'on veut voir ce qui s'est passé pendant l'absence.
+  const canalOuvertAuDemarrage = useRef(false);
+  useEffect(() => {
+    if (canalOuvertAuDemarrage.current || activeSessionId || !sessions.length) return;
+    const canal = sessions.find(
+      (item) => item.trigger === "agent_channel" && item.agent_id === agentId,
+    );
+    if (!canal) return;
+    canalOuvertAuDemarrage.current = true;
+    void openSession(canal.session_id);
+    // `openSession` est stable pour ce besoin : la référence garantit un seul
+    // atterrissage, quelles que soient les recompositions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions, activeSessionId, agentId]);
 
   useEffect(() => {
     void refreshSessions(activeWorkspace);
@@ -1522,8 +993,11 @@ export default function Home() {
           telegram: editor.kind === "agents" ? editor.telegram : undefined,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(apiErrorDetail(data, "Enregistrement impossible"));
+      // `readApiPayload` survit à une réponse non-JSON. Une erreur 500 renvoie
+      // « Internal Server Error » en texte brut, et `response.json()` échouait
+      // alors sur « Unexpected token 'I' » — un message qui parle du parseur au
+      // lieu de dire que le serveur a refusé.
+      await readApiPayload(response);
       const refreshed = await fetch(`/api/kernel/admin/${editor.kind}`);
       if (refreshed.ok) setManagedResources(await refreshed.json());
       await refreshCatalog();
@@ -1690,13 +1164,38 @@ export default function Home() {
     }
   }
 
+  async function purgeSessions() {
+    // Le périmètre est celui de la vue courante, et le libellé le dit : effacer
+    // « tout » au sens de la base emporterait des conversations d'autres projets
+    // que l'utilisateur n'a pas sous les yeux.
+    const perimetre = activeWorkspace
+      ? `du projet ${activeWorkspace.split(/[\\/]/).pop()}`
+      : `hors projet de ${agentId}`;
+    if (!window.confirm(
+      `Supprimer définitivement les conversations ${perimetre} ?\n`
+      + "Les canaux d'agent et un run en cours sont conservés.",
+    )) return;
+    const requete = activeWorkspace
+      ? `workspace=${encodeURIComponent(activeWorkspace)}`
+      : `agent_id=${encodeURIComponent(agentId)}`;
+    try {
+      const response = await fetch(`/api/kernel/sessions/purge?${requete}`, { method: "POST" });
+      await readApiPayload(response);
+      newConversation();
+      await refreshSessions();
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : "Suppression impossible");
+    }
+  }
+
   async function deleteResource(kind: "agents" | "skills", id: string) {
     if (!window.confirm(`Supprimer ${id} ?`)) return;
     setManagementError("");
     const response = await fetch(`/api/kernel/admin/${kind}/${id}`, { method: "DELETE" });
-    const data = await response.json();
-    if (!response.ok) {
-      setManagementError(data.detail || "Suppression impossible");
+    try {
+      await readApiPayload(response);
+    } catch (error) {
+      setManagementError(error instanceof Error ? error.message : "Suppression impossible");
       return;
     }
     setManagedResources((current) => current.filter((item) => item.id !== id));
@@ -2012,6 +1511,15 @@ export default function Home() {
     });
     setActiveSessionId(sessionId);
     setAgentId(session.agent_id);
+    // Le projet suit la session qu'on ouvre. Sans cet alignement, l'en-tête
+    // annonçait « espace personnel » pendant que la modale affichait `test8`
+    // comme actif et que l'historique listait les sessions de ce projet : trois
+    // affirmations contradictoires pour un seul état.
+    const projetDeLaSession = session.workspace || "";
+    if (projetDeLaSession !== activeWorkspace) {
+      setActiveWorkspace(projetDeLaSession);
+      window.localStorage.setItem("amk.activeWorkspace", projetDeLaSession);
+    }
     setTraceEvents(session.events || []);
     setActiveRunId(null);
     const restored: Message[] = session.messages?.length
@@ -2620,9 +2128,24 @@ export default function Home() {
 
           {/* L'historique occupe tout l'espace restant et scrolle seul : le
               contexte reste visible quelle que soit la longueur de la liste. */}
-          <SidePanelSection title="Historique" count={sessions.length} grow>
+          <SidePanelSection
+            title="Historique"
+            count={sessions.length}
+            grow
+            action={sessions.length > 1 && (
+              <button
+                type="button"
+                className="section-action"
+                onClick={() => void purgeSessions()}
+                disabled={running}
+                aria-label="Supprimer les conversations de cette vue"
+                title="Supprimer les conversations de cette vue"
+              ><Icon name="remove" size="sm" /></button>
+            )}
+          >
             <SessionHistory
               sessions={sessions}
+              knownAgents={(catalog?.agents || []).map((agent) => agent.id)}
               activeSessionId={activeSessionId}
               unreadSessionIds={unreadSessionIds}
               running={running}
@@ -2805,316 +2328,26 @@ export default function Home() {
             )}
 
             {resourceEditor ? (
-              <div className="resource-editor">
-                <div className="resource-fields">
-                  <label>
-                    Identifiant
-                    <input
-                      value={resourceEditor.id}
-                      disabled={!resourceEditor.creating}
-                      onChange={(event) => updateResourceId(event.target.value)}
-                      onBlur={(event) => updateResourceId(event.target.value, true)}
-                    />
-                    {resourceEditor.creating && (
-                      <small>Minuscules, chiffres, points, tirets ou underscores.</small>
-                    )}
-                  </label>
-                  <label className="field-wide">
-                    Description
-                    <input
-                      value={String(resourceEditor.frontmatter.description || "")}
-                      onChange={(event) => updateEditorField("description", event.target.value)}
-                    />
-                  </label>
-                  {resourceEditor.kind === "agents" && !resourceEditor.creating && (
-                    <div className="avatar-field field-wide">
-                      <AgentAvatar
-                        agentId={resourceEditor.id}
-                        label={resourceEditor.id}
-                        hasAvatar={agentHasAvatar(resourceEditor.id)}
-                        version={avatarVersion}
-                        className="avatar-preview"
-                      />
-                      <div>
-                        <strong>Avatar</strong>
-                        <small>PNG, JPEG, WebP ou GIF, 1 Mo maximum. Affiché dans le fil.</small>
-                        <div className="avatar-actions">
-                          <button
-                            type="button"
-                            className="btn"
-                            disabled={avatarBusy}
-                            onClick={() => avatarInput.current?.click()}
-                          >
-                            {avatarBusy ? "Envoi…" : "Choisir une image"}
-                          </button>
-                          {agentHasAvatar(resourceEditor.id) && (
-                            <button
-                              type="button"
-                              className="btn danger"
-                              disabled={avatarBusy}
-                              onClick={() => void removeAgentAvatar(resourceEditor.id)}
-                            >
-                              Retirer
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      <input
-                        ref={avatarInput}
-                        className="composer-file-input"
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp,image/gif"
-                        onChange={(event) => {
-                          const file = event.target.files?.[0];
-                          event.target.value = "";
-                          if (file) void uploadAgentAvatar(resourceEditor.id, file);
-                        }}
-                      />
-                    </div>
-                  )}
-                  {resourceEditor.kind === "agents" ? (
-                    <>
-                      <label>
-                        Provider
-                        <select
-                          value={String(resourceEditor.frontmatter.provider || "")}
-                          onChange={(event) => {
-                            updateEditorField("provider", event.target.value);
-                            updateEditorField("model", "");
-                          }}
-                        >
-                          {catalog?.providers.map((provider) => (
-                            <option key={provider.id} value={provider.id}>{provider.id}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Modèle
-                        <select
-                          value={String(resourceEditor.frontmatter.model || "")}
-                          onChange={(event) => updateEditorField("model", event.target.value || null)}
-                        >
-                          <option value="">
-                            {modelsLoading ? "Découverte…" : "Modèle par défaut du provider"}
-                          </option>
-                          {Array.from(new Set([
-                            ...(providerModels[String(resourceEditor.frontmatter.provider || "")] || []),
-                            String(resourceEditor.frontmatter.model || ""),
-                          ].filter(Boolean))).map((model) => (
-                            <option key={model} value={model}>{model}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <fieldset className="field-wide checkbox-field telegram-agent-field">
-                        <legend>Passerelle Telegram</legend>
-                        <label className="provider-vision">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(resourceEditor.telegram?.enabled)}
-                            onChange={(event) => updateTelegramField("enabled", event.target.checked)}
-                          />
-                          Telegram
-                        </label>
-                        {resourceEditor.telegram?.enabled && (
-                          <div className="resource-fields telegram-agent-settings">
-                            <label className="field-wide">
-                              Identifiant utilisateur Telegram
-                              <input
-                                type="password"
-                                inputMode="numeric"
-                                value={resourceEditor.telegram.user_id || ""}
-                                placeholder={resourceEditor.telegram.user_id_configured
-                                  ? "Identifiant configuré — laisser vide pour le conserver"
-                                  : "Identifiant numérique autorisé"}
-                                onChange={(event) => updateTelegramField("user_id", event.target.value)}
-                              />
-                              <small>Seul cet utilisateur pourra parler au bot, même dans un groupe.</small>
-                            </label>
-                            <label className="field-wide">
-                              Token API du bot
-                              <input
-                                type="password"
-                                value={resourceEditor.telegram.bot_token || ""}
-                                placeholder={resourceEditor.telegram.bot_token_configured
-                                  ? "Token configuré — laisser vide pour le conserver"
-                                  : "Token fourni par BotFather"}
-                                onChange={(event) => updateTelegramField("bot_token", event.target.value)}
-                              />
-                            </label>
-                            <label className="provider-vision field-wide">
-                              <input
-                                type="checkbox"
-                                checked={Boolean(resourceEditor.telegram.hide_session)}
-                                onChange={(event) => updateTelegramField("hide_session", event.target.checked)}
-                              />
-                              Masquer cette session dans l’application
-                            </label>
-                          </div>
-                        )}
-                      </fieldset>
-                      <fieldset className="field-wide checkbox-field">
-                        <legend>Autorisations par défaut</legend>
-                        <select
-                          value={String(resourceEditor.frontmatter.security_mode || "limited")}
-                          onChange={(event) =>
-                            updateEditorField("security_mode", event.target.value)}
-                        >
-                          <option value="safe">safe — demande avant toute écriture</option>
-                          <option value="limited">limited — demande avant d’écraser</option>
-                          <option value="power">power — ne demande que le destructif</option>
-                        </select>
-                        <small>
-                          Niveau appliqué par les surfaces qui n’offrent pas de choix,
-                          Telegram et les routines. Le composer part de ce niveau et
-                          peut le changer message par message.
-                        </small>
-                      </fieldset>
-                      <fieldset className="field-wide checkbox-field">
-                        <legend>Niveau</legend>
-                        <label className="provider-vision field-wide">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(resourceEditor.frontmatter.subagent)}
-                            onChange={(event) => {
-                              updateEditorField("subagent", event.target.checked);
-                              // Un sous-agent ne délègue à personne : garder une
-                              // liste d'enfants la rendrait invalide au chargement.
-                              if (event.target.checked) updateEditorField("delegates", []);
-                            }}
-                          />
-                          Sous-agent
-                        </label>
-                        <small>
-                          Un sous-agent est appelé par un orchestrateur et ne délègue
-                          à personne. Il n’apparaît pas comme agent principal et
-                          partage la bibliothèque de connaissance de celui qui
-                          l’invoque.
-                        </small>
-                      </fieldset>
-                      <fieldset className="field-wide checkbox-field">
-                        <legend>Mémoire personnelle</legend>
-                        <label className="provider-vision field-wide">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(resourceEditor.frontmatter.user_memory)}
-                            onChange={(event) => updateEditorField(
-                              "user_memory",
-                              event.target.checked,
-                            )}
-                          />
-                          User memory
-                        </label>
-                        <small>
-                          Charge USER.md et DECISIONS.md à chaque run. Les fichiers sont créés
-                          dans le workspace personnel de l’agent lors de l’enregistrement.
-                        </small>
-                      </fieldset>
-                      <fieldset className="field-wide checkbox-field">
-                        <legend>Tools actifs</legend>
-                        <ToolSelector
-                          tools={catalog?.tools || []}
-                          modules={catalog?.modules || []}
-                          // Absence de clé `tools` = tout est actif. Il faut donc
-                          // matérialiser ce défaut pour que les cases le reflètent.
-                          selected={
-                            Object.prototype.hasOwnProperty.call(resourceEditor.frontmatter, "tools")
-                              ? resourceList(resourceEditor.frontmatter.tools)
-                              : catalog?.tools.map((item) => item.name) || []
-                          }
-                          onToggleTools={(names, next) => setEditorListValues(
-                            "tools",
-                            names,
-                            next,
-                            catalog?.tools.map((item) => item.name) || [],
-                          )}
-                        />
-                      </fieldset>
-                      <fieldset className="field-wide checkbox-field">
-                        <legend>Skills préchargées</legend>
-                        <div className="checkbox-grid">
-                          {catalog?.skills.map((skill) => (
-                            <label key={skill.name} title={skill.description}>
-                              <input
-                                type="checkbox"
-                                checked={resourceList(resourceEditor.frontmatter.skills).includes(skill.name)}
-                                onChange={() => toggleEditorListField("skills", skill.name)}
-                              />
-                              <span><strong>{skill.name}</strong><small>{skill.description}</small></span>
-                            </label>
-                          ))}
-                          {catalog?.skills.length === 0 && <p>Aucune skill installée.</p>}
-                        </div>
-                      </fieldset>
-                      {/* Un sous-agent ne délègue à personne : lui proposer des
-                          enfants suggérerait une hiérarchie qui n'existe pas. */}
-                      {!resourceEditor.frontmatter.subagent && (
-                        <fieldset className="field-wide checkbox-field">
-                          <legend>Sous-agents accessibles</legend>
-                          <p className="field-note">
-                            Sans sélection, cet orchestrateur accède à tous les
-                            sous-agents. En cocher revient à restreindre — un
-                            sous-agent ajouté plus tard ne lui serait alors pas
-                            proposé.
-                          </p>
-                          <div className="checkbox-field-actions">
-                            <button type="button" onClick={() => updateEditorField("delegates", [])}>
-                              Tous
-                            </button>
-                          </div>
-                          <div className="checkbox-grid">
-                            {catalog?.agents
-                              .filter((agent) => agent.subagent)
-                              .map((agent) => (
-                                <label key={agent.id} title={agent.description}>
-                                  <input
-                                    type="checkbox"
-                                    checked={resourceList(resourceEditor.frontmatter.delegates).includes(agent.id)}
-                                    onChange={() => toggleEditorListField("delegates", agent.id)}
-                                  />
-                                  <span><strong>{agent.id}</strong><small>{agent.description}</small></span>
-                                </label>
-                              ))}
-                            {!catalog?.agents.some((agent) => agent.subagent) && (
-                              <p>Aucun sous-agent défini.</p>
-                            )}
-                          </div>
-                        </fieldset>
-                      )}
-                    </>
-                  ) : (
-                    <fieldset className="field-wide checkbox-field">
-                      <legend>Outils autorisés</legend>
-                      <ToolSelector
-                        tools={catalog?.tools || []}
-                        modules={catalog?.modules || []}
-                        selected={resourceList(resourceEditor.frontmatter["allowed-tools"])}
-                        onToggleTools={(names, next) =>
-                          setEditorListValues("allowed-tools", names, next)}
-                      />
-                    </fieldset>
-                  )}
-                </div>
-                <label className="resource-body-field">
-                  {resourceEditor.kind === "agents" ? "Instructions de l’agent" : "Instructions de la skill"}
-                  <textarea
-                    value={resourceEditor.body}
-                    onChange={(event) => setResourceEditor((current) => current && ({
-                      ...current, body: event.target.value,
-                    }))}
-                    spellCheck
-                  />
-                </label>
-                <div className="resource-editor-actions">
-                  <button onClick={() => setResourceEditor(null)}>Annuler</button>
-                  <button
-                    className="primary"
-                    disabled={savingResource || !resourceEditor.id.trim() || !resourceEditor.body.trim()}
-                    onClick={() => void saveResource()}
-                  >
-                    {savingResource ? "Enregistrement…" : "Enregistrer"}
-                  </button>
-                </div>
-              </div>
+              <ResourceEditorForm
+                editor={resourceEditor}
+                catalog={catalog}
+                savingResource={savingResource}
+                avatarInput={avatarInput}
+                agentHasAvatar={agentHasAvatar}
+                avatarVersion={avatarVersion}
+                avatarBusy={avatarBusy}
+                providerModels={providerModels}
+                modelsLoading={modelsLoading}
+                updateResourceId={updateResourceId}
+                updateEditorField={updateEditorField}
+                toggleEditorListField={toggleEditorListField}
+                setEditorListValues={setEditorListValues}
+                updateTelegramField={updateTelegramField}
+                uploadAgentAvatar={uploadAgentAvatar}
+                removeAgentAvatar={removeAgentAvatar}
+                setResourceEditor={setResourceEditor}
+                onSave={() => void saveResource()}
+              />
             ) : managementModal === "projects" ? (
               <div className="management-body">
                 <form className="workspace-form modal-workspace-form" onSubmit={addWorkspace}>
@@ -3144,6 +2377,20 @@ export default function Home() {
                 </form>
                 {workspaceError && <small className="workspace-error">{workspaceError}</small>}
                 <div className="management-list">
+                  {/* Travailler sans projet est un choix, pas un manque : c'est
+                      la vue de l'agent lui-même — son canal et son espace
+                      personnel. Elle mérite donc une ligne, au même rang que
+                      les projets. */}
+                  <div className={`management-row ${activeWorkspace === "" ? "active" : ""}`}>
+                    <button onClick={() => { chooseWorkspace(""); setManagementModal(null); }}>
+                      <span className="row-status" />
+                      <span>
+                        <strong>Aucun projet</strong>
+                        <small>Canal de l’agent et espace personnel</small>
+                      </span>
+                      {activeWorkspace === "" && <em>Actif</em>}
+                    </button>
+                  </div>
                   {workspaces.map((workspace) => (
                     <div className={`management-row ${workspace.path === activeWorkspace ? "active" : ""}`} key={workspace.path}>
                       <button onClick={() => { chooseWorkspace(workspace.path); setManagementModal(null); }}>
@@ -3251,306 +2498,17 @@ export default function Home() {
             )}
 
             {managementModal === "providers" && providerEditor && (
-              <div className="resource-editor provider-editor">
-                <div className="resource-fields">
-                  <label>
-                    Identifiant
-                    <input
-                      value={providerEditor.id}
-                      disabled={!providerEditor.creating}
-                      onChange={(event) => setProviderEditor((current) => current && ({
-                        ...current, id: event.target.value,
-                      }))}
-                    />
-                  </label>
-                  <label>
-                    Type
-                    <select
-                      value={providerEditor.kind}
-                      onChange={(event) => selectProviderKind(event.target.value)}
-                    >
-                      {["deepseek", "qwen", "llama-cpp", "openai-codex", "claude-oauth", "openai", "anthropic"].map((kind) => (
-                        <option key={kind} value={kind}>
-                          {providerKindLabels[kind] || kind}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {providerEditor.kind === "openai-codex" ? (
-                    <>
-                      <label>
-                        Connexion
-                        <input value="OAuth ChatGPT" disabled />
-                      </label>
-                      <label className="field-wide">
-                        Compte ChatGPT
-                        <div className="oauth-connect-card">
-                          <span className={codexConnected ? "connected" : ""} />
-                          <div>
-                            <strong>
-                              {codexConnected ? "Codex connecté" : "Connexion requise"}
-                            </strong>
-                            <small>
-                              {codexConnected
-                                ? "Les modèles sont découverts automatiquement."
-                                : "Le navigateur va ouvrir la page de connexion OpenAI."}
-                            </small>
-                          </div>
-                          <button
-                            type="button"
-                            className={codexConnected ? "" : "primary"}
-                            disabled={codexAuthLoading}
-                            onClick={() => void (
-                              codexConnected ? disconnectCodex() : connectCodex()
-                            )}
-                          >
-                            {codexAuthLoading
-                              ? "Connexion…"
-                              : codexConnected ? "Se déconnecter" : "Se connecter avec ChatGPT"}
-                          </button>
-                        </div>
-                        <a
-                          className="oauth-help-link"
-                          href={providerEditor.auth_help_url || codexAuthHelpUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Consulter la procédure officielle OpenAI Codex ↗
-                        </a>
-                        <small>
-                          Le jeton est conservé dans le trousseau système, jamais dans providers.json.
-                        </small>
-                      </label>
-                    </>
-                  ) : (
-                    <>
-                      <label>
-                        Connexion
-                        <select
-                          value={providerEditor.connection_type || "api_key"}
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...(current.kind === "openai" && event.target.value === "auth"
-                              ? {
-                                  ...current,
-                                  kind: "openai-codex",
-                                  connection_type: "auth" as const,
-                                  base_url: codexApiUrl,
-                                  model: null,
-                                  models: [],
-                                  timeout_seconds: undefined,
-                                  auth_help_url: codexAuthHelpUrl,
-                                }
-                              : {
-                                  ...current,
-                                  connection_type: event.target.value as ManagedProvider["connection_type"],
-                                }),
-                          }))}
-                        >
-                          <option value="local">local</option>
-                          <option value="api_key">api_key</option>
-                          <option value="auth">auth</option>
-                        </select>
-                      </label>
-                      <label>
-                        URL de base
-                        <input
-                          value={providerEditor.base_url || ""}
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current, base_url: event.target.value || null,
-                          }))}
-                        />
-                      </label>
-                      <label>
-                        Modèle par défaut
-                        <input
-                          value={providerEditor.model || ""}
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current, model: event.target.value,
-                          }))}
-                        />
-                      </label>
-                      <label>
-                        Modèles configurés
-                        <input
-                          value={(providerEditor.models || []).join(", ")}
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current, models: parseListFieldValue(event.target.value),
-                          }))}
-                          placeholder="model-a, model-b"
-                        />
-                      </label>
-                    </>
-                  )}
-                  {providerEditor.connection_type === "api_key" && (
-                    <label className="field-wide">
-                      Clé API
-                      <input
-                        type="password"
-                        value={providerEditor.api_key || ""}
-                        placeholder={providerEditor.api_key_configured
-                          ? "Clé configurée — laisser vide pour la conserver"
-                          : "Clé API"}
-                        onChange={(event) => setProviderEditor((current) => current && ({
-                          ...current, api_key: event.target.value,
-                        }))}
-                      />
-                    </label>
-                  )}
-                  {providerEditor.kind === "llama-cpp" && (
-                    <>
-                      <label className="field-wide">
-                        Dossier des modèles GGUF
-                        <input
-                          value={providerEditor.models_dir || ""}
-                          placeholder="C:\\Users\\vous\\llama.cpp\\models"
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current, models_dir: event.target.value || null,
-                          }))}
-                        />
-                      </label>
-                      <label className="field-wide">
-                        Exécutable llama-server
-                        <input
-                          value={providerEditor.server_binary || ""}
-                          placeholder="llama-server (PATH) ou chemin absolu"
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current, server_binary: event.target.value || null,
-                          }))}
-                        />
-                      </label>
-                      <label>
-                        Port local
-                        <input
-                          type="number"
-                          min={1}
-                          max={65535}
-                          value={providerEditor.port || 8123}
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current, port: Number(event.target.value),
-                          }))}
-                        />
-                      </label>
-                      <label>
-                        Fenêtre de contexte
-                        <input
-                          type="number"
-                          min={1}
-                          value={providerEditor.num_ctx || 16384}
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current, num_ctx: Number(event.target.value),
-                          }))}
-                        />
-                      </label>
-                      <label>
-                        Couches GPU
-                        <input
-                          type="number"
-                          value={providerEditor.n_gpu_layers ?? 999}
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current, n_gpu_layers: Number(event.target.value),
-                          }))}
-                        />
-                      </label>
-                      <label>
-                        Timeout de démarrage
-                        <input
-                          type="number"
-                          min={1}
-                          value={providerEditor.startup_timeout_seconds || 240}
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current, startup_timeout_seconds: Number(event.target.value),
-                          }))}
-                        />
-                      </label>
-                      <label>
-                        Température
-                        <input
-                          type="number"
-                          min={0}
-                          step={0.1}
-                          value={providerEditor.temperature ?? ""}
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current,
-                            temperature: event.target.value === ""
-                              ? undefined : Number(event.target.value),
-                          }))}
-                        />
-                      </label>
-                      <label>
-                        Top K
-                        <input
-                          type="number"
-                          min={0}
-                          value={providerEditor.top_k ?? ""}
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current,
-                            top_k: event.target.value === ""
-                              ? undefined : Number(event.target.value),
-                          }))}
-                        />
-                      </label>
-                      <label className="provider-vision">
-                        <input
-                          type="checkbox"
-                          checked={providerEditor.flash_attn ?? true}
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current, flash_attn: event.target.checked,
-                          }))}
-                        />
-                        Flash attention
-                      </label>
-                      <label className="field-wide">
-                        Arguments llama-server (un par ligne)
-                        <textarea
-                          value={(providerEditor.llama_args || []).join("\n")}
-                          onChange={(event) => setProviderEditor((current) => current && ({
-                            ...current,
-                            llama_args: event.target.value.split(/\r?\n/).filter(Boolean),
-                          }))}
-                          placeholder={"--n-cpu-moe\n21"}
-                        />
-                      </label>
-                    </>
-                  )}
-                  {providerEditor.kind !== "openai-codex" && (
-                    <label>
-                      Timeout
-                      <input
-                        type="number"
-                        min={1}
-                        value={providerEditor.timeout_seconds || 120}
-                        onChange={(event) => setProviderEditor((current) => current && ({
-                          ...current, timeout_seconds: Number(event.target.value),
-                        }))}
-                      />
-                    </label>
-                  )}
-                  <label className="provider-vision">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(providerEditor.vision)}
-                      onChange={(event) => setProviderEditor((current) => current && ({
-                        ...current, vision: event.target.checked,
-                      }))}
-                    />
-                    Modèle avec vision
-                  </label>
-                </div>
-                <div className="resource-editor-actions">
-                  <button onClick={() => setProviderEditor(null)}>Annuler</button>
-                  <button
-                    className="primary"
-                    disabled={
-                      savingResource
-                      || !providerEditor.id
-                      || (providerEditor.kind !== "openai-codex" && !providerEditor.model)
-                    }
-                    onClick={() => void saveProvider()}
-                  >
-                    {savingResource ? "Enregistrement…" : "Enregistrer"}
-                  </button>
-                </div>
-              </div>
+              <ProviderEditor
+                providerEditor={providerEditor}
+                setProviderEditor={setProviderEditor}
+                savingResource={savingResource}
+                codexConnected={codexConnected}
+                codexAuthLoading={codexAuthLoading}
+                selectProviderKind={selectProviderKind}
+                connectCodex={() => void connectCodex()}
+                disconnectCodex={() => void disconnectCodex()}
+                onSave={() => void saveProvider()}
+              />
             )}
 
             {managementModal === "providers" && !providerEditor && (
@@ -3587,415 +2545,15 @@ export default function Home() {
             )}
 
             {managementModal === "crons" && cronEditor && (
-              <div className="resource-editor cron-editor">
-                <button
-                  type="button"
-                  className="editor-back"
-                  onClick={closeCronEditor}
-                  disabled={cronWorkflowMutationBusy || savingResource || testingCron}
-                >← Retour aux routines</button>
-                <fieldset
-                  className="resource-fields"
-                  disabled={cronWorkflowMutationBusy || savingResource || testingCron}
-                >
-                  <label className="field-wide">
-                    Nom
-                    <input value={cronEditor.name} onChange={(event) => {
-                      invalidateCronWorkflowProposal();
-                      setCronEditor((current) => current && ({ ...current, name: event.target.value }));
-                    }}
-                    />
-                  </label>
-                  <label>
-                    Répétition
-                    <select value={cronEditor.frequency_kind} onChange={(event) => {
-                      invalidateCronWorkflowProposal();
-                      setCronEditor((current) => current && ({
-                        ...current, frequency_kind: event.target.value as CronFrequencyKind,
-                      }));
-                    }}>
-                      <option value="minutes">Toutes les X minutes</option>
-                      <option value="hours">Toutes les X heures</option>
-                      <option value="daily">Tous les jours</option>
-                      <option value="weekly">Toutes les semaines</option>
-                      <option value="yearly">Tous les ans</option>
-                      <option value="once">Ponctuel (date précise)</option>
-                    </select>
-                  </label>
-                  {cronEditor.frequency_kind === "once" && (
-                    <label>
-                      Date et heure
-                      <input type="datetime-local"
-                        value={cronEditor.one_shot_datetime}
-                        onChange={(event) => {
-                          invalidateCronWorkflowProposal();
-                          setCronEditor((current) => current && ({
-                            ...current, one_shot_datetime: event.target.value,
-                          }));
-                        }}
-                      />
-                    </label>
-                  )}
-                  {(cronEditor.frequency_kind === "minutes" || cronEditor.frequency_kind === "hours") && (
-                    <label>
-                      Intervalle
-                      <input type="number" min="1"
-                        max={cronEditor.frequency_kind === "minutes" ? 59 : 23}
-                        value={cronEditor.frequency_interval}
-                        onChange={(event) => {
-                          invalidateCronWorkflowProposal();
-                          setCronEditor((current) => current && ({
-                            ...current, frequency_interval: Math.max(1, Number(event.target.value)),
-                          }));
-                        }}
-                      />
-                    </label>
-                  )}
-                  {cronEditor.frequency_kind === "weekly" && (
-                    <label>
-                      Jour
-                      <select value={cronEditor.frequency_weekday} onChange={(event) => {
-                        invalidateCronWorkflowProposal();
-                        setCronEditor((current) => current && ({
-                          ...current, frequency_weekday: Number(event.target.value),
-                        }));
-                      }}>
-                        {["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"]
-                          .map((day, index) => <option value={index} key={day}>{day}</option>)}
-                      </select>
-                    </label>
-                  )}
-                  {cronEditor.frequency_kind === "yearly" && (
-                    <>
-                      <label>
-                        Mois
-                        <select value={cronEditor.frequency_month} onChange={(event) => {
-                          invalidateCronWorkflowProposal();
-                          setCronEditor((current) => current && ({
-                            ...current, frequency_month: Number(event.target.value),
-                          }));
-                        }}>
-                          {["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
-                            "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
-                            .map((month, index) => <option value={index + 1} key={month}>{month}</option>)}
-                        </select>
-                      </label>
-                      <label>
-                        Jour du mois
-                        <input type="number" min="1" max="31" value={cronEditor.frequency_monthday}
-                          onChange={(event) => {
-                            invalidateCronWorkflowProposal();
-                            setCronEditor((current) => current && ({
-                              ...current, frequency_monthday: Math.min(31, Math.max(1, Number(event.target.value))),
-                            }));
-                          }}
-                        />
-                      </label>
-                    </>
-                  )}
-                  {["daily", "weekly", "yearly"].includes(cronEditor.frequency_kind) && (
-                    <label>
-                      Heure
-                      <input type="time" value={cronEditor.frequency_time} onChange={(event) => {
-                        invalidateCronWorkflowProposal();
-                        setCronEditor((current) => current && ({
-                          ...current, frequency_time: event.target.value,
-                        }));
-                      }}
-                      />
-                    </label>
-                  )}
-                  <div className="field-wide cron-summary">
-                    <span>Prochaine règle</span>
-                    <strong>{describeCron(cronEditor)}</strong>
-                  </div>
-                  <label>
-                    Agent
-                    <select value={cronEditor.agent_id} onChange={(event) => {
-                      invalidateCronWorkflowProposal();
-                      setCronEditor((current) => current && ({
-                        ...current, agent_id: event.target.value,
-                      }));
-                    }}>
-                      {catalog?.agents.map((agent) => (
-                        <option value={agent.id} key={agent.id}>{agent.id}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Permission de la routine
-                    <select value={cronEditor.security_mode} onChange={(event) => {
-                      invalidateCronWorkflowProposal();
-                      setCronEditor((current) => current && ({
-                        ...current,
-                        security_mode: event.target.value as CronJob["security_mode"],
-                      }));
-                    }}>
-                      <option value="safe">Prudent</option>
-                      <option value="limited">Limité</option>
-                      <option value="power">Étendu</option>
-                    </select>
-                    <small>
-                      {cronEditor.creating
-                        ? `Initialisée depuis la conversation active (${securityMode}). Tu peux la modifier ici.`
-                        : `Réglage enregistré pour cette routine. La conversation active est en ${securityMode}.`}
-                    </small>
-                  </label>
-                  <fieldset className="field-wide checkbox-field cron-skills-field">
-                    <legend>Skills de la routine</legend>
-                    <p>
-                      Ces skills restent actives avec ou sans workflow. Aucune sélection signifie que
-                      l’agent suit seulement le prompt.
-                    </p>
-                    <div className="checkbox-grid">
-                      {catalog?.skills
-                        .filter((skill) => skill.name !== "workflow-creator")
-                        .map((skill) => (
-                          <label key={skill.name} title={skill.description}>
-                            <input
-                              type="checkbox"
-                              checked={cronEditor.skills.includes(skill.name)}
-                              onChange={() => {
-                                invalidateCronWorkflowProposal();
-                                setCronEditor((current) => current && ({
-                                  ...current,
-                                  skills: current.skills.includes(skill.name)
-                                    ? current.skills.filter((item) => item !== skill.name)
-                                    : [...current.skills, skill.name],
-                                }));
-                              }}
-                            />
-                            <span><strong>{skill.name}</strong><small>{skill.description}</small></span>
-                          </label>
-                        ))}
-                      {catalog?.skills.filter((skill) => skill.name !== "workflow-creator").length === 0 && (
-                        <p>Aucune skill d’exécution installée.</p>
-                      )}
-                    </div>
-                  </fieldset>
-                  <label className="field-wide">
-                    Workspace
-                    <select value={cronEditor.workspace || ""} onChange={(event) => {
-                      invalidateCronWorkflowProposal();
-                      setCronEditor((current) => current && ({
-                        ...current, workspace: event.target.value || null,
-                      }));
-                    }}
-                    >
-                      <option value="">Espace personnel de l’agent (par défaut)</option>
-                      {workspaces.map((workspace) => (
-                        <option value={workspace.path} key={workspace.path}>{workspace.name}</option>
-                      ))}
-                      {/* Sans cette option, un chemin absent de la liste — base
-                          déplacée, projet supprimé — ne correspond à aucune
-                          entrée : le select affiche « Aucun » alors que la
-                          routine porte toujours ce dossier. */}
-                      {cronEditor.workspace
-                        && !workspaces.some((item) => item.path === cronEditor.workspace) && (
-                        <option value={cronEditor.workspace}>
-                          {cronEditor.workspace} — dossier introuvable
-                        </option>
-                      )}
-                    </select>
-                  </label>
-                  {cronEditor.workspace
-                    && !workspaces.some((item) => item.path === cronEditor.workspace) && (
-                    <p className="cron-note field-wide">
-                      Ce dossier n’existe pas sur cette machine. Choisis l’espace personnel de
-                      l’agent, ou sélectionne un projet existant.
-                    </p>
-                  )}
-                  <label className="field-wide">
-                    Résultats envoyés dans
-                    <select value={cronEditor.notification_session_id} onChange={(event) =>
-                      setCronEditor((current) => current && ({
-                        ...current, notification_session_id: event.target.value,
-                      }))}>
-                      {sessions.map((session) => (
-                        <option value={session.session_id} key={session.session_id}>
-                          {session.trigger === "agent_channel"
-                            ? `${session.agent_id} · canonique (par défaut)`
-                            : session.prompt || "Session sans titre"}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="field-wide">
-                    Demande exécutée
-                    <textarea value={cronEditor.prompt} onChange={(event) => {
-                      invalidateCronWorkflowProposal();
-                      setCronEditor((current) => current && ({ ...current, prompt: event.target.value }));
-                    }}
-                      placeholder="Décris le résultat attendu à chaque exécution…"
-                    />
-                  </label>
-                  <div className="field-wide switch-setting">
-                    <span><strong>Routine active</strong><small>Exécuter selon la fréquence choisie</small></span>
-                    <button type="button" role="switch" aria-checked={cronEditor.enabled}
-                      className={`toggle-switch ${cronEditor.enabled ? "on" : ""}`}
-                      onClick={() => setCronEditor((current) => current && ({
-                        ...current, enabled: !current.enabled,
-                      }))}><span /></button>
-                  </div>
-                  <div className="field-wide switch-setting">
-                    <span><strong>Reprise après échec</strong><small>Continuer au prochain passage après une erreur transitoire</small></span>
-                    <button type="button" role="switch" aria-checked={cronEditor.auto_resume}
-                      className={`toggle-switch ${cronEditor.auto_resume ? "on" : ""}`}
-                      onClick={() => setCronEditor((current) => current && ({
-                        ...current, auto_resume: !current.auto_resume,
-                      }))}><span /></button>
-                  </div>
-                </fieldset>
-                <RoutineWorkflowPanel
-                  workflow={cronEditor.workflow || null}
-                  proposal={cronWorkflowProposal}
-                  revision={cronEditor.workflow_revision}
-                  updatedAt={cronEditor.workflow_updated_at}
-                  action={cronWorkflowAction}
-                  feedback={
-                    cronEditor.workflow && cronWorkflowBasisDirty && !cronWorkflowProposal
-                      ? "warning"
-                      : cronWorkflowFeedback
-                  }
-                  message={
-                    cronWorkflowProposal && cronEditor.enabled && !cronWorkflowProposalReady
-                      ? "Ce workflow n’est pas prêt. Désactive la routine pour l’enregistrer comme brouillon, ou corrige ses dépendances."
-                      : cronWorkflowProposal && (cronEditor.blocked || cronEditor.in_flight)
-                        ? "La routine exécute une occurrence réelle ou attend son autorisation. Termine-la avant de changer son mode d’exécution."
-                        : cronWorkflowProposal && Boolean(cronApprovalStatus?.pending_count)
-                          ? "Accepter ce workflow remplacera le test du mode libre en attente. Ses autorisations seront annulées et le nouveau workflow devra être testé."
-                        : cronEditor.workflow && !cronWorkflowMutationAvailable
-                          ? "Le workflow reste consultable. Attends la fin de l’exécution ou de la validation pour le modifier ou le supprimer."
-                      : !cronEditor.creating
-                      && cronEditor.workflow
-                      && cronWorkflowBasisDirty
-                      && !cronWorkflowProposal
-                      ? "Ces modifications rendent le workflow actif obsolète. Propose une nouvelle version ou supprime le workflow avant d’enregistrer."
-                      : cronWorkflowMessage || (!workflowCreatorAvailable
-                        ? "Le générateur workflow-creator n’apparaît pas dans l’application active. Redémarre l’application après son installation ; le mode libre reste disponible."
-                        : "")
-                  }
-                  creating={cronEditor.creating}
-                  canPropose={cronWorkflowCanPropose}
-                  canContinueWithoutWorkflow={cronWorkflowCanContinue}
-                  canAcceptProposal={cronWorkflowCanAccept}
-                  canDelete={cronWorkflowMutationAvailable}
-                  onPropose={() => void proposeCronWorkflow()}
-                  onContinueWithoutWorkflow={() => void continueWithoutCronWorkflow()}
-                  onAcceptProposal={() => void acceptCronWorkflowChoice()}
-                  onDelete={() => void deleteCronWorkflow()}
-                />
-                {!cronWorkflowProposal && !cronEditor.creating && (() => {
-                  // Le bloc n'est une alerte que s'il y a réellement quelque chose
-                  // à trancher. Prévalidé et sans modification en attente, il se
-                  // réduit à une ligne de statut.
-                  const pending = cronTestApprovals.length > 0;
-                  const prevalidated = Boolean(
-                    cronApprovalStatus?.approved_scopes.length
-                    && !cronPermissionConfigDirty
-                    && !testingCron
-                    && !pending,
-                  );
-                  const tone = pending
-                    ? "attention"
-                    : cronTestFeedback === "idle"
-                      ? prevalidated ? "settled" : "neutral"
-                      : cronTestFeedback;
-
-                  return (
-                    <div className={`cron-test-panel ${tone}`} aria-busy={testingCron}>
-                      <div className="cron-test-heading">
-                        <strong>
-                          {pending
-                            ? "Autorisations à accorder"
-                            : prevalidated
-                              ? "Routine prévalidée"
-                              : "Prévalidation"}
-                        </strong>
-                        {prevalidated && (
-                          <span className="cron-prevalidation-badge">
-                            {cronApprovalStatus?.approved_scopes.length} autorisation
-                            {(cronApprovalStatus?.approved_scopes.length || 0) > 1 ? "s" : ""}
-                          </span>
-                        )}
-                        {(!prevalidated || cronTestMessage) && (
-                          <small
-                            role={cronTestFeedback === "error" ? "alert" : "status"}
-                            aria-live="polite"
-                          >
-                            {testingCron && <span className="cron-test-spinner" aria-hidden="true" />}
-                            {cronPermissionConfigDirty
-                              ? "Enregistre les modifications avant de relancer la prévalidation."
-                              : cronTestMessage
-                                || "Un test détecte les autorisations dont la routine aura besoin."}
-                          </small>
-                        )}
-                      </div>
-
-                      {pending && (
-                        <ul>
-                          {cronApprovalGroups.map((group) => (
-                            <li key={group.key}>
-                              <strong>{group.tool_name}</strong>
-                              <span>
-                                {group.count > 1 ? `${group.count} actions prévues · ` : ""}
-                                {group.justifications[0]}
-                              </span>
-                              {group.path && <code>{group.path}</code>}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-
-                      <div className="cron-test-actions">
-                        {pending ? (
-                          <>
-                            <button disabled={testingCron || cronPermissionConfigDirty}
-                              onClick={() => void resolveCronTestApprovals(false)}>
-                              {cronTestDecision === "reject" ? "Refus en cours…" : "Tout refuser"}
-                            </button>
-                            <button className="primary" disabled={testingCron || cronPermissionConfigDirty}
-                              onClick={() => void resolveCronTestApprovals(true)}>
-                              {cronTestDecision === "approve"
-                                ? "Autorisation en cours…"
-                                : "Autoriser cette routine"}
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            disabled={testingCron || cronEditor.in_flight || cronPermissionConfigDirty}
-                            onClick={() => void testCron(cronEditor.id)}
-                            title="Les demandes validées pendant le test sont mémorisées pour cette routine, uniquement pour l’outil et la cible affichés."
-                          >
-                            {testingCron
-                              ? "Test en cours…"
-                              : cronPermissionConfigDirty
-                                ? "Enregistrer avant de tester"
-                                : prevalidated
-                                  ? "Retester"
-                                  : "Tester la routine"}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })()}
-                <div className="resource-editor-actions">
-                  <button
-                    onClick={closeCronEditor}
-                    disabled={cronWorkflowMutationBusy || savingResource || testingCron}
-                  >Annuler</button>
-                  {!cronWorkflowProposal && (
-                    <button className="primary" onClick={() => void saveCron()} disabled={!cronCanSave}>
-                      {savingResource
-                        ? "Enregistrement…"
-                        : cronEditor.workflow && cronWorkflowBasisDirty
-                          ? "Workflow à mettre à jour"
-                          : "Enregistrer"}
-                    </button>
-                  )}
-                </div>
-              </div>
+              <RoutineEditor
+                routines={routines}
+                savingResource={savingResource}
+                sessions={sessions}
+                catalog={catalog}
+                securityMode={securityMode}
+                workspaces={workspaces}
+                onSave={() => void saveCron()}
+              />
             )}
 
             {managementModal === "crons" && !cronEditor && (
@@ -4153,13 +2711,6 @@ export default function Home() {
             <div className="message-list" aria-live="polite">
               {messages.map((message) => (
                 <Fragment key={message.id}>
-                  {message.role === "assistant" && message.runId &&
-                    traceEventsForRun(traceEvents, message.runId).length > 0 && (
-                      <ProcessTrace
-                        events={traceEventsForRun(traceEvents, message.runId)}
-                        live={running && activeRunId === message.runId}
-                      />
-                    )}
                   <article className={`message ${message.role} ${message.error ? "error" : ""}`}>
                     {message.role === "user" ? (
                       <div className="message-avatar">X</div>
@@ -4178,13 +2729,24 @@ export default function Home() {
                       </div>
                       {message.role === "assistant" ? (
                         <>
+                          {/* Le déroulé appartient à la réponse, pas à la
+                              demande : placé avant l'article il s'affichait
+                              sous le message de l'utilisateur, qui semblait
+                              alors avoir exécuté les outils lui-même. */}
+                          {message.runId
+                            && traceEventsForRun(traceEvents, message.runId).length > 0 && (
+                              <ProcessTrace
+                                events={traceEventsForRun(traceEvents, message.runId)}
+                                live={running && activeRunId === message.runId}
+                              />
+                            )}
                           <MarkdownMessage content={message.content} />
                           <MessageArtifacts
                             sessionId={activeSessionId}
                             artifacts={message.artifacts}
                             onImageOpen={setImagePreview}
                           />
-                          <RunSpeed stats={runStats} runId={message.runId} />
+                          <RunCost stats={runStats} runId={message.runId} />
                           {gitSnapshotForRun(traceEvents, message.runId) && (
                             <GitChangeCard
                               snapshot={gitSnapshotForRun(traceEvents, message.runId)!}
