@@ -113,6 +113,17 @@
 .trace-toggle:hover { background: var(--ctx-hover); }
 .trace-toggle > strong { color: var(--text-strong); font-size: var(--text-base); }
 .trace-summary { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font: var(--text-xs) var(--font-mono); }
+/* Signal posé sur une étape : résultat abrégé, relecture d'un débordement. */
+.trace-flag {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--ctx-hover);
+  color: var(--text-muted);
+  font: var(--text-xs) var(--font-mono);
+  font-style: normal;
+  vertical-align: middle;
+}
 /* Les agents enfants qui ont travaillé dans ce run, visibles sans dérouler. */
 .trace-delegate {
   padding: 2px 8px;

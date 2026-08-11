@@ -24,6 +24,10 @@
   vitesse plutôt que d'en déduire une du temps mur à mur.
 - Guardian, sandbox d'exécution et politique réseau encadrent les outils
   sensibles; les valeurs de secrets connues sont masquées par valeur.
+- Un résultat d'outil est borné à 8 000 caractères avant d'entrer dans le
+  contexte : début, fin, taille réelle et chemin du résultat complet, écrit dans
+  les artefacts de la session. Ce qui n'entre jamais dans la fenêtre n'a pas à
+  en être retiré par la compaction.
 - Un agent qui déclare des `delegates` ne peut écrire que dans le dossier de
   données du kernel — son espace personnel, sa bibliothèque, ses routines. Toute
   écriture ailleurs est refusée, avec le nom de ses enfants dans le message. La

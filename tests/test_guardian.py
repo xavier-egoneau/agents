@@ -1,9 +1,10 @@
+import json
 import os
 from pathlib import Path
 
 import pytest
 
-from agentic_kernel.guardian import review_tool_call
+from agentic_kernel.guardian import borner_sortie_outil, review_tool_call
 from agentic_kernel.models import GuardianVerdict, SecurityMode, ToolRisk
 
 
@@ -491,3 +492,47 @@ def test_an_agent_without_children_writes_as_before(tmp_path: Path) -> None:
     )
 
     assert decision.verdict is not GuardianVerdict.DENY
+
+
+def test_a_bulky_tool_result_is_summarized_and_kept_aside(tmp_path: Path) -> None:
+    """Ce qui n'entre jamais dans le contexte n'a pas à en être retiré.
+
+    Un `read` sur un fichier volumineux versait son contenu entier dans la
+    fenêtre. La compaction ne pouvait plus le reprendre — sur une session
+    mesurée, l'historique atteignait 130 000 tokens pour une fenêtre de 65 536,
+    avec douze compactions successives sans effet. Le contenu complet reste
+    disponible à côté; seule la part montrée est bornée.
+    """
+    debordement = tmp_path / "artifacts" / "read-call-1.json"
+    contenu = "".join(f"ligne {index}\n" for index in range(4_000))
+    resultat = {"ok": True, "data": {"content": contenu}, "error": None, "metadata": {}}
+
+    borne = borner_sortie_outil(resultat, 8_000, debordement)
+
+    montre = borne["data"]["content"]
+    assert len(montre) < len(contenu)
+    # Le début et la fin sont conservés : les conclusions vivent à la fin.
+    assert montre.startswith("ligne 0\n")
+    assert montre.rstrip().endswith("ligne 3999")
+    assert "caractères coupés" in montre
+    # Et le résultat complet est récupérable.
+    assert borne["metadata"]["truncated"]["full_result_path"] == str(debordement)
+    assert json.loads(debordement.read_text(encoding="utf-8"))["content"] == contenu
+
+
+def test_a_small_tool_result_passes_through_untouched(tmp_path: Path) -> None:
+    """Borner ce qui tient déjà ajouterait du bruit sans rien gagner."""
+    resultat = {"ok": True, "data": {"content": "court"}, "error": None, "metadata": {}}
+
+    assert borner_sortie_outil(resultat, 8_000, tmp_path / "jamais.json") == resultat
+    assert not (tmp_path / "jamais.json").exists()
+
+
+def test_a_result_kept_aside_survives_an_unwritable_disk(tmp_path: Path) -> None:
+    """Mesurer ne doit pas casser : sans fichier, le résultat est borné quand même."""
+    resultat = {"ok": True, "data": {"content": "x" * 20_000}, "error": None, "metadata": {}}
+
+    borne = borner_sortie_outil(resultat, 8_000, None)
+
+    assert len(borne["data"]["content"]) < 20_000
+    assert borne["metadata"]["truncated"]["full_result_path"] is None

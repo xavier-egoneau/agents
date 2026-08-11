@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  traceFlag,
   traceLabel,
   traceState,
   visibleTraceTypes,
@@ -64,7 +65,12 @@ function ProcessTraceState({
             <li className={state} key={`${event.timestamp}-${event.type}-${index}`}>
               <span className="trace-dot" />
               <div>
-                <strong>{traceLabel(event)}</strong>
+                <strong>
+                  {traceLabel(event)}
+                  {traceFlag(event) && (
+                    <em className="trace-flag">{traceFlag(event)}</em>
+                  )}
+                </strong>
                 <small>{event.agent_id} · {new Date(event.timestamp).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small>
                 {detail && <p>{detail}</p>}
               </div>

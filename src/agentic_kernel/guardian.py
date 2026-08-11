@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import ipaddress
 import json
@@ -496,6 +497,93 @@ def redact(value: Any, key: str = "") -> Any:
     return value
 
 
+# Ce qu'un résultat d'outil peut occuper dans le contexte, en caractères.
+# Environ 2 300 tokens avec l'estimateur du kernel.
+#
+# Un `read` sur un fichier de 40 ko versait 11 000 tokens dans la fenêtre, que
+# la compaction ne pouvait plus reprendre : sur une session mesurée le 10 août,
+# l'historique atteignait 130 000 tokens pour une fenêtre de 65 536, avec douze
+# compactions d'affilée sans effet. Le contenu intégral reste écrit à côté et
+# reste lisible; seule la part montrée au modèle est bornée.
+BUDGET_SORTIE_OUTIL = 8_000
+
+
+def _tronquer(texte: str, budget: int) -> str:
+    """Garde le début et la fin, coupe le milieu, dit combien manque.
+
+    La fin compte autant que le début : les erreurs de compilation, les totaux
+    et les conclusions s'y trouvent. Une troncature par la fin seule les perd.
+    """
+    if len(texte) <= budget:
+        return texte
+    tete = texte[: budget * 3 // 4]
+    queue = texte[-(budget // 4) :]
+    manquant = len(texte) - len(tete) - len(queue)
+    return f"{tete}\n\n…[{manquant} caractères coupés]…\n\n{queue}"
+
+
+def _borner_recursivement(noeud: Any, budget: int) -> tuple[Any, bool]:
+    if isinstance(noeud, str):
+        return (_tronquer(noeud, budget), True) if len(noeud) > budget else (noeud, False)
+    if isinstance(noeud, dict):
+        borne: dict[Any, Any] = {}
+        coupe = False
+        for cle, item in noeud.items():
+            borne[cle], item_coupe = _borner_recursivement(item, budget)
+            coupe = coupe or item_coupe
+        return borne, coupe
+    if isinstance(noeud, list):
+        elements = [_borner_recursivement(item, budget) for item in noeud]
+        return [item for item, _ in elements], any(coupe for _, coupe in elements)
+    return noeud, False
+
+
+def borner_sortie_outil(
+    value: Any,
+    budget: int,
+    overflow_path: Path | None,
+) -> Any:
+    """Borne ce qu'un résultat d'outil verse dans le contexte du modèle.
+
+    Le résultat complet est écrit dans les artefacts de la session — un dossier
+    que le Guardian autorise déjà en lecture — et le modèle reçoit de quoi
+    décider s'il a besoin d'aller y lire : le début, la fin, la taille réelle et
+    le chemin.
+
+    Écrire ce fichier ne doit pas faire échouer l'appel : si le disque refuse,
+    le résultat est simplement tronqué sans référence.
+    """
+    if not isinstance(value, dict):
+        return value
+    borne, coupe = _borner_recursivement(value.get("data"), budget)
+    if not coupe:
+        return value
+    complet = None
+    if overflow_path is not None:
+        with contextlib.suppress(OSError, TypeError, ValueError):
+            overflow_path.parent.mkdir(parents=True, exist_ok=True)
+            overflow_path.write_text(
+                json.dumps(value.get("data"), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            complet = str(overflow_path)
+    metadata = dict(value.get("metadata") or {})
+    metadata["truncated"] = {
+        "budget_characters": budget,
+        "full_result_path": complet,
+        "hint": (
+            "Résultat abrégé pour tenir dans le contexte. "
+            + (
+                f"L'intégralité est dans {complet} — la lire avec `read`, "
+                "ou la filtrer avec `search_text` plutôt que la charger en entier."
+                if complet
+                else "L'intégralité n'a pas pu être conservée."
+            )
+        ),
+    }
+    return {**value, "data": borne, "metadata": metadata}
+
+
 @dataclass
 class GuardianToolset(WrapperToolset[Any]):
     agent_id: str
@@ -672,6 +760,21 @@ class GuardianToolset(WrapperToolset[Any]):
             return failure
         if callable(getattr(deps, "secret_redactor", None)):
             value = deps.secret_redactor(value)
+        # Borner après la rédaction des secrets : le fichier de débordement ne
+        # doit pas contenir ce que le contexte n'a pas le droit de voir.
+        value = borner_sortie_outil(
+            value,
+            BUDGET_SORTIE_OUTIL,
+            (
+                deps.state_db.parent
+                / "sessions"
+                / "artifacts"
+                / str(deps.session_id)
+                / f"{name}-{call_id}.json"
+            )
+            if deps.state_db is not None
+            else None,
+        )
         deps.events.append(
             Event(
                 session_id=deps.session_id,

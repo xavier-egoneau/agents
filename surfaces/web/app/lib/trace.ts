@@ -47,6 +47,26 @@ export function traceLabel(event: TraceEvent) {
   return labels[event.type] || event.type;
 }
 
+/**
+ * Ce qui mérite d'être signalé sur une étape sans la dérouler.
+ *
+ * Le plafonnement des sorties d'outil se décidait entièrement dans
+ * `metadata.truncated`, invisible depuis l'interface : impossible de savoir si
+ * un résultat avait été abrégé, ni si l'agent repartait chercher l'intégralité
+ * — les deux façons dont le plafonnement peut mal tourner.
+ */
+export function traceFlag(event: TraceEvent): string | null {
+  const chemin = String(event.payload.path || "");
+  if (chemin.includes("artifacts") && event.type.startsWith("tool.")) {
+    return "relit un résultat mis de côté";
+  }
+  if (event.type !== "tool.completed") return null;
+  const result = event.payload.result as Record<string, unknown> | undefined;
+  const metadata = result?.metadata as Record<string, unknown> | undefined;
+  const abrege = metadata?.truncated as Record<string, unknown> | undefined;
+  return abrege ? "résultat abrégé" : null;
+}
+
 export function traceState(event: TraceEvent, isLast: boolean, live: boolean) {
   if (event.type.includes("failed")) return "failed";
   if (event.type === "approval.requested") return "blocked";
