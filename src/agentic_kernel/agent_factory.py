@@ -142,13 +142,17 @@ class AgentFactory:
         # Les skills rattachées à l'agent n'entrent plus en entier dans le
         # prompt : seules celles qui se déclarent `load: always` et celles
         # demandées pour ce run précis y figurent. Les autres sont annoncées par
-        # l'index plus bas et arrivent par `load_skill` au moment utile.
+        # l'index plus bas et arrivent par `load_skills` au moment utile.
         #
-        # Sauf si ce run n'a justement pas le droit d'appeler `load_skill` :
+        # Sauf si ce run n'a justement pas le droit d'appeler `load_skills` :
         # l'index désignerait alors des instructions inatteignables, et l'agent
         # perdrait en silence des consignes qu'on lui a rattachées. Dans ce cas
         # on retombe sur l'inscription complète.
-        differe_les_skills = _allows_internal_tool("load_skill", runtime_allowlist)
+        # `load_skill` reste reconnu dans une allowlist existante pendant la
+        # transition vers le chargeur groupé `load_skills`.
+        differe_les_skills = _allows_internal_tool(
+            "load_skills", runtime_allowlist
+        ) or _allows_internal_tool("load_skill", runtime_allowlist)
         # `implicit_skills` est forcée pour la même raison qu'une skill demandée
         # à l'exécution : c'est un réglage de l'agent qui l'a fait entrer, pas
         # une éventualité que le modèle pourrait reconnaître. Activer la mémoire
@@ -219,7 +223,7 @@ class AgentFactory:
             )
             capabilities.extend(module.capabilities())
         catalog = skill_catalog_instruction(skills, requested_skills, eager_skills)
-        loader = skill_toolset(skills)
+        loader = skill_toolset(skills, eager_skills)
         if catalog and differe_les_skills:
             instructions.append(catalog)
         if loader and differe_les_skills:

@@ -9,6 +9,12 @@ allowed-tools:
   - write
   - patch
   - command_run
+amk:
+  activation: on-demand
+  phases: [author]
+  positive_signals: [the requested deliverable is a reusable skill]
+  negative_signals: [ordinary project implementation]
+  retain_until: skill-delivered
 ---
 
 # Skill Creator

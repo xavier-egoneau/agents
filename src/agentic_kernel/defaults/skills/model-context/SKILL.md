@@ -4,6 +4,12 @@ description: Maintenir la fenêtre de contexte du modèle actif pour permettre l
 allowed-tools:
   - model_context_status
   - model_context_store
+amk:
+  activation: on-demand
+  phases: [diagnose]
+  positive_signals: [the active model context window is unknown]
+  negative_signals: [the kernel already knows the active model context window]
+  retain_until: context-window-known
 ---
 # Fenêtre de contexte du modèle
 

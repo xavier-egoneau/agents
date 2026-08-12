@@ -123,6 +123,46 @@ def test_api_default_workspace_is_distinct_from_application_root(
     assert current.json()["path"] == str(workspace.resolve())
 
 
+def test_recent_workspaces_are_recovered_from_session_history(
+    project: Path, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "remembered-project"
+    workspace.mkdir()
+    store = JsonlEventStore(project / "content-agents" / "sessions")
+    store.append(
+        Event(
+            session_id=uuid4(),
+            run_id=uuid4(),
+            agent_id="main",
+            type="session.started",
+            payload={"prompt": "work", "workspace": str(workspace)},
+        )
+    )
+    personal = project / "content-agents" / "workspaces" / "main"
+    personal.mkdir(parents=True)
+    store.append(
+        Event(
+            session_id=uuid4(),
+            run_id=uuid4(),
+            agent_id="main",
+            type="session.started",
+            payload={"prompt": "personal", "workspace": str(personal)},
+        )
+    )
+
+    recent = TestClient(create_app(project)).get("/api/workspaces/recent")
+
+    assert recent.status_code == 200
+    assert recent.json() == [
+        {
+            "path": str(workspace.resolve()),
+            "name": "remembered-project",
+            "readable": True,
+            "writable": True,
+        }
+    ]
+
+
 def test_git_api_is_scoped_to_the_requested_workspace(project: Path, tmp_path: Path) -> None:
     repository = tmp_path / "customer-project"
     workspace = repository / "packages" / "web"
@@ -980,9 +1020,7 @@ def test_visible_telegram_session_can_be_aggregated_into_app_catalog(project: Pa
     detail = client.get(f"/api/sessions/{session_id}").json()
     assert detail["workspace"] is None
     assert detail["workspace_kind"] == "agent_default"
-    assert detail["effective_workspace"] == str(
-        default_workspace.resolve()
-    )
+    assert detail["effective_workspace"] == str(default_workspace.resolve())
 
 
 def test_session_history_has_the_agent_channel_and_hides_execution_sessions(
@@ -1007,16 +1045,23 @@ def test_session_history_has_the_agent_channel_and_hides_execution_sessions(
             },
         )
     )
-    sessions = TestClient(app).get("/api/sessions", params={"workspace": str(project)}).json()
-    assert any(
-        item["trigger"] == "agent_channel" and item["workspace"] is None for item in sessions
-    )
-    inbox = next(item for item in sessions if item["trigger"] == "agent_channel")
+    client = TestClient(app)
+    # Vue projet : ses sessions, et rien d'autre. Le canal permanent n'y figure
+    # plus — l'y mêler faisait l'ouvrir en croyant rester dans le projet, et le
+    # run partait alors dans l'espace personnel de l'agent.
+    dans_le_projet = client.get("/api/sessions", params={"workspace": str(project)}).json()
+    assert all(item["trigger"] != "agent_channel" for item in dans_le_projet)
+    assert all(item["session_id"] != str(automation_session) for item in dans_le_projet)
+
+    # Vue « Accueil » : le canal permanent y a sa place, avec son espace personnel.
+    accueil = client.get("/api/sessions", params={"agent_id": "main"}).json()
+    inbox = next(item for item in accueil if item["trigger"] == "agent_channel")
+    assert inbox["workspace"] is None
     assert inbox["workspace_kind"] == "agent_default"
     assert inbox["effective_workspace"] == str(
         (project / "content-agents" / "workspaces" / "main").resolve()
     )
-    assert all(item["session_id"] != str(automation_session) for item in sessions)
+    assert all(item["session_id"] != str(automation_session) for item in accueil)
 
 
 def test_the_agent_channel_keeps_its_stable_name_after_a_user_reply(project: Path) -> None:
@@ -1066,9 +1111,7 @@ def test_the_agent_channel_can_be_cleared_without_deleting_its_stable_session(
             payload={"status": "success", "output": "ancienne réponse"},
         )
     )
-    snapshots = (
-        project / "content-agents" / "sessions" / "blobs" / str(agent_session_id("main"))
-    )
+    snapshots = project / "content-agents" / "sessions" / "blobs" / str(agent_session_id("main"))
     snapshots.mkdir(parents=True)
     (snapshots / "obsolete.json.gz").write_bytes(b"obsolete")
     artifacts = (
@@ -1078,11 +1121,11 @@ def test_the_agent_channel_can_be_cleared_without_deleting_its_stable_session(
     (artifacts / "obsolete.png").write_bytes(b"obsolete")
 
     client = TestClient(app)
-    response = client.post(f"/api/sessions/{agent_session_id("main")}/clear")
+    response = client.post(f"/api/sessions/{agent_session_id('main')}/clear")
 
     assert response.status_code == 200
     assert response.json()["status"] == "cleared"
-    detail = client.get(f"/api/sessions/{agent_session_id("main")}").json()
+    detail = client.get(f"/api/sessions/{agent_session_id('main')}").json()
     assert detail["trigger"] == "agent_channel"
     assert detail["prompt"] == "main"
     assert detail["messages"] == []
@@ -1119,9 +1162,7 @@ Help carefully.
         },
     )
     assert created.status_code == 200
-    helper = next(
-        item for item in client.get("/api/admin/agents").json() if item["id"] == "helper"
-    )
+    helper = next(item for item in client.get("/api/admin/agents").json() if item["id"] == "helper")
     assert helper["telegram"]["enabled"] is True
     assert helper["telegram"]["hide_session"] is True
     assert helper["telegram"]["user_id_configured"] is True
@@ -1228,15 +1269,21 @@ def test_module_settings_are_schema_driven_and_secrets_are_write_only(
     assert updated.status_code == 200
     assert updated.json()["state"] == "configured"
     assert "very-secret" not in updated.text
-    assert "very-secret" not in (
-        project / "content-agents" / "tool-settings.json"
-    ).read_text(encoding="utf-8")
-    assert json.loads(
-        (project / "content-agents" / "secrets.json").read_text(encoding="utf-8")
-    )["CLOCK_TOKEN"] == "very-secret"
-    assert client.put(
-        "/api/admin/module-settings/clock", json={"values": {"unknown": True}}
-    ).status_code == 422
+    assert "very-secret" not in (project / "content-agents" / "tool-settings.json").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        json.loads((project / "content-agents" / "secrets.json").read_text(encoding="utf-8"))[
+            "CLOCK_TOKEN"
+        ]
+        == "very-secret"
+    )
+    assert (
+        client.put(
+            "/api/admin/module-settings/clock", json={"values": {"unknown": True}}
+        ).status_code
+        == 422
+    )
 
 
 def test_any_conversation_can_be_cleared(project: Path) -> None:
@@ -1347,7 +1394,8 @@ def test_every_orchestrator_gets_its_own_channel(project: Path) -> None:
     )
 
     client = TestClient(create_app(project))
-    sessions = client.get("/api/sessions", params={"workspace": str(project)}).json()
+    # Les canaux se lisent depuis « Accueil », plus depuis une vue projet.
+    sessions = client.get("/api/sessions", params={"agent_id": "main"}).json()
     canaux = {item["agent_id"] for item in sessions if item["trigger"] == "agent_channel"}
 
     assert canaux == {"main", "sophie"}
@@ -1600,8 +1648,11 @@ def test_purging_clears_the_current_view_only(project: Path) -> None:
 
     assert purge.status_code == 200
     assert purge.json()["deleted"] == 1
-    # Le canal reste : il est permanent, et c'est pour ça qu'il est « conservé ».
-    assert purge.json()["kept"] >= 1
+    # Rien à conserver dans une vue projet : le canal permanent n'y figure plus,
+    # il vit dans « Accueil » et la purge d'un projet ne le voit pas.
+    assert purge.json()["kept"] == 0
+    accueil = client.get("/api/sessions", params={"agent_id": "main"}).json()
+    assert any(item["trigger"] == "agent_channel" for item in accueil)
     restantes = client.get("/api/sessions", params={"workspace": autre_projet}).json()
     assert any(item["session_id"] == str(ailleurs) for item in restantes)
 

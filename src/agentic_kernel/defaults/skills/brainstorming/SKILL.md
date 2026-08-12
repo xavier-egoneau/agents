@@ -3,6 +3,10 @@ name: brainstorming
 description: Explorer un problème ouvert en produisant des options réellement distinctes avant de trancher. Utiliser quand la question est « comment aborder ceci », quand la première idée semble déjà acquise, quand il faut choisir entre plusieurs directions, ou quand une décision engage la suite du projet. Ne pas utiliser pour une tâche dont la solution est connue.
 amk:
   activation: on-demand
+  phases: [discover, plan]
+  positive_signals: [an open decision needs genuinely different options]
+  negative_signals: [an accepted plan is currently being built]
+  retain_until: decision-made
   commands:
     - /brainstorm
   command_descriptions:

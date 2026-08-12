@@ -337,15 +337,24 @@ export default function Home() {
     } catch {
       window.localStorage.removeItem("amk.workspaces");
     }
-    fetch("/api/kernel/workspaces/current")
-      .then(async (response) => {
+    Promise.all([
+      fetch("/api/kernel/workspaces/current").then(async (response) => {
         if (!response.ok) throw new Error("Workspace du kernel indisponible");
-        return response.json();
-      })
-      .then((current: Workspace) => {
+        return response.json() as Promise<Workspace>;
+      }),
+      fetch("/api/kernel/workspaces/recent")
+        .then((response) => response.ok ? response.json() as Promise<Workspace[]> : [])
+        .catch(() => [] as Workspace[]),
+    ])
+      .then(([current, recovered]) => {
         // The kernel CWD is only the first-run default. Once the user has made
         // a project list, do not silently add it again on every launch.
-        const known = recent.length > 0 ? recent : [current];
+        // `localStorage` is scoped by browser origin: localhost and 127.0.0.1
+        // have different lists. Sessions are durable on the API side, so merge
+        // their project roots to recover navigation after an origin change.
+        const merged = new Map<string, Workspace>();
+        [...recent, ...recovered].forEach((workspace) => merged.set(workspace.path, workspace));
+        const known = merged.size > 0 ? [...merged.values()] : [current];
         // « Aucun projet » est le point de départ : on ouvre sur ce que l'agent
         // a fait, pas sur le dernier dossier où l'on codait. Un projet mémorisé
         // est restitué, la chaîne vide comprise — elle signifie « aucun ».
@@ -502,8 +511,14 @@ export default function Home() {
   }, [prompt, slashCommands, activeSessionId]);
 
   useEffect(() => {
-    if (!activeWorkspace) return;
-    fetch(`/api/kernel/commands?workspace=${encodeURIComponent(activeWorkspace)}`)
+    // Les commandes globales — celles des skills de `content-agents` — existent
+    // sans projet. Abandonner faute de workspace vidait l'autocomplétion dans
+    // toute la vue Accueil : plus de `/secu`, plus de `/plan`, plus rien. L'API
+    // accepte l'absence de workspace et retombe sur la racine.
+    const requete = activeWorkspace
+      ? `?workspace=${encodeURIComponent(activeWorkspace)}`
+      : "";
+    fetch(`/api/kernel/commands${requete}`)
       .then((response) => response.ok ? response.json() : [])
       .then((items: SlashCommand[]) => setSlashCommands(items))
       .catch(() => setSlashCommands([]));
@@ -726,6 +741,11 @@ export default function Home() {
         if (
           activeSessionIdRef.current
           && changed.includes(activeSessionIdRef.current)
+          // Pendant un run, le SSE est la source de vérité de la conversation
+          // ouverte. La rouvrir ici toutes les 2,5 s remettait activeRunId à
+          // null : les événements arrivaient bien, mais leur trace disparaissait
+          // aussitôt derrière « connexion au journal… ».
+          && runningSessionId.current !== activeSessionIdRef.current
         ) {
           void openSession(activeSessionIdRef.current);
         }
@@ -1564,16 +1584,44 @@ export default function Home() {
     textarea.current?.focus();
   }
 
-  function startEventStream(sessionId: string) {
-    const source = new EventSource(`/api/kernel/sessions/${sessionId}/events`);
+  function startEventStream(sessionId: string, afterSequence?: number) {
+    const cursor = Math.max(
+      0,
+      afterSequence
+        ?? traceEvents.reduce((latest, item) => Math.max(latest, item.sequence || 0), 0),
+    );
+    const source = new EventSource(
+      `/api/kernel/sessions/${sessionId}/events?after_sequence=${cursor}`,
+    );
     source.addEventListener("trace", (raw) => {
       const event = JSON.parse((raw as MessageEvent).data) as TraceEvent;
       if (event.type === "session.started" && !event.parent_run_id) {
         setActiveRunId(event.run_id);
+      } else if (
+        event.parent_run_id && event.type === "agent.started"
+      ) {
+        // Si la connexion s'établit après `session.started`, la première
+        // délégation porte encore explicitement l'identité du run racine.
+        setActiveRunId((current) => current || event.parent_run_id);
+      } else if (
+        event.type.startsWith("context.")
+        || event.type === "run.transitioned"
+        || event.type === "session.completed"
+      ) {
+        // Les événements de contexte sont journalisés sur le run racine, même
+        // lorsqu'ils décrivent le travail d'un délégué. Ils permettent de
+        // récupérer après une reconnexion qui aurait manqué le début du run.
+        setActiveRunId((current) => current || event.run_id);
       }
       setTraceEvents((current) => {
-        const key = `${event.timestamp}:${event.type}:${event.run_id}`;
-        return current.some((item) => `${item.timestamp}:${item.type}:${item.run_id}` === key)
+        const key = event.sequence
+          ? `sequence:${event.sequence}`
+          : `${event.timestamp}:${event.type}:${event.run_id}`;
+        return current.some((item) => (
+          item.sequence
+            ? `sequence:${item.sequence}`
+            : `${item.timestamp}:${item.type}:${item.run_id}`
+        ) === key)
           ? current : [...current, event];
       });
     });
@@ -1589,15 +1637,20 @@ export default function Home() {
   }
 
   function chooseWorkspace(path: string) {
-    const changed = path !== activeWorkspace;
     setActiveWorkspace(path);
     window.localStorage.setItem("amk.activeWorkspace", path);
     // Une session reste rattachée au projet où elle a commencé : son historique,
     // ses diffs et ses chemins s'y réfèrent. La déplacer la rendrait incohérente.
-    // Changer de projet ouvre donc une conversation neuve — sans quoi le
-    // changement n'avait aucun effet, la session continuant sur l'ancien projet
-    // pendant que l'en-tête annonçait le nouveau.
-    if (changed && activeSessionId && !running) newConversation();
+    // Choisir un projet ouvre donc une conversation neuve.
+    //
+    // La comparaison porte sur le projet de la *conversation*, pas sur celui
+    // qui était sélectionné. Un canal permanent écrit dans l'espace personnel de
+    // son agent quel que soit le projet affiché : rouvrir le projet déjà
+    // sélectionné laissait ce canal ouvert et le geste restait sans effet. On
+    // crée un projet, on clique dessus, et le message suivant part quand même
+    // ailleurs — un jeu entier s'est écrit dans `workspaces/main` de cette
+    // façon, pendant que le rail annonçait `test9`.
+    if (conversationWorkspace !== path && activeSessionId && !running) newConversation();
   }
 
   function registerWorkspace(workspace: Workspace) {
@@ -1745,6 +1798,13 @@ export default function Home() {
     };
     const sessionId = activeSessionId || crypto.randomUUID();
     const continuingSession = Boolean(activeSessionId);
+    // Une longue conversation peut contenir plusieurs milliers d'événements.
+    // Les événements chargés avec la session portent leur séquence : le flux
+    // live doit repartir juste après, sans rejouer tout le journal avant de
+    // montrer le nouveau run.
+    const eventCursor = continuingSession
+      ? traceEvents.reduce((latest, item) => Math.max(latest, item.sequence || 0), 0)
+      : 0;
     runningSessionId.current = sessionId;
     setStopRequested(false);
     setActiveSessionId(sessionId);
@@ -1756,7 +1816,7 @@ export default function Home() {
     setAttachmentError("");
     primeRunChime();
     setRunning(true);
-    const eventSource = startEventStream(sessionId);
+    const eventSource = startEventStream(sessionId, eventCursor);
     try {
       const response = await fetch("/api/kernel/runs", {
         method: "POST",
@@ -1960,6 +2020,26 @@ export default function Home() {
    * substitut, pas un doublon. Sa première entrée rouvre donc le panneau ;
    * les suivantes ouvrent les modales de configuration.
    */
+  // Les canaux permanents ne s'affichent plus dans une vue projet : leur
+  // destination est « Accueil ». La pastille porte donc seule le signal qu'un
+  // résultat de routine vient d'y tomber pendant qu'on travaille ailleurs.
+  // `unreadSessionIds` est alimenté par le sondage des routines, qui ignore le
+  // projet courant : l'information est là même quand la session n'est pas
+  // affichée.
+  //
+  // Le compte porte sur les non-lus *absents de la vue courante*. Ceux du
+  // projet affiché portent déjà leur point dans la liste; ce qui reste vient du
+  // sondage des routines, dont la session de notification est le canal permanent
+  // de l'agent instanciateur. Depuis « Accueil », ces sessions sont affichées,
+  // donc le compte retombe à zéro — ce qui est juste : on y est.
+  const canauxNonLus = useMemo(
+    () =>
+      [...unreadSessionIds].filter(
+        (identifiant) => !sessions.some((session) => session.session_id === identifiant),
+      ).length,
+    [sessions, unreadSessionIds],
+  );
+
   const railEntries: RailEntry[] = [
     {
       id: "panel",
@@ -1968,6 +2048,14 @@ export default function Home() {
       badge: unreadSessionIds.size || undefined,
       onSelect: () => panels.setOpen("left", true),
     },
+    {
+      id: "home",
+      icon: "agent",
+      label: "Accueil — canaux permanents",
+      badge: canauxNonLus || undefined,
+      onSelect: () => chooseWorkspace(""),
+    },
+    { id: "projects", icon: "project", label: "Projets", onSelect: () => openManagement("projects") },
     { id: "agents", icon: "agent", label: "Agents", onSelect: () => openManagement("agents") },
     { id: "skills", icon: "skill", label: "Skills", onSelect: () => openManagement("skills") },
     { id: "providers", icon: "provider", label: "Providers", onSelect: () => openManagement("providers") },
@@ -2107,6 +2195,9 @@ export default function Home() {
         <div ref={railContent} className="side-panel-stack">
           <SidePanelSection>
             <ResourceNavigation
+              onHome={() => chooseWorkspace("")}
+              homeActive={!activeWorkspace}
+              homeUnread={canauxNonLus}
               projectName={activeWorkspaceInfo?.name}
               workspaceCount={workspaces.length}
               agentId={activeAgent?.id}
@@ -2626,9 +2717,22 @@ export default function Home() {
 
             <button
               type="button"
-              className="topbar-chip"
+              className={[
+                "topbar-chip",
+                // La conversation ouverte peut ne pas appartenir au projet
+                // sélectionné : un canal permanent écrit dans l'espace personnel
+                // de son agent quel que soit le projet affiché dans le rail. Sans
+                // marque, on croit travailler dans le projet — un jeu entier
+                // s'est écrit dans `workspaces/main` pendant que le rail
+                // indiquait `test9`.
+                conversationWorkspace !== activeWorkspace ? "topbar-chip-divergent" : "",
+              ].filter(Boolean).join(" ")}
               onClick={() => openManagement("projects")}
-              data-tip={conversationWorkspace || "Aucun projet associé"}
+              data-tip={
+                conversationWorkspace !== activeWorkspace
+                  ? `Cette conversation écrit dans ${conversationWorkspace || "l’espace personnel de l’agent"}, pas dans le projet sélectionné.`
+                  : conversationWorkspace || "Aucun projet associé"
+              }
               data-tip-side="bottom"
             >
               <Icon name="project" size="sm" />
@@ -2769,11 +2873,10 @@ export default function Home() {
                   </article>
                 </Fragment>
               ))}
-              {running && activeRunId &&
-                !messages.some((message) => message.role === "assistant" && message.runId === activeRunId) &&
-                traceEventsForRun(traceEvents, activeRunId).length > 0 && (
+              {running &&
+                !messages.some((message) => message.role === "assistant" && message.runId === activeRunId) && (
                 <ProcessTrace
-                  events={traceEventsForRun(traceEvents, activeRunId)}
+                  events={activeRunId ? traceEventsForRun(traceEvents, activeRunId) : []}
                   live
                 />
               )}

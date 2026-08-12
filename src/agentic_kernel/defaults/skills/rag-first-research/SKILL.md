@@ -10,6 +10,12 @@ allowed-tools:
   - browser_snapshot
   - browser_click
   - browser_close
+amk:
+  activation: on-demand
+  phases: [research, verify]
+  positive_signals: [external current or sourced evidence can change the answer]
+  negative_signals: [local implementation has sufficient repository evidence]
+  retain_until: evidence-sufficient
 ---
 
 # Recherche avec mémoire

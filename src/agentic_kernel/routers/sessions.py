@@ -237,15 +237,19 @@ def create_session_router(  # noqa: C901 - dette: factory à plusieurs endpoints
         return {"session_id": str(session_id), "status": "cleared"}
 
     @router.get("/{session_id}/events")
-    async def stream_session_events(session_id: UUID, request: Request) -> StreamingResponse:
+    async def stream_session_events(
+        session_id: UUID,
+        request: Request,
+        after_sequence: int = 0,
+    ) -> StreamingResponse:
         path = kernel.events.path_for(session_id)
 
         async def stream():
             raw_last = request.headers.get("last-event-id", "0")
             try:
-                sequence = max(0, int(raw_last))
+                sequence = max(0, after_sequence, int(raw_last))
             except ValueError:
-                sequence = 0
+                sequence = max(0, after_sequence)
             idle_ticks = 0
             while not await request.is_disconnected():
                 positions = kernel.events.projection.positions_after(session_id, sequence)
@@ -259,6 +263,7 @@ def create_session_router(  # noqa: C901 - dette: factory à plusieurs endpoints
                                 event = json.loads(line)
                             except json.JSONDecodeError:
                                 continue
+                            event["sequence"] = sequence
                             yield (
                                 f"id: {sequence}\n"
                                 "event: trace\n"

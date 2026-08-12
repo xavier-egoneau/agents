@@ -12,7 +12,15 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 from pydantic_ai import BinaryContent, ModelMessagesTypeAdapter
-from pydantic_ai.messages import ImageUrl, ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import (
+    ImageUrl,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
 from .errors import ConfigurationError
 from .models import Event, ModuleIndex, RunError, RunResult, RunStatus
@@ -78,10 +86,7 @@ class ModelContextRegistry:
         models = [
             item
             for item in data.get("models", [])
-            if not (
-                item.get("provider_id") == provider_id
-                and item.get("model") == model_name
-            )
+            if not (item.get("provider_id") == provider_id and item.get("model") == model_name)
         ]
         models.append(
             {
@@ -131,6 +136,35 @@ def without_images(messages: list[Any]) -> list[Any]:
                     content.append(item)
             parts.append(replace(part, content=content))
         sanitized.append(replace(message, parts=parts))
+    return sanitized
+
+
+EPHEMERAL_SKILL_TOOLS = frozenset({"load_skill", "load_skills"})
+
+
+def without_ephemeral_skill_loads(messages: list[Any]) -> list[Any]:
+    """Drop skill bodies loaded in an earlier run.
+
+    A loaded skill arrives as a tool result and would otherwise remain in every
+    later turn of the session.  The next agent is rebuilt with the compact
+    catalog, so it can make a fresh admission decision and reload a skill if the
+    new task phase still needs it.
+    """
+    sanitized: list[Any] = []
+    for message in messages:
+        if not isinstance(message, (ModelRequest, ModelResponse)):
+            sanitized.append(message)
+            continue
+        parts = [
+            part
+            for part in message.parts
+            if not (
+                isinstance(part, (ToolCallPart, ToolReturnPart))
+                and part.tool_name in EPHEMERAL_SKILL_TOOLS
+            )
+        ]
+        if parts:
+            sanitized.append(replace(message, parts=parts))
     return sanitized
 
 
@@ -268,6 +302,7 @@ class ContextService:
         calibration_factor = 1.0
         calibration_samples = 0
         session = None
+        projected = None
         if session_id is not None:
             projected = self.events.projection.context(session_id)
             if projected is not None:
@@ -279,19 +314,18 @@ class ContextService:
             session = self.events.projection.session(session_id)
         try:
             agent = self.config.agents()["main"]
-            workspace = (
-                Path(session["workspace"])
-                if session and session.get("workspace")
-                else None
-            )
+            workspace = Path(session["workspace"]) if session and session.get("workspace") else None
             skills = self.config.skills(workspace)
             overhead = self.overhead_tokens(agent, skills, "", workspace)
         except (KeyError, OSError, ValueError):
             overhead = 0
         calibrated_history = round(estimated * calibration_factor)
         complete_estimate = calibrated_history + overhead
-        gauge_value = int(observed) if isinstance(observed, int) else complete_estimate
-        ratio = gauge_value / window if window else None
+        # `usage.input_tokens` d'un résultat est cumulatif sur toutes les
+        # requêtes du run. Il ne décrit donc jamais l'occupation instantanée de
+        # la fenêtre. La jauge repose uniquement sur l'historique restauré et
+        # l'overhead réellement envoyé au prochain appel modèle.
+        ratio = complete_estimate / window if window else None
         return {
             "provider_id": provider_id,
             "model": model_name,
@@ -299,10 +333,15 @@ class ContextService:
             "estimated_history_tokens": estimated,
             "estimated_request_tokens": complete_estimate,
             "observed_input_tokens": observed,
+            "last_run_total_input_tokens": (
+                projected.get("last_run_total_input_tokens")
+                if session_id is not None and projected is not None
+                else None
+            ),
             "estimated_ratio": ratio,
             "compaction_threshold_ratio": compaction_threshold_ratio,
             "compaction_count": compaction_count,
-            "measurement": "observed" if observed is not None else "estimated",
+            "measurement": "estimated",
             "calibration_factor": calibration_factor,
             "calibration_samples": calibration_samples,
         }
@@ -329,6 +368,7 @@ class ContextService:
             )
             if messages is not None:
                 history = list(ModelMessagesTypeAdapter.validate_python(messages))
+                history = without_ephemeral_skill_loads(history)
                 if not supports_vision:
                     history = without_images(history)
                 snapshot_index = index
@@ -513,12 +553,8 @@ class ContextService:
             ),
             None,
         )
-        snapshot_messages = (
-            self.snapshots.load(session_id, snapshot.payload) if snapshot else []
-        )
-        estimated = self.estimate_tokens(
-            json.dumps(snapshot_messages, ensure_ascii=False)
-        )
+        snapshot_messages = self.snapshots.load(session_id, snapshot.payload) if snapshot else []
+        estimated = self.estimate_tokens(json.dumps(snapshot_messages, ensure_ascii=False))
         ratio = estimated / context_window_tokens if context_window_tokens else None
         compactions = [event for event in events if event.type == "context.compacted"]
         output = "\n".join(

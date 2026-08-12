@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import sqlite3
 import subprocess
 import time
@@ -71,7 +72,17 @@ def _arguments(args: list[str] | str | None) -> list[str]:
     if args is None:
         return []
     if isinstance(args, str):
-        return shlex.split(args, posix=os.name != "nt")
+        values = shlex.split(args, posix=os.name != "nt")
+        if os.name == "nt":
+            # `shlex(..., posix=False)` préserve correctement les antislashs
+            # Windows mais conserve aussi les guillemets englobants.
+            values = [
+                value[1:-1]
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}
+                else value
+                for value in values
+            ]
+        return values
     return list(args)
 
 
@@ -142,6 +153,23 @@ def _redacted_command(command: list[str]) -> list[str]:
 
 
 _DEFAULT_DEV_PORTS = (3000, 5173, 8000, 8080, 8081, 4200, 4321, 5000, 9000)
+
+
+def _port_available(port: int) -> bool:
+    """Return whether a loopback TCP port can safely be published."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _suggest_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
 
 
 def _is_http_server_command(command: list[str]) -> bool:
@@ -269,6 +297,13 @@ async def command_run(
 ) -> dict[str, Any]:
     """Run a structured command without a shell and return bounded output."""
     command = _command(program, _arguments(args))
+    if _is_http_server_command(command):
+        return _failure(
+            "persistent_command",
+            "Cette commande lance un serveur persistant. Utilise process_start ; "
+            "command_run attendrait inutilement son arrêt.",
+            command=_redacted_command(command),
+        )
     workdir = _cwd(ctx, cwd)
     # Auto-enable network for HTTP server commands: without it the container
     # starts the process but nothing can reach it (the #1 cause of "I can't
@@ -346,13 +381,23 @@ async def command_run(
         "stdout_truncated": stdout_truncated,
         "stderr_truncated": stderr_truncated,
     }
-    return _success(
-        data,
-        duration_ms=(time.monotonic() - started) * 1000,
-        bytes_captured=min(len(stdout), MAX_CAPTURE_BYTES) + min(len(stderr), MAX_CAPTURE_BYTES),
-        sandboxed=prepared.sandboxed,
-        sandbox_backend=prepared.backend,
-    )
+    metadata = {
+        "duration_ms": (time.monotonic() - started) * 1000,
+        "bytes_captured": min(len(stdout), MAX_CAPTURE_BYTES) + min(len(stderr), MAX_CAPTURE_BYTES),
+        "sandboxed": prepared.sandboxed,
+        "sandbox_backend": prepared.backend,
+    }
+    if process.returncode != 0:
+        return {
+            "ok": False,
+            "data": data,
+            "error": {
+                "type": "nonzero_exit",
+                "message": f"command exited with code {process.returncode}",
+            },
+            "metadata": metadata,
+        }
+    return _success(data, **metadata)
 
 
 async def process_start(
@@ -361,18 +406,28 @@ async def process_start(
     args: list[str] | str | None = None,
     cwd: str = ".",
     network: bool = False,
+    port: Annotated[int | None, Field(ge=1024, le=65535)] = None,
     justification: str = "",
 ) -> dict[str, Any]:
-    """Start a structured persistent process and store its identity durably."""
+    """Start a persistent process; set port when an HTTP server must be reachable."""
     command = _command(program, _arguments(args))
     workdir = _cwd(ctx, cwd)
     # Auto-enable network for HTTP server commands (same rationale as command_run).
     effective_network = network or _is_http_server_command(command)
     publish_ports = None
     if effective_network:
-        port = _http_server_port(command)
-        if port is not None:
-            publish_ports = [port]
+        detected_port = port or _http_server_port(command)
+        if detected_port is not None:
+            publish_ports = [detected_port]
+            if not _port_available(detected_port):
+                return _failure(
+                    "port_in_use",
+                    f"Le port {detected_port} est déjà occupé. Relance une seule fois "
+                    "la même commande avec le port suggéré.",
+                    port=detected_port,
+                    suggested_port=_suggest_port(),
+                    command=_redacted_command(command),
+                )
     try:
         prepared = ExecutionSandbox.prepare(
             command,
@@ -390,10 +445,17 @@ async def process_start(
     output_dir = ctx.deps.events.directory / "processes" / str(ctx.deps.session_id)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{process_id}.log"
+    launch_command = list(prepared.command)
+    cid_path = output_path.with_suffix(".cid")
+    if prepared.backend == "docker" and len(launch_command) >= 2:
+        # Le PID suivi est celui du client Docker. Sans cidfile, interrompre ce
+        # wrapper peut laisser le vrai serveur vivre en arrière-plan et garder
+        # son port occupé pour tous les runs suivants.
+        launch_command[2:2] = ["--cidfile", str(cid_path)]
     stream = output_path.open("ab", buffering=0)
     try:
         process = subprocess.Popen(  # noqa: S603 - commande agent encadrée par Guardian + sandbox
-            prepared.command,
+            launch_command,
             cwd=workdir,
             env=prepared.env,
             stdin=subprocess.DEVNULL,
@@ -422,19 +484,38 @@ async def process_start(
                 started_at,
             ),
         )
-    await asyncio.sleep(0.15)
-    return _success(
-        {
-            "process_id": process_id,
-            "pid": process.pid,
-            "running": process.poll() is None,
-            "command": _redacted_command(command),
-            "cwd": str(workdir),
-            "started_at": started_at,
-            "sandboxed": prepared.sandboxed,
-            "sandbox_backend": prepared.backend,
+    # Ne pas annoncer « running » avant que le wrapper Docker ait eu le temps
+    # d'échouer ou que le processus ait produit son premier signal de vie.
+    # L'ancien délai fixe de 150 ms a validé un serveur mort (exit 127), puis le
+    # navigateur a naturellement échoué à s'y connecter.
+    for _ in range(20):
+        await asyncio.sleep(0.05)
+        if process.poll() is not None or output_path.stat().st_size > 0:
+            break
+    data = {
+        "process_id": process_id,
+        "pid": process.pid,
+        "running": process.poll() is None,
+        "return_code": process.poll(),
+        "command": _redacted_command(command),
+        "cwd": str(workdir),
+        "started_at": started_at,
+        "sandboxed": prepared.sandboxed,
+        "sandbox_backend": prepared.backend,
+    }
+    if process.poll() is not None:
+        output = output_path.read_text(errors="replace")[-20_000:]
+        cid_path.unlink(missing_ok=True)
+        return {
+            "ok": False,
+            "data": {**data, "output": output},
+            "error": {
+                "type": "process_exited",
+                "message": f"process exited during startup with code {process.returncode}",
+            },
+            "metadata": {},
         }
-    )
+    return _success(data)
 
 
 async def process_status(
@@ -510,6 +591,18 @@ async def process_stop(
     process = _processes.get(process_id)
     forced = False
     is_running = process.poll() is None if process else _running(pid)
+    cid_path = Path(record["output_path"]).with_suffix(".cid")
+    if cid_path.is_file():
+        container_id = cid_path.read_text(errors="replace").strip()
+        docker = shutil.which("docker")
+        if docker and re.fullmatch(r"[0-9a-f]{12,64}", container_id):
+            await asyncio.to_thread(
+                subprocess.run,
+                [docker, "rm", "--force", container_id],
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
     if is_running:
         forced = await asyncio.to_thread(terminate_tree, pid, grace_seconds)
         if process is not None:
@@ -522,6 +615,7 @@ async def process_stop(
     profile = _profiles.pop(process_id, None)
     if profile is not None:
         profile.unlink(missing_ok=True)
+    cid_path.unlink(missing_ok=True)
     return_code = process.poll() if process else None
     stopped_at = datetime.now(UTC).isoformat()
     with sqlite3.connect(_state_db(ctx)) as db:
@@ -552,6 +646,8 @@ class ProcessModule:
         return [
             "Use command_run for finite commands. Use process_start for servers and watchers, "
             "then process_status/process_output to verify readiness and process_stop when done. "
+            "Never run a server with command_run. After a process_start failure, use its error "
+            "and retry the same launcher at most once; do not cycle through executable aliases. "
             "Never emulate shell syntax inside arguments."
         ]
 

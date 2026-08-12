@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -361,12 +362,13 @@ class Kernel:
                 request, run_id, RunStatus.PARTIAL, exc, retryable=False, messages=exchanged
             )
         except ModelHTTPError as exc:
+            context_overflow = _context_overflow_details(str(exc)) is not None
             response = self._failed(
                 request,
                 run_id,
-                RunStatus.FAILED,
+                RunStatus.PARTIAL if context_overflow else RunStatus.FAILED,
                 exc,
-                retryable=_transient_http_status(exc.status_code),
+                retryable=context_overflow or _transient_http_status(exc.status_code),
                 messages=exchanged,
             )
         except (AuthenticationError, ConfigurationError, KernelError) as exc:
@@ -869,9 +871,7 @@ class Kernel:
     ) -> dict[str, Any]:
         """Return a measured context status without creating a model turn."""
         try:
-            provider_config = ProviderFactory(self.config.providers()).get_config(
-                provider_id
-            )
+            provider_config = ProviderFactory(self.config.providers()).get_config(provider_id)
         except ConfigurationError:
             provider_config = None
         return self.context.status(
@@ -882,9 +882,7 @@ class Kernel:
                 provider_id, model_name, provider_config
             ),
             compaction_threshold_ratio=(
-                compaction_trigger_ratio(provider_config)
-                if provider_config is not None
-                else 0.7
+                compaction_trigger_ratio(provider_config) if provider_config is not None else 0.7
             ),
         )
 
@@ -902,9 +900,7 @@ class Kernel:
         racine = self.config.content_root
         library = KnowledgeLibrary(racine / "workspaces" / request.agent_id / "knowledge")
         try:
-            return _knowledge_instruction(
-                library, request.knowledge_mode, request.knowledge_pages
-            )
+            return _knowledge_instruction(library, request.knowledge_mode, request.knowledge_pages)
         except OSError:
             # Une bibliothèque illisible ne doit pas empêcher la conversation.
             return ""
@@ -921,7 +917,10 @@ class Kernel:
             return 1.0
         if not projected:
             return 1.0
-        return max(1.0, float(projected.get("calibration_factor") or 1.0))
+        return max(
+            0.1,
+            min(4.0, float(projected.get("calibration_factor") or 1.0)),
+        )
 
     def _model_context_window(
         self,
@@ -1082,7 +1081,12 @@ class Kernel:
             run_id=run_id,
             agent_id=request.agent_id,
             status=status,
-            output=self._salvaged_output(type(exc).__name__, message, messages),
+            output=self._failure_output(
+                request.session_id,
+                run_id,
+                type(exc).__name__,
+                message,
+            ),
             errors=[
                 RunError(
                     type=type(exc).__name__,
@@ -1092,33 +1096,98 @@ class Kernel:
             ],
         )
 
-    def _salvaged_output(
-        self, error_type: str, message: str, messages: list[Any] | None
+    def _failure_output(  # noqa: C901 - agrège plusieurs types d'événements terminaux
+        self,
+        session_id: UUID,
+        run_id: UUID,
+        error_type: str,
+        message: str,
     ) -> str:
-        """Compose une réponse dégradée à partir de ce que le modèle a produit.
+        """Produit un bilan factuel sans publier le raisonnement interne.
 
-        Quand la limite de tokens tombe pendant la phase de raisonnement, la
-        réponse ne contient que des `ThinkingPart` : pydantic-ai considère
-        qu'aucune sortie exploitable n'existe et lève, emportant avec lui un
-        travail qui peut représenter plusieurs minutes. Ce raisonnement reste
-        présent dans les messages capturés, et vaut mieux que rien.
+        Un `ThinkingPart` interrompu est un brouillon : il peut contenir des
+        hypothèses périmées, des intentions jamais exécutées et des détails de
+        contrôle internes. Le journal append-only contient une meilleure source
+        de vérité : les délégations, outils, écritures et compactages réellement
+        enregistrés avant l'échec.
         """
-        recovered = _last_model_text(messages) if messages else ("", "")
-        texte, reflexion = recovered
-        blocs: list[str] = []
-        if texte.strip():
-            blocs.append(texte.strip())
-        elif reflexion.strip():
-            blocs.append(
-                "*Réponse interrompue. Voici le raisonnement produit avant "
-                "l'interruption.*\n\n" + reflexion.strip()
+        events = [
+            event
+            for event in self.events.read(session_id)
+            if event.run_id == run_id or event.parent_run_id == run_id
+        ]
+        delegations = [event for event in events if event.type == "agent.started"]
+        delegate_failures = [event for event in events if event.type == "agent.failed"]
+        tools_completed = [event for event in events if event.type == "tool.completed"]
+        tools_failed = [event for event in events if event.type == "tool.failed"]
+        compactions = [event for event in events if event.type == "context.compacted"]
+        changed_paths: set[str] = set()
+        for event in tools_completed:
+            if event.payload.get("tool") not in {"write", "patch"}:
+                continue
+            result = event.payload.get("result")
+            data = result.get("data") if isinstance(result, dict) else None
+            if not isinstance(data, dict) or data.get("changed") is False:
+                continue
+            path = data.get("path")
+            if isinstance(path, str) and path:
+                changed_paths.add(path)
+
+        overflow = _context_overflow_details(message) if error_type == "ModelHTTPError" else None
+        if overflow is not None:
+            prompt_tokens, context_tokens = overflow
+            excess = max(0, prompt_tokens - context_tokens)
+            lines = [
+                "**Run interrompu — fenêtre de contexte dépassée.**",
+                (
+                    f"Le modèle accepte {context_tokens:,} tokens ; la prochaine requête "
+                    f"en contenait {prompt_tokens:,}, soit {excess:,} de trop."
+                ),
+            ]
+        else:
+            lines = [f"**Run interrompu — {error_type}.**"]
+        if message and overflow is None:
+            lines.append(self.secrets.redact(message))
+        facts: list[str] = []
+        if delegations:
+            facts.append(
+                f"{len(delegations)} délégation(s) démarrée(s), {len(delegate_failures)} en échec."
             )
-        blocs.append(
-            f"**Le run ne s'est pas terminé — {error_type}.**\n\n{self.secrets.redact(message)}"
-            if message
-            else f"**Le run ne s'est pas terminé — {error_type}.**"
-        )
-        return "\n\n---\n\n".join(blocs)
+        if tools_completed or tools_failed:
+            facts.append(
+                f"{len(tools_completed)} action(s) d’outil terminée(s), "
+                f"{len(tools_failed)} en échec."
+            )
+        if changed_paths:
+            paths = ", ".join(sorted(Path(path).name for path in changed_paths))
+            facts.append(f"Fichiers écrits ou modifiés : {paths}.")
+        if compactions:
+            facts.append(f"{len(compactions)} compaction(s) enregistrée(s).")
+        completed_tool_names = {event.payload.get("tool") for event in tools_completed}
+        visual_steps = [
+            label
+            for tool, label in (
+                ("browser_open", "page ouverte"),
+                ("browser_screenshot", "capture réalisée"),
+                ("image_inspect", "capture inspectée par la vision"),
+            )
+            if tool in completed_tool_names
+        ]
+        if visual_steps:
+            facts.append("Test navigateur : " + ", ".join(visual_steps) + ".")
+        if facts:
+            lines.extend(
+                ["", "État factuel avant l’interruption :", *(f"- {fact}" for fact in facts)]
+            )
+        lines.extend(["", "Le travail effectué est conservé dans la trace."])
+        if overflow is not None:
+            lines.append(
+                "Tu peux reprendre avec « continue » ; le prochain run repartira de cet état "
+                "avec une nouvelle passe de réduction du contexte."
+            )
+        else:
+            lines.append("Le travail peut être partiel.")
+        return "\n".join(lines)
 
 
 MAX_INJECTED_PAGE_BYTES = 60_000
@@ -1156,15 +1225,14 @@ def _knowledge_instruction(library: Any, mode: str, pages: list[str]) -> str:
     if not retenues:
         return ""
     blocs = [
-        contenu if len(contenu) <= MAX_INJECTED_PAGE_BYTES
+        contenu
+        if len(contenu) <= MAX_INJECTED_PAGE_BYTES
         # Tronquer plutôt qu'échouer : une page démesurée ne doit pas emporter
         # la sélection entière, et l'agent peut la relire par la recherche.
         else contenu[:MAX_INJECTED_PAGE_BYTES] + "\n\n*(page tronquée)*"
         for contenu in retenues
     ]
-    return "\n\n---\n\n".join(
-        ["# Bibliothèque de connaissance — pages sélectionnées", *blocs]
-    )
+    return "\n\n---\n\n".join(["# Bibliothèque de connaissance — pages sélectionnées", *blocs])
 
 
 def _expand_skill_command(prompt: str, command: str, instruction: str) -> str:
@@ -1179,38 +1247,22 @@ def _expand_skill_command(prompt: str, command: str, instruction: str) -> str:
     return instruction + (f"\n\nDemande de l’utilisateur : {reste}" if reste else "")
 
 
-def _last_model_text(messages: list[Any]) -> tuple[str, str]:
-    """Texte et raisonnement de la dernière réponse du modèle.
-
-    Renvoie les deux séparément parce qu'ils ne valent pas la même chose : un
-    texte est la réponse, un raisonnement n'en est que la trace. On lit à
-    rebours pour trouver la dernière réponse, celle sur laquelle le run a buté.
-
-    Les objets viennent du SDK et leur forme n'est pas garantie d'une version à
-    l'autre : on lit par attributs, sans jamais supposer qu'ils existent.
-    """
-    for message in reversed(messages or []):
-        parts = getattr(message, "parts", None)
-        if not parts:
-            continue
-        textes: list[str] = []
-        reflexions: list[str] = []
-        for part in parts:
-            contenu = getattr(part, "content", None)
-            if not isinstance(contenu, str) or not contenu.strip():
-                continue
-            genre = getattr(part, "part_kind", "")
-            if genre == "thinking":
-                reflexions.append(contenu)
-            elif genre == "text":
-                textes.append(contenu)
-        if textes or reflexions:
-            return "\n".join(textes), "\n".join(reflexions)
-    return "", ""
-
-
 def _without_images(messages: list[Any]) -> list[Any]:
     return without_images(messages)
+
+
+def _context_overflow_details(message: str) -> tuple[int, int] | None:
+    """Extract provider prompt/window sizes from common local-server errors."""
+    prompt = re.search(r"['\"]?n_prompt_tokens['\"]?\s*:\s*(\d+)", message)
+    window = re.search(r"['\"]?n_ctx['\"]?\s*:\s*(\d+)", message)
+    if prompt and window:
+        return int(prompt.group(1)), int(window.group(1))
+    prose = re.search(
+        r"request\s*\((\d+)\s+tokens\).*?context size\s*\((\d+)\s+tokens\)",
+        message,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return (int(prose.group(1)), int(prose.group(2))) if prose else None
 
 
 def _transient_http_status(status_code: int) -> bool:

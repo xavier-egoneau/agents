@@ -14,7 +14,7 @@ from pydantic_ai_harness.subagents import SubAgentToolset as HarnessSubAgentTool
 
 from .errors import BudgetExceeded
 from .events import JsonlEventStore
-from .guardian import action_family
+from .guardian import BUDGET_SORTIE_OUTIL, action_family, borner_texte_de_sortie
 from .models import ApprovalRequest, BudgetConfig, Event, GuardianDecision, SecurityMode
 from .plans import PlanConflict, PlanNotFound, PlanService
 from .trace_context import bind_event_run_id, event_run_id
@@ -55,6 +55,9 @@ class RuntimeDeps:
     secret_resolver: Callable[[str], str | None] | None = None
     secret_redactor: Callable[[Any], Any] | None = None
     snapshot_store: Any | None = None
+    # Lectures déjà livrées au même agent/run. Une relecture inchangée ne doit
+    # ni repasser par le Guardian ni reverser le fichier entier au contexte.
+    read_cache: dict[tuple[str, str, int, int], dict[str, Any]] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def is_scope_approved(self, decision: GuardianDecision) -> bool:
@@ -200,10 +203,28 @@ class TracedSubAgentToolset(HarnessSubAgentToolset[RuntimeDeps]):
                 parent_run_id=parent_run_id,
                 type="agent.completed",
                 attempt=attempt,
+                # Le journal garde la réponse entière; seul ce qui remonte dans
+                # le contexte du parent est borné.
                 payload={"output": output},
             )
         )
-        return output
+        # Déléguer devrait faire économiser du contexte au parent. Tant que la
+        # réponse de l'enfant y entrait en entier, déléguer coûtait au contraire
+        # tout ce que l'enfant avait produit — sur 710 runs observés, aucune
+        # délégation n'a jamais eu lieu.
+        return borner_texte_de_sortie(
+            output,
+            BUDGET_SORTIE_OUTIL,
+            (
+                deps.state_db.parent
+                / "sessions"
+                / "artifacts"
+                / str(deps.session_id)
+                / f"{agent_name}-{child_run_id}.md"
+            )
+            if deps.state_db is not None
+            else None,
+        )
 
 
 class TracedSubAgents(SubAgents[RuntimeDeps]):

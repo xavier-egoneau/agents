@@ -16,6 +16,10 @@ allowed-tools:
   - stat
 amk:
   activation: on-demand
+  phases: [discover]
+  positive_signals: [the project architecture or impact surface is unknown]
+  negative_signals: [the required files and symbols are already mapped]
+  retain_until: project-map-established
   commands:
     - /explore
   command_descriptions:

@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Protocol
 
 from agentic_kernel.models import SecurityMode
@@ -86,9 +86,7 @@ class RuntimeDirectories:
 
 class UnavailableSandbox:
     def __init__(self, system: str, backend: str | None = None) -> None:
-        self.capabilities = SandboxCapabilities(
-            backend=backend or f"{system.lower()}-native"
-        )
+        self.capabilities = SandboxCapabilities(backend=backend or f"{system.lower()}-native")
 
     def prepare(
         self,
@@ -267,7 +265,12 @@ class DockerSandbox:
         for key, value in sorted(_container_environment(runtime).items()):
             arguments.extend(["--env", f"{key}={value}"])
         arguments.append(self.image)
-        arguments.extend(command)
+        arguments.extend(
+            _container_command(
+                command,
+                expose_network=bool(allow_network and publish_ports),
+            )
+        )
         return PreparedExecution(
             command=arguments,
             env=runtime_environment(runtime),
@@ -275,6 +278,47 @@ class DockerSandbox:
             sandboxed=True,
             backend=self.capabilities.backend,
         )
+
+
+def _container_command(command: list[str], *, expose_network: bool = False) -> list[str]:
+    """Translate host-resolved Windows launchers to commands inside Linux.
+
+    Tool preparation resolves ``python`` or ``node`` on the host before the
+    sandbox backend is selected. Passing that absolute Windows path into a
+    Linux container made every validation command fail with exit 127.
+    """
+    if not command:
+        return command
+    executable = PureWindowsPath(command[0]).name.casefold()
+    # `_command` wraps .cmd/.bat shims with `cmd /c call`. Inside Docker the
+    # underlying npm/npx executable is directly available and the wrapper is not.
+    if executable in {"cmd.exe", "cmd"} and len(command) >= 6:
+        prefix = [item.casefold() for item in command[1:4]]
+        if prefix == ["/d", "/c", "call"]:
+            shim = PureWindowsPath(command[4]).name
+            program = Path(shim).stem
+            translated = [program, *command[5:]]
+            return _container_bind_address(translated) if expose_network else translated
+    aliases = {
+        "python.exe": "python",
+        "python3.exe": "python3",
+        "node.exe": "node",
+        "php.exe": "php",
+        "git.exe": "git",
+    }
+    if executable in aliases:
+        translated = [aliases[executable], *command[1:]]
+        return _container_bind_address(translated) if expose_network else translated
+    if ":" in command[0] or "\\" in command[0]:
+        translated = [Path(PureWindowsPath(command[0]).name).stem, *command[1:]]
+        return _container_bind_address(translated) if expose_network else translated
+    return _container_bind_address(command) if expose_network else command
+
+
+def _container_bind_address(command: list[str]) -> list[str]:
+    """Published container ports must listen beyond the container loopback."""
+    bind_all = "0.0.0.0"  # noqa: S104 - intérieur du conteneur, port publié explicitement
+    return [bind_all if item in {"127.0.0.1", "localhost"} else item for item in command]
 
 
 def _container_environment(runtime: RuntimeDirectories) -> dict[str, str]:
@@ -452,5 +496,3 @@ def runtime_environment(runtime: RuntimeDirectories) -> dict[str, str]:
 
 def _seatbelt(path: Path) -> str:
     return str(path.resolve()).replace("\\", "\\\\").replace('"', '\\"')
-
-

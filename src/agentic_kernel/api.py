@@ -126,12 +126,8 @@ def create_app(  # noqa: C901 - dette: factory montant tous les routers
     telegram_store = TelegramConfigStore(project.content_root)
     session_lifecycle = SessionLifecycle(kernel, project.content_root / "state.db")
     searxng = SearxngService() if local_services else None
-    cron_service.import_legacy_once(
-        project.content_root / "agents" / "crons.json", workspace_root
-    )
-    cron_service.repair_orphaned_blocks(
-        {item.session_id for item in kernel.list_approvals()}
-    )
+    cron_service.import_legacy_once(project.content_root / "agents" / "crons.json", workspace_root)
+    cron_service.repair_orphaned_blocks({item.session_id for item in kernel.list_approvals()})
     # Un canal par orchestrateur, semé au démarrage. Les sous-agents n'en ont
     # pas : ils ne parlent jamais directement à l'utilisateur, et leur en donner
     # un remplirait la liste de fils qui ne recevraient jamais rien.
@@ -215,16 +211,12 @@ def create_app(  # noqa: C901 - dette: factory montant tous les routers
         events = kernel.events.read(job.notification_session_id)
         last_delivery = -1
         for index, event in enumerate(events):
-            if (
-                event.type == "routine.notification"
-                and event.payload.get("cron_job_id") == job.id
-            ):
+            if event.type == "routine.notification" and event.payload.get("cron_job_id") == job.id:
                 last_delivery = index
         replies = [
             _message_text(event.payload.get("prompt"))
             for event in events[last_delivery + 1 :]
-            if event.type == "session.started"
-            and event.payload.get("trigger", "user") == "user"
+            if event.type == "session.started" and event.payload.get("trigger", "user") == "user"
         ]
         replies = [item for item in replies if item]
         if not replies:
@@ -307,9 +299,7 @@ def create_app(  # noqa: C901 - dette: factory montant tous les routers
 
     scheduler = CronScheduler(cron_service, launch)
 
-    async def resolve_telegram_approvals(
-        approval_ids: list[UUID], approved: bool
-    ) -> RunResult:
+    async def resolve_telegram_approvals(approval_ids: list[UUID], approved: bool) -> RunResult:
         if not approval_ids:
             raise ConfigurationError("aucune autorisation Telegram à traiter")
         state = kernel.approvals.load_state(approval_ids[0])
@@ -422,6 +412,7 @@ def create_app(  # noqa: C901 - dette: factory montant tous les routers
         qu'il manquait simplement un fichier à créer.
         """
         return JSONResponse(status_code=503, content={"detail": str(exc)})
+
     app.include_router(create_run_router(kernel, running_tasks, launch))
     app.include_router(
         create_cron_router(
@@ -487,6 +478,24 @@ def create_app(  # noqa: C901 - dette: factory montant tous les routers
     @app.get("/api/workspaces/current", response_model=WorkspaceInfo)
     async def current_workspace() -> WorkspaceInfo:
         return workspace_info(workspace_root)
+
+    @app.get("/api/workspaces/recent", response_model=list[WorkspaceInfo])
+    async def recent_workspaces() -> list[WorkspaceInfo]:
+        """Recover project navigation independently of browser localStorage."""
+        recovered: list[WorkspaceInfo] = []
+        personal_root = (kernel.config.content_root / "workspaces").resolve()
+        for path in kernel.events.projection.list_workspaces():
+            try:
+                resolved = Path(path).expanduser().resolve()
+                if resolved == personal_root or resolved.is_relative_to(personal_root):
+                    continue
+                recovered.append(workspace_info(path))
+            except HTTPException:
+                # Historical sessions may refer to a moved/deleted project or
+                # to a path from another machine. They remain in history but
+                # must not break the current navigation list.
+                continue
+        return recovered
 
     @app.post("/api/workspaces/validate", response_model=WorkspaceInfo)
     async def validate_workspace(payload: WorkspaceRequest) -> WorkspaceInfo:
@@ -595,9 +604,7 @@ def create_app(  # noqa: C901 - dette: factory montant tous les routers
         selected = workspace_info(workspace).path if workspace else str(workspace_root)
         return project.commands(selected)
 
-    app.include_router(
-        create_plan_router(project.content_root / "state.db", kernel.events)
-    )
+    app.include_router(create_plan_router(project.content_root / "state.db", kernel.events))
 
     @app.get("/api/providers/{provider_id}/models")
     async def provider_models(provider_id: str) -> dict[str, object]:

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  traceDetail,
   traceFlag,
   traceLabel,
   traceState,
@@ -35,7 +36,20 @@ function ProcessTraceState({
         .filter((agent) => agent && agent !== racine),
     ),
   ];
-  if (visible.length === 0) return null;
+  if (visible.length === 0) {
+    if (!live) return null;
+    return (
+      <section className="process-trace expanded" aria-label="Traces d’exécution" aria-live="polite">
+        <div className="trace-toggle">
+          <strong>Processus</strong>
+          <span className="trace-summary">
+            <i className="trace-live-indicator" />
+            connexion au journal…
+          </span>
+        </div>
+      </section>
+    );
+  }
   return (
     <section className={`process-trace ${expanded ? "expanded" : "collapsed"}`} aria-label="Traces d’exécution" aria-live="polite">
       <button
@@ -57,10 +71,7 @@ function ProcessTraceState({
       {expanded && <ol>
         {visible.map((event, index) => {
           const state = traceState(event, index === visible.length - 1, live);
-          const detail = String(
-            event.payload.justification || event.payload.task || event.payload.reason ||
-            event.payload.message || event.payload.error || "",
-          );
+          const detail = traceDetail(event);
           return (
             <li className={state} key={`${event.timestamp}-${event.type}-${index}`}>
               <span className="trace-dot" />

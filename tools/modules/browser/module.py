@@ -112,14 +112,20 @@ def _private_approved(ctx: RunContext[Any], url: str, initial_scope: str) -> boo
 async def _guard_requests(context, ctx: RunContext[Any], *, initial_scope: str) -> None:
     async def guard(route) -> None:
         try:
-            await validate_http_target(
-                route.request.url,
-                allow_private=_private_approved(
-                    ctx,
+            if route.request.url.startswith("file://"):
+                # `browser_open` valide l'URL initiale, mais Playwright repasse
+                # aussi chaque feuille de style, script et image par ce filtre.
+                # Les traiter comme du HTTP bloquait la page locale elle-même.
+                validate_file_target(route.request.url, ctx.deps.workspace)
+            else:
+                await validate_http_target(
                     route.request.url,
-                    initial_scope,
-                ),
-            )
+                    allow_private=_private_approved(
+                        ctx,
+                        route.request.url,
+                        initial_scope,
+                    ),
+                )
         except NetworkTargetError:
             await route.abort("blockedbyclient")
             return
@@ -355,7 +361,9 @@ class BrowserModule:
             "text and interactive element refs without producing an image file. "
             "Only use browser_screenshot when the visual layout is essential; then "
             "follow it with image_inspect (perception module) to get a text description, "
-            "since the model may not support direct image input."
+            "since the model may not support direct image input. A web build is not visually "
+            "verified until browser_screenshot is followed by a successful image_inspect; "
+            "inspect the result and correct visible defects before completion."
         ]
 
     def capabilities(self):

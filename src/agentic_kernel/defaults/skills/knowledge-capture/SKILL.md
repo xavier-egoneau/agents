@@ -7,6 +7,10 @@ allowed-tools:
   - knowledge_index
 amk:
   activation: on-demand
+  phases: [post-run]
+  positive_signals: [the user asks to retain durable knowledge]
+  negative_signals: [planning or building is still in progress]
+  retain_until: knowledge-archived
   commands:
     - /save
   command_descriptions:

@@ -20,6 +20,9 @@ async function installKernelMock(
         json: { path: "/tmp/project", name: "project", readable: true, writable: true },
       });
     }
+    if (url.pathname.endsWith("/workspaces/recent")) {
+      return route.fulfill({ json: [] });
+    }
     if (url.pathname.endsWith("/catalog")) {
       return route.fulfill({
         json: {

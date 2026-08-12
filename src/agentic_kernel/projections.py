@@ -80,9 +80,11 @@ class SessionProjection:
                     session_id TEXT PRIMARY KEY,
                     estimated_history_tokens INTEGER NOT NULL DEFAULT 0,
                     observed_input_tokens INTEGER,
+                    last_run_total_input_tokens INTEGER,
                     compaction_count INTEGER NOT NULL DEFAULT 0,
                     calibration_factor REAL NOT NULL DEFAULT 1.0,
                     calibration_samples INTEGER NOT NULL DEFAULT 0,
+                    calibration_version INTEGER NOT NULL DEFAULT 2,
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS projected_messages (
@@ -129,13 +131,44 @@ class SessionProjection:
                     "ALTER TABLE projected_context "
                     "ADD COLUMN calibration_samples INTEGER NOT NULL DEFAULT 0"
                 )
+            if "last_run_total_input_tokens" not in columns:
+                db.execute(
+                    "ALTER TABLE projected_context ADD COLUMN last_run_total_input_tokens INTEGER"
+                )
+            if "calibration_version" not in columns:
+                db.execute(
+                    "ALTER TABLE projected_context "
+                    "ADD COLUMN calibration_version INTEGER NOT NULL DEFAULT 0"
+                )
+                # Version 1 bornait tous les ratios sous 1 à exactement 1.0.
+                # Ces échantillons ne sont pas récupérables; repartir neutre
+                # permet à la première vraie paire comparable de faire foi.
+                db.execute(
+                    """UPDATE projected_context
+                       SET calibration_factor=1.0,
+                           calibration_samples=0,
+                           calibration_version=2"""
+                )
+                # Jusqu'ici `observed_input_tokens` recevait le total cumulé
+                # de toutes les requêtes du dernier run. Ce total n'est pas une
+                # mesure de la requête courante : l'utiliser pour la jauge puis
+                # pour calibrer l'historique produisait le 715k / 66k observé
+                # sur test9 et entretenait une tempête de compactages. Migrer
+                # la valeur sous son vrai nom et invalider la calibration déjà
+                # contaminée corrige aussi les projections existantes.
+                db.execute(
+                    """UPDATE projected_context
+                       SET last_run_total_input_tokens=observed_input_tokens,
+                           observed_input_tokens=NULL,
+                           calibration_factor=1.0,
+                           calibration_samples=0"""
+                )
             session_columns = {
                 row["name"] for row in db.execute("PRAGMA table_info(projected_sessions)")
             }
             if "hidden" not in session_columns:
                 db.execute(
-                    "ALTER TABLE projected_sessions "
-                    "ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"
+                    "ALTER TABLE projected_sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"
                 )
 
     def apply(
@@ -201,8 +234,14 @@ class SessionProjection:
                    ON CONFLICT(session_id) DO UPDATE SET
                      prompt=excluded.prompt, workspace=NULL, trigger='agent_channel',
                      cron_job_id=NULL""",
-                (session_id, event.agent_id, str(payload.get("prompt") or event.agent_id),
-                 timestamp, timestamp, sequence),
+                (
+                    session_id,
+                    event.agent_id,
+                    str(payload.get("prompt") or event.agent_id),
+                    timestamp,
+                    timestamp,
+                    sequence,
+                ),
             )
             return
         if event.type == "session.cleared":
@@ -370,10 +409,9 @@ class SessionProjection:
                     (sequence, session_id, run_id, output, terminal, timestamp),
                 )
                 usage = event.payload.get("usage", {})
-                observed = usage.get("input_tokens") if isinstance(usage, dict) else None
-                if isinstance(observed, int):
-                    self._upsert_context(db, session_id, timestamp, observed=observed)
-                    self._calibrate_context(db, session_id, observed)
+                run_total = usage.get("input_tokens") if isinstance(usage, dict) else None
+                if isinstance(run_total, int):
+                    self._upsert_context(db, session_id, timestamp, run_total=run_total)
 
         if event.type == "messages.snapshot":
             messages = event.payload.get("messages")
@@ -387,6 +425,21 @@ class SessionProjection:
                     session_id,
                     timestamp,
                     estimated=int(event.payload["estimated_tokens"]),
+                )
+            observed_request = event.payload.get("latest_request_input_tokens")
+            estimated_request = event.payload.get("estimated_latest_request_tokens")
+            if (
+                isinstance(observed_request, int)
+                and observed_request > 0
+                and isinstance(estimated_request, int)
+                and estimated_request > 0
+            ):
+                self._upsert_context(db, session_id, timestamp, observed=observed_request)
+                self._calibrate_context(
+                    db,
+                    session_id,
+                    observed=observed_request,
+                    estimated=estimated_request,
                 )
         elif event.type == "context.compacted":
             self._upsert_context(db, session_id, timestamp, increment_compaction=True)
@@ -418,6 +471,37 @@ class SessionProjection:
             (sequence, run_id, state, timestamp),
         )
 
+    @staticmethod
+    def _calibrate_context(
+        db: sqlite3.Connection,
+        session_id: str,
+        *,
+        observed: int,
+        estimated: int,
+    ) -> None:
+        """Calibre avec l'usage d'une requête, jamais avec le cumul d'un run."""
+        row = db.execute(
+            """SELECT calibration_factor, calibration_samples
+               FROM projected_context WHERE session_id=?""",
+            (session_id,),
+        ).fetchone()
+        if row is None or estimated <= 0:
+            return
+        # Les deux valeurs décrivent désormais la même requête. Le ratio peut
+        # légitimement être inférieur à 1 : le JSON sérialisé et les échappements
+        # UTF-8 ont surestimé de 3,7× les tokens sur test9 (148 783 estimés pour
+        # 40 471 observés). Le plancher historique à 1.0 transformait cette
+        # surestimation en 337 compactages. On ne borne que les valeurs extrêmes.
+        sample = max(0.1, min(4.0, observed / estimated))
+        samples = int(row["calibration_samples"])
+        factor = (float(row["calibration_factor"]) * samples + sample) / (samples + 1)
+        db.execute(
+            """UPDATE projected_context
+               SET calibration_factor=?, calibration_samples=?, calibration_version=2
+               WHERE session_id=?""",
+            (factor, samples + 1, session_id),
+        )
+
     def _set_run_state(
         self,
         db: sqlite3.Connection,
@@ -444,59 +528,32 @@ class SessionProjection:
         *,
         estimated: int | None = None,
         observed: int | None = None,
+        run_total: int | None = None,
         increment_compaction: bool = False,
     ) -> None:
         db.execute(
             """INSERT INTO projected_context
                (session_id, estimated_history_tokens, observed_input_tokens,
-                compaction_count, updated_at)
-               VALUES (?, ?, ?, ?, ?)
+                last_run_total_input_tokens, compaction_count, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(session_id) DO UPDATE SET
                  estimated_history_tokens=coalesce(?, estimated_history_tokens),
                  observed_input_tokens=coalesce(?, observed_input_tokens),
+                 last_run_total_input_tokens=coalesce(?, last_run_total_input_tokens),
                  compaction_count=compaction_count + ?,
                  updated_at=excluded.updated_at""",
             (
                 session_id,
                 estimated or 0,
                 observed,
+                run_total,
                 int(increment_compaction),
                 timestamp,
                 estimated,
                 observed,
+                run_total,
                 int(increment_compaction),
             ),
-        )
-
-    @staticmethod
-    def _calibrate_context(
-        db: sqlite3.Connection,
-        session_id: str,
-        observed: int,
-    ) -> None:
-        row = db.execute(
-            """SELECT estimated_history_tokens, calibration_factor,
-                      calibration_samples
-               FROM projected_context WHERE session_id=?""",
-            (session_id,),
-        ).fetchone()
-        if row is None or int(row["estimated_history_tokens"]) <= 0:
-            return
-        # Le plafond borne une mesure aberrante, pas la réalité : un écart de
-        # 2,4 a été observé sur une session de code, et le plafond précédent de
-        # 2.0 le tronquait — la correction restait insuffisante là où elle était
-        # le plus nécessaire.
-        sample = max(
-            0.5,
-            min(4.0, observed / int(row["estimated_history_tokens"])),
-        )
-        samples = int(row["calibration_samples"])
-        factor = (float(row["calibration_factor"]) * samples + sample) / (samples + 1)
-        db.execute(
-            """UPDATE projected_context
-               SET calibration_factor=?, calibration_samples=?
-               WHERE session_id=?""",
-            (factor, samples + 1, session_id),
         )
 
     def list_sessions(
@@ -521,7 +578,14 @@ class SessionProjection:
             clauses.append("(trigger = 'agent_channel' OR (workspace IS NULL AND agent_id = ?))")
             params.append(personal_agent)
         elif workspace is not None:
-            workspace_clauses = ["workspace = ?", "trigger = 'agent_channel'"]
+            # Un projet ne montre que ses propres sessions. Les canaux permanents
+            # ont leur destination — « Accueil » — et une pastille y signale
+            # l'arrivée d'un résultat de routine, ce qui remplit sans ambiguïté
+            # le besoin qui les avait fait figurer ici. Les mêler aux sessions du
+            # projet faisait en ouvrir un en croyant y rester : le run partait
+            # alors dans l'espace personnel de l'agent, et un jeu entier s'est
+            # écrit dans `workspaces/main` pendant que le rail annonçait `test9`.
+            workspace_clauses = ["workspace = ?"]
             params.append(workspace)
             if default_workspace_agent:
                 workspace_clauses.append("(workspace IS NULL AND agent_id = ?)")
@@ -545,6 +609,20 @@ class SessionProjection:
             }
             for row in rows
         ]
+
+    def list_workspaces(self, *, limit: int = 100) -> list[str]:
+        """Return durable project roots seen in non-hidden sessions."""
+        with self._db() as db:
+            rows = db.execute(
+                """SELECT workspace, max(updated_at) AS last_used
+                   FROM projected_sessions
+                   WHERE workspace IS NOT NULL AND workspace != '' AND hidden = 0
+                   GROUP BY workspace
+                   ORDER BY last_used DESC
+                   LIMIT ?""",
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        return [str(row["workspace"]) for row in rows]
 
     def context(self, session_id: UUID) -> dict[str, Any] | None:
         with self._db() as db:

@@ -29,6 +29,120 @@ def _crons(ctx: RunContext[Any]) -> CronService:
     return CronService(path)
 
 
+QUALITY_GATE_WORDS = (
+    "test",
+    "verify",
+    "verification",
+    "vérification",
+    "validate",
+    "validation",
+    "quality",
+    "qualité",
+    "accessibility",
+    "accessibilité",
+    "qa",
+    "smoke",
+    "e2e",
+)
+
+VISUAL_FAILURE_MARKERS = (
+    "écran entièrement noir",
+    "presque entièrement noire",
+    "presque entièrement noir",
+    "contenu attendu (le jeu ou la page) est absent",
+    "aucune structure d'interface utilisateur",
+    "entirely black",
+    "almost entirely black",
+    "blank page",
+    "rendering failed",
+)
+
+
+def _is_quality_gate(step: dict[str, Any]) -> bool:
+    title = str(step.get("title") or "").casefold()
+    return any(word in title for word in QUALITY_GATE_WORDS)
+
+
+def _verification_error(ctx: RunContext[Any], step: dict[str, Any]) -> str | None:
+    """Require recorded execution evidence for a final verification task."""
+    if not _is_quality_gate(step):
+        return None
+    root_run_id = str(ctx.deps.root_run_id)
+    events = ctx.deps.events.read(ctx.deps.session_id)
+    child_runs = {
+        str(event.run_id) for event in events if str(event.parent_run_id or "") == root_run_id
+    }
+    relevant = [
+        event
+        for event in events
+        if str(event.run_id) == root_run_id or str(event.run_id) in child_runs
+    ]
+    completed = [event for event in relevant if event.type == "tool.completed"]
+
+    def result_of(event) -> dict[str, Any]:
+        result = event.payload.get("result")
+        return result if isinstance(result, dict) else {}
+
+    successful_command = any(
+        event.payload.get("tool") == "command_run"
+        and result_of(event).get("ok") is True
+        and isinstance(result_of(event).get("data"), dict)
+        and result_of(event)["data"].get("exit_code") == 0
+        for event in completed
+    )
+    workspace = getattr(ctx.deps, "workspace", None)
+    web_project = workspace is not None and (workspace / "index.html").is_file()
+    if not web_project:
+        return (
+            None
+            if successful_command
+            else (
+                "Cette étape de vérification exige au moins une commande de test "
+                "terminée avec exit_code=0 dans le run courant."
+            )
+        )
+
+    browser_opened = any(
+        event.payload.get("tool") == "browser_open" and result_of(event).get("ok") is True
+        for event in completed
+    )
+    screenshot_taken = any(
+        event.payload.get("tool") == "browser_screenshot" and result_of(event).get("ok") is True
+        for event in completed
+    )
+    image_inspected = any(
+        event.payload.get("tool") == "image_inspect" and result_of(event).get("ok") is True
+        for event in completed
+    )
+    visual_failure = next(
+        (
+            observation
+            for event in reversed(completed)
+            if event.payload.get("tool") == "image_inspect"
+            and result_of(event).get("ok") is True
+            and isinstance(result_of(event).get("data"), dict)
+            and isinstance(observation := result_of(event)["data"].get("observation"), str)
+            and any(marker in observation.casefold() for marker in VISUAL_FAILURE_MARKERS)
+        ),
+        None,
+    )
+    missing: list[str] = []
+    if not browser_opened:
+        missing.append("une page chargée avec browser_open")
+    if not screenshot_taken:
+        missing.append("une capture réussie avec browser_screenshot")
+    if not image_inspected:
+        missing.append("une inspection visuelle réussie avec image_inspect")
+    if missing:
+        return "Validation web refusée : il manque " + " et ".join(missing)
+    if visual_failure:
+        return (
+            "Validation web refusée : l'inspection visuelle signale un rendu vide, "
+            "noir ou cassé. Corrige le rendu puis refais la capture et son inspection."
+        )
+    return None
+
+
 async def plan_create(
     ctx: RunContext[Any],
     title: str,
@@ -49,6 +163,19 @@ async def plan_update(
     justification: str = "",
 ) -> dict[str, Any]:
     """Update exactly one step in a session plan."""
+    if status == "completed":
+        try:
+            current = _plans(ctx).get(plan_id, ctx.deps.session_id)
+            target = next(item for item in current["steps"] if item["id"] == step_id)
+        except (PlanNotFound, StopIteration):
+            target = None
+        if target is not None and (error := _verification_error(ctx, target)):
+            return {
+                "ok": False,
+                "data": None,
+                "error": {"type": "verification_required", "message": error},
+                "metadata": {},
+            }
     try:
         plan = _plans(ctx).update(
             plan_id,
@@ -128,7 +255,11 @@ async def plan_claim(
             step_id,
             session_id=ctx.deps.session_id,
             claimed_by=claimed_by,
-            run_id=str(ctx.deps.run_id),
+            # `RuntimeDeps` porte `root_run_id`, jamais `run_id` : l'attribut
+            # n'existe pas et chaque réservation levait un `AttributeError`.
+            # L'agent, incapable de réserver une tâche, exécutait le plan à la
+            # main — dix échecs consécutifs sur une seule session.
+            run_id=str(ctx.deps.root_run_id),
             lease_seconds=lease_seconds,
         )
     except (PlanNotFound, PlanConflict) as exc:
@@ -152,6 +283,19 @@ async def plan_validate(
     justification: str = "",
 ) -> dict[str, Any]:
     """Validate a delegated result from explicit parent checks and evidence."""
+    if passed:
+        try:
+            current = _plans(ctx).get(plan_id, ctx.deps.session_id)
+            target = next(item for item in current["steps"] if item["id"] == step_id)
+        except (PlanNotFound, StopIteration):
+            target = None
+        if target is not None and (error := _verification_error(ctx, target)):
+            return {
+                "ok": False,
+                "data": None,
+                "error": {"type": "verification_required", "message": error},
+                "metadata": {},
+            }
     try:
         plan = _plans(ctx).validate(
             plan_id,
@@ -293,8 +437,12 @@ def _refabrique_la_livraison(prompt: str) -> bool:
 
 
 def _refus(message: str) -> dict[str, Any]:
-    return {"ok": False, "data": None, "error": {"type": "validation", "message": message},
-            "metadata": {}}
+    return {
+        "ok": False,
+        "data": None,
+        "error": {"type": "validation", "message": message},
+        "metadata": {},
+    }
 
 
 async def cron_list(ctx: RunContext[Any], justification: str = "") -> dict[str, Any]:

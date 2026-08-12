@@ -130,9 +130,11 @@ def review_tool_call(  # noqa: C901 - dette: moteur de décision multi-critères
         verdict, reason = GuardianVerdict.DENY, "Protected or secret paths are denied."
     elif ToolRisk.SECRET in risks or ToolRisk.SYSTEM in risks:
         verdict, reason = GuardianVerdict.DENY, "Secret and system actions are denied."
-    elif (hors := _hors_du_perimetre_d_orchestrateur(
-        paths, risks, delegates, delegated_write_exemptions
-    )) is not None:
+    elif (
+        hors := _hors_du_perimetre_d_orchestrateur(
+            paths, risks, delegates, delegated_write_exemptions
+        )
+    ) is not None:
         verdict, reason = GuardianVerdict.DENY, hors
     elif (portee := _network_scope(arguments, url_keys)) == "private":
         verdict, reason = (
@@ -374,8 +376,7 @@ def _hors_du_perimetre_d_orchestrateur(
     dehors = [
         candidate
         for candidate in paths
-        if candidate is not None
-        and not any(_inside(candidate, root) for root in autorises)
+        if candidate is not None and not any(_inside(candidate, root) for root in autorises)
     ]
     if not dehors:
         return None
@@ -522,6 +523,30 @@ def _tronquer(texte: str, budget: int) -> str:
     return f"{tete}\n\n…[{manquant} caractères coupés]…\n\n{queue}"
 
 
+def borner_texte_de_sortie(texte: str, budget: int, overflow_path: Path | None) -> str:
+    """Même plafond, pour un résultat qui est une simple chaîne.
+
+    Sert à la réponse d'un agent enfant : elle entre entière dans le contexte du
+    parent, ce qui fait payer la délégation en tokens au moment précis où elle
+    devrait en économiser.
+    """
+    if len(texte) <= budget:
+        return texte
+    complet = None
+    if overflow_path is not None:
+        with contextlib.suppress(OSError, TypeError, ValueError):
+            overflow_path.parent.mkdir(parents=True, exist_ok=True)
+            overflow_path.write_text(texte, encoding="utf-8")
+            complet = str(overflow_path)
+    reference = (
+        f"\n\n[Réponse abrégée. Intégralité dans {complet} — la lire avec `read` "
+        "ou la filtrer avec `search_text` plutôt que la charger en entier.]"
+        if complet
+        else "\n\n[Réponse abrégée; l'intégralité n'a pas pu être conservée.]"
+    )
+    return _tronquer(texte, budget) + reference
+
+
 def _borner_recursivement(noeud: Any, budget: int) -> tuple[Any, bool]:
     if isinstance(noeud, str):
         return (_tronquer(noeud, budget), True) if len(noeud) > budget else (noeud, False)
@@ -617,6 +642,22 @@ class GuardianToolset(WrapperToolset[Any]):
         call_id = str(ctx.tool_call_id or "unknown")
         run_id = event_run_id(deps.root_run_id)
         risks = self.risks.get(name, [])
+        cached_read = self._cached_read(name, tool_args, deps, run_id)
+        if cached_read is not None:
+            deps.events.append(
+                Event(
+                    session_id=deps.session_id,
+                    run_id=run_id,
+                    agent_id=self.agent_id,
+                    type="tool.cache_hit",
+                    payload={
+                        "tool_call_id": call_id,
+                        "tool": name,
+                        "path": cached_read["data"]["path"],
+                    },
+                )
+            )
+            return cached_read
         proposed_arguments = redact(tool_args)
         if callable(getattr(deps, "secret_redactor", None)):
             proposed_arguments = deps.secret_redactor(proposed_arguments)
@@ -706,6 +747,7 @@ class GuardianToolset(WrapperToolset[Any]):
             raise ApprovalRequired(metadata={"approval_id": str(request.approval_id)})
         clean_args = dict(tool_args)
         clean_args.pop("justification", None)
+        clean_args.pop("refresh", None)
         started = time.monotonic()
         deps.events.append(
             Event(
@@ -775,6 +817,7 @@ class GuardianToolset(WrapperToolset[Any]):
             if deps.state_db is not None
             else None,
         )
+        self._remember_read(name, tool_args, value, deps, run_id)
         deps.events.append(
             Event(
                 session_id=deps.session_id,
@@ -790,3 +833,85 @@ class GuardianToolset(WrapperToolset[Any]):
             )
         )
         return value
+
+    def _read_cache_key(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        deps: Any,
+        run_id: Any,
+    ) -> tuple[tuple[str, str, int, int], Path] | None:
+        if name != "read" or bool(arguments.get("refresh")):
+            return None
+        target = canonical_path(arguments.get("path"), deps.workspace)
+        if target is None:
+            return None
+        return (
+            (
+                str(run_id),
+                str(target),
+                int(arguments.get("offset", 1)),
+                int(arguments.get("limit", 2000)),
+            ),
+            target,
+        )
+
+    def _cached_read(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        deps: Any,
+        run_id: Any,
+    ) -> dict[str, Any] | None:
+        resolved = self._read_cache_key(name, arguments, deps, run_id)
+        if resolved is None:
+            return None
+        key, target = resolved
+        cached = deps.read_cache.get(key)
+        if cached is None:
+            return None
+        try:
+            stat = target.stat()
+        except OSError:
+            return None
+        if (stat.st_mtime_ns, stat.st_size) != cached["signature"]:
+            deps.read_cache.pop(key, None)
+            return None
+        return ToolResult(
+            ok=True,
+            data={
+                "ok": True,
+                "path": str(target),
+                "unchanged": True,
+                "sha256": cached.get("sha256"),
+                "content": "",
+                "hint": (
+                    "Lecture identique déjà fournie dans ce run. Utilise le contenu "
+                    "précédent; appelle read avec refresh=true seulement si les octets "
+                    "sont réellement nécessaires de nouveau."
+                ),
+            },
+            metadata={"cache_hit": True},
+        ).model_dump(mode="json")
+
+    def _remember_read(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        value: dict[str, Any],
+        deps: Any,
+        run_id: Any,
+    ) -> None:
+        resolved = self._read_cache_key(name, arguments, deps, run_id)
+        if resolved is None or not value.get("ok"):
+            return
+        key, target = resolved
+        data = value.get("data")
+        try:
+            stat = target.stat()
+        except OSError:
+            return
+        deps.read_cache[key] = {
+            "signature": (stat.st_mtime_ns, stat.st_size),
+            "sha256": data.get("sha256") if isinstance(data, dict) else None,
+        }

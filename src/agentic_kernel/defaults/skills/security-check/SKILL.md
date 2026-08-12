@@ -6,6 +6,10 @@ allowed-tools:
   - sentinel_acknowledge
 amk:
   activation: on-demand
+  phases: [operate]
+  positive_signals: [the user requests a machine security scan]
+  negative_signals: [ordinary project planning or implementation]
+  retain_until: scan-reported
   commands:
     - /secu
   command_descriptions:

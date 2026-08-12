@@ -8,6 +8,53 @@
 
 /* --- Cartes de contexte (Projet / Agent / Skills / Providers / Crons) ------- */
 
+/* --- Sélecteur de destination : Accueil ou Projets ------------------------- */
+
+.destination-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  margin-bottom: 10px;
+  border-radius: var(--radius-md);
+  background: var(--ctx-active);
+  padding: 3px;
+}
+.destination-switch button {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ctx-text-muted);
+  padding: 7px 9px;
+  font: var(--weight-medium) var(--text-sm) var(--font-sans);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.destination-switch button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.destination-switch button:hover { color: var(--ctx-text); }
+.destination-switch button.active {
+  background: var(--ctx-surface);
+  color: var(--ctx-text);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
+}
+/* Un canal a du nouveau alors qu'on travaille dans un projet. */
+.destination-switch em {
+  border-radius: var(--radius-pill);
+  background: var(--ctx-accent);
+  color: var(--ctx-surface);
+  padding: 1px 6px;
+  font: var(--weight-semibold) var(--text-2xs) var(--font-mono);
+  font-style: normal;
+}
+
 .context-nav { display: grid; gap: 3px; }
 
 .context-card {
@@ -27,6 +74,10 @@
   transition: background var(--dur-fast) var(--ease);
 }
 .context-card:hover { background: var(--ctx-hover); }
+/* La destination où l'on se trouve. Sans cette marque, « Accueil » et
+   « Projets » se ressemblent trop pour qu'on sache dans laquelle on travaille. */
+.context-card.current { background: var(--ctx-active); }
+.context-card.current strong { color: var(--ctx-accent); }
 .context-copy { min-width: 0; }
 .context-card strong,
 .context-card em {

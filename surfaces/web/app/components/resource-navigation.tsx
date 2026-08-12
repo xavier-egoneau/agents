@@ -19,6 +19,12 @@ type ResourceNavigationProps = {
   activeCronCount: number;
   unreadCronCount: number;
   onOpen: (section: ResourceSection) => void;
+  /** Revient aux canaux permanents de l'agent, hors de tout projet. */
+  onHome: () => void;
+  /** Vrai quand aucun projet n'est actif : on est déjà dans cette vue. */
+  homeActive: boolean;
+  /** Canaux ayant du nouveau alors qu'on travaille ailleurs. */
+  homeUnread: number;
 };
 
 /**
@@ -41,9 +47,12 @@ export function ResourceNavigation({
   activeCronCount,
   unreadCronCount,
   onOpen,
+  onHome,
+  homeActive,
+  homeUnread,
 }: ResourceNavigationProps) {
   const cards: Array<{
-    section: ResourceSection;
+    section: ResourceSection | "home";
     icon: IconName;
     title: string;
     active: string;
@@ -51,6 +60,8 @@ export function ResourceNavigation({
     /** Signale une nouveauté à traiter : la pastille passe en accent. */
     alert?: boolean;
     accentIcon?: boolean;
+    action?: () => void;
+    current?: boolean;
   }> = [
     {
       section: "projects",
@@ -107,13 +118,43 @@ export function ResourceNavigation({
   ];
 
   return (
-    <nav className="context-nav" aria-label="Contexte du run">
+    <>
+      {/* Deux destinations, une seule à la fois. Un sélecteur segmenté le dit
+          d'un coup d'œil là où deux entrées de liste laissaient croire qu'on
+          pouvait être dans les deux — on ouvrait alors un canal permanent en
+          croyant rester dans le projet, et le travail partait dans l'espace
+          personnel de l'agent sans que rien ne le signale. */}
+      <div className="destination-switch" role="group" aria-label="Destination">
+        <button
+          type="button"
+          className={homeActive ? "active" : ""}
+          aria-pressed={homeActive}
+          onClick={onHome}
+        >
+          <Icon name="agent" size="sm" />
+          <span>Accueil</span>
+          {homeUnread > 0 && !homeActive && (
+            <em aria-label={`${homeUnread} canal avec du nouveau`}>{homeUnread}</em>
+          )}
+        </button>
+        <button
+          type="button"
+          className={homeActive ? "" : "active"}
+          aria-pressed={!homeActive}
+          onClick={() => onOpen("projects")}
+        >
+          <Icon name="project" size="sm" />
+          <span>{homeActive ? "Projets" : projectName || "Projets"}</span>
+        </button>
+      </div>
+      <nav className="context-nav" aria-label="Contexte du run">
       {cards.map((card) => (
         <button
-          className="context-card"
+          className={`context-card${card.current ? " current" : ""}`}
           key={card.section}
           type="button"
-          onClick={() => onOpen(card.section)}
+          aria-current={card.current ? "true" : undefined}
+          onClick={() => (card.action ? card.action() : onOpen(card.section as ResourceSection))}
         >
           <span className={`context-icon${card.accentIcon ? " agent-icon" : ""}`} aria-hidden="true">
             <Icon name={card.icon} size="sm" />
@@ -131,7 +172,8 @@ export function ResourceNavigation({
             </span>
           )}
         </button>
-      ))}
-    </nav>
+        ))}
+      </nav>
+    </>
   );
 }

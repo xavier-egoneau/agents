@@ -19,7 +19,7 @@ from agentic_kernel.guardian import review_tool_call
 from agentic_kernel.kernel import Kernel
 from agentic_kernel.models import Event, GuardianVerdict, SecurityMode, ToolRisk
 from agentic_kernel.modules import ModuleRegistry
-from agentic_kernel.platform.sandbox import sandbox_capabilities
+from agentic_kernel.platform.sandbox import _container_command, sandbox_capabilities
 
 
 def test_enriched_index_contains_runtime_schemas() -> None:
@@ -75,9 +75,7 @@ def test_command_guardian_modes(tmp_path: Path) -> None:
     )
     assert safe.verdict is GuardianVerdict.ASK
     expected = (
-        GuardianVerdict.ALLOW
-        if sandbox_capabilities().execution_isolated
-        else GuardianVerdict.ASK
+        GuardianVerdict.ALLOW if sandbox_capabilities().execution_isolated else GuardianVerdict.ASK
     )
     assert limited.verdict is expected
     assert install.verdict is GuardianVerdict.ASK
@@ -111,6 +109,12 @@ async def test_command_and_persistent_process_lifecycle(tmp_path: Path) -> None:
     )
     assert timed_out["ok"] is False
     assert timed_out["error"]["type"] == "timeout"
+    failed = await process_module.command_run(
+        ctx, sys.executable, ["-c", "raise SystemExit(7)"], timeout_seconds=5
+    )
+    assert failed["ok"] is False
+    assert failed["data"]["exit_code"] == 7
+    assert failed["error"]["type"] == "nonzero_exit"
 
     started = await process_module.process_start(
         ctx,
@@ -142,14 +146,14 @@ async def test_command_and_persistent_process_lifecycle(tmp_path: Path) -> None:
     )
     (tmp_path / "server.js").write_text(
         "require('http').createServer((q,r)=>r.end('vite-ready'))"
-        ".listen(8137,'127.0.0.1',()=>console.log('http://127.0.0.1:8137'))",
+        ".listen(8137,'0.0.0.0',()=>console.log('http://127.0.0.1:8137'))",
         encoding="utf-8",
     )
     installed = await process_module.command_run(
         ctx, "npm", ["install", "--offline", "--ignore-scripts"], timeout_seconds=30
     )
     assert installed["data"]["exit_code"] == 0
-    server = await process_module.process_start(ctx, "npm", ["run", "dev"], network=True)
+    server = await process_module.process_start(ctx, "npm", ["run", "dev"], network=True, port=8137)
     server_id = server["data"]["process_id"]
     for _ in range(30):
         current = await process_module.process_status(ctx, server_id)
@@ -310,6 +314,36 @@ def test_http_server_detection() -> None:
     assert not is_server(["echo", "hello"])
 
 
+def test_docker_translates_host_resolved_windows_executables() -> None:
+    assert _container_command([r"C:\Program Files\nodejs\node.EXE", "--check", "js/app.js"]) == [
+        "node",
+        "--check",
+        "js/app.js",
+    ]
+    assert _container_command(
+        [
+            r"C:\Windows\System32\cmd.exe",
+            "/d",
+            "/c",
+            "call",
+            r"C:\Program Files\nodejs\npx.CMD",
+            "http-server",
+            "8000",
+        ]
+    ) == ["npx", "http-server", "8000"]
+    assert _container_command(
+        ["python", "-m", "http.server", "8000", "--bind", "127.0.0.1"],
+        expose_network=True,
+    ) == [
+        "python",
+        "-m",
+        "http.server",
+        "8000",
+        "--bind",
+        "0.0.0.0",  # noqa: S104 - adresse interne au conteneur publié
+    ]
+
+
 def test_http_server_port_extraction() -> None:
     """Le port du serveur doit être extrait des indicateurs explicites ou des
     valeurs par défaut par outil."""
@@ -325,3 +359,40 @@ def test_http_server_port_extraction() -> None:
     assert extract(["ng", "serve"]) == 4200
     assert extract(["npm", "run", "dev"]) is None
     assert extract(["echo", "hello"]) is None
+
+
+async def test_command_run_refuses_persistent_server(tmp_path: Path) -> None:
+    module = _process_module()
+    ctx = SimpleNamespace(deps=SimpleNamespace(workspace=tmp_path))
+
+    result = await module.command_run(ctx, "python", ["-m", "http.server", "8000"])
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "persistent_command"
+
+
+async def test_process_start_refuses_an_occupied_port(tmp_path: Path) -> None:
+    module = _process_module()
+    content = tmp_path / "content-agents"
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            workspace=tmp_path,
+            state_db=content / "state.db",
+            events=JsonlEventStore(content / "sessions"),
+            session_id=uuid4(),
+            security_mode=SecurityMode.POWER,
+        )
+    )
+    server = await asyncio.start_server(lambda _r, _w: None, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        result = await module.process_start(
+            ctx, "python", ["-m", "http.server", str(port)], network=True, port=port
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "port_in_use"
+    assert result["metadata"]["suggested_port"] != port

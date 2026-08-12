@@ -1,10 +1,17 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
-from agentic_kernel.guardian import borner_sortie_outil, review_tool_call
+from agentic_kernel.guardian import (
+    GuardianToolset,
+    borner_sortie_outil,
+    borner_texte_de_sortie,
+    review_tool_call,
+)
 from agentic_kernel.models import GuardianVerdict, SecurityMode, ToolRisk
 
 
@@ -528,6 +535,56 @@ def test_a_small_tool_result_passes_through_untouched(tmp_path: Path) -> None:
     assert not (tmp_path / "jamais.json").exists()
 
 
+def test_an_unchanged_read_is_replaced_by_a_small_cache_hit(tmp_path: Path) -> None:
+    target = tmp_path / "app.js"
+    target.write_text("const important = 'large content';", encoding="utf-8")
+    guardian = object.__new__(GuardianToolset)
+    deps = SimpleNamespace(workspace=tmp_path, read_cache={})
+    run_id = uuid4()
+    arguments = {"path": "app.js", "offset": 1, "limit": 2000}
+    first = {
+        "ok": True,
+        "data": {"path": str(target), "content": target.read_text(), "sha256": "abc"},
+    }
+
+    guardian._remember_read("read", arguments, first, deps, run_id)  # noqa: SLF001
+    cached = guardian._cached_read("read", arguments, deps, run_id)  # noqa: SLF001
+
+    assert cached is not None
+    assert cached["metadata"]["cache_hit"] is True
+    assert cached["data"]["unchanged"] is True
+    assert cached["data"]["content"] == ""
+
+
+def test_a_changed_file_invalidates_the_read_cache(tmp_path: Path) -> None:
+    target = tmp_path / "app.js"
+    target.write_text("before", encoding="utf-8")
+    guardian = object.__new__(GuardianToolset)
+    deps = SimpleNamespace(workspace=tmp_path, read_cache={})
+    run_id = uuid4()
+    arguments = {"path": "app.js"}
+    guardian._remember_read(  # noqa: SLF001
+        "read", arguments, {"ok": True, "data": {"sha256": "old"}}, deps, run_id
+    )
+    target.write_text("after with a different size", encoding="utf-8")
+
+    assert guardian._cached_read("read", arguments, deps, run_id) is None  # noqa: SLF001
+
+
+def test_refresh_explicitly_bypasses_the_read_cache(tmp_path: Path) -> None:
+    target = tmp_path / "app.js"
+    target.write_text("same", encoding="utf-8")
+    guardian = object.__new__(GuardianToolset)
+    deps = SimpleNamespace(workspace=tmp_path, read_cache={})
+
+    assert (
+        guardian._read_cache_key(  # noqa: SLF001
+            "read", {"path": "app.js", "refresh": True}, deps, uuid4()
+        )
+        is None
+    )
+
+
 def test_a_result_kept_aside_survives_an_unwritable_disk(tmp_path: Path) -> None:
     """Mesurer ne doit pas casser : sans fichier, le résultat est borné quand même."""
     resultat = {"ok": True, "data": {"content": "x" * 20_000}, "error": None, "metadata": {}}
@@ -536,3 +593,29 @@ def test_a_result_kept_aside_survives_an_unwritable_disk(tmp_path: Path) -> None
 
     assert len(borne["data"]["content"]) < 20_000
     assert borne["metadata"]["truncated"]["full_result_path"] is None
+
+
+def test_a_long_child_answer_is_abridged_for_its_parent(tmp_path: Path) -> None:
+    """Déléguer doit faire économiser du contexte, pas en coûter.
+
+    La réponse d'un agent enfant entrait entière dans le contexte du parent :
+    déléguer coûtait tout ce que l'enfant avait produit, au moment précis où
+    c'était censé alléger l'orchestrateur. Sur 710 runs observés, aucune
+    délégation n'a jamais eu lieu.
+    """
+    debordement = tmp_path / "artifacts" / "dev-run.md"
+    reponse = "Rapport détaillé.\n" * 2_000
+
+    borne = borner_texte_de_sortie(reponse, 8_000, debordement)
+
+    assert len(borne) < len(reponse)
+    assert "Intégralité dans" in borne
+    assert debordement.read_text(encoding="utf-8") == reponse
+
+
+def test_a_short_child_answer_reaches_its_parent_intact(tmp_path: Path) -> None:
+    """La plupart des réponses tiennent : les toucher ajouterait du bruit."""
+    reponse = "Corrigé : le skip-link est focusable."
+
+    assert borner_texte_de_sortie(reponse, 8_000, tmp_path / "jamais.md") == reponse
+    assert not (tmp_path / "jamais.md").exists()

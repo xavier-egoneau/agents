@@ -1,4 +1,5 @@
 export type TraceEvent = {
+  sequence?: number;
   timestamp: string;
   session_id: string;
   run_id: string;
@@ -14,6 +15,7 @@ export const visibleTraceTypes = new Set([
   "agent.queued", "agent.started", "agent.retrying", "agent.completed", "agent.failed",
   "tool.proposed", "guardian.reviewed", "approval.requested", "approval.resolved",
   "tool.started", "tool.completed", "tool.failed", "tool.trashed", "session.completed",
+  "tool.cache_hit",
   "security.changed", "context.pre_compaction_snapshot", "context.compacted",
   "context.inspected", "context.window_updated", "context.window_update_failed",
 ]);
@@ -32,6 +34,7 @@ export function traceLabel(event: TraceEvent) {
     "approval.resolved": event.payload.approved ? "Action autorisée" : "Action refusée",
     "tool.started": `${tool} en cours`,
     "tool.completed": `${tool} terminé`,
+    "tool.cache_hit": `${tool} déjà disponible`,
     "tool.failed": `${tool} a échoué`,
     "tool.trashed": "Élément déplacé dans la corbeille",
     "session.completed": "Réponse terminée",
@@ -65,6 +68,33 @@ export function traceFlag(event: TraceEvent): string | null {
   const metadata = result?.metadata as Record<string, unknown> | undefined;
   const abrege = metadata?.truncated as Record<string, unknown> | undefined;
   return abrege ? "résultat abrégé" : null;
+}
+
+/**
+ * Le texte qui explique une étape, quelle que soit la forme du champ.
+ *
+ * `String(payload.error)` affichait `[object Object]` : les erreurs d'outils
+ * sont des objets `{type, message}`. L'étape disait donc qu'un `plan_claim`
+ * avait échoué sans jamais dire pourquoi — précisément l'information dont on a
+ * besoin pour comprendre, et la seule que le déroulé pouvait fournir.
+ */
+export function traceDetail(event: TraceEvent): string {
+  const lisible = (valeur: unknown): string => {
+    if (typeof valeur === "string") return valeur;
+    if (valeur && typeof valeur === "object") {
+      const objet = valeur as Record<string, unknown>;
+      const message = typeof objet.message === "string" ? objet.message : "";
+      const type = typeof objet.type === "string" ? objet.type : "";
+      if (message) return type ? `${type} — ${message}` : message;
+      return JSON.stringify(valeur);
+    }
+    return "";
+  };
+  for (const cle of ["justification", "task", "reason", "message", "error"]) {
+    const texte = lisible(event.payload[cle]);
+    if (texte) return texte;
+  }
+  return "";
 }
 
 export function traceState(event: TraceEvent, isLast: boolean, live: boolean) {

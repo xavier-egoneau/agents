@@ -52,9 +52,7 @@ export function SessionHistory({
   onResume,
   onDelete,
 }: SessionHistoryProps) {
-  return (
-    <div className="session-list">
-        {sessions.map((session) => {
+  const ligne = (session: SessionHistoryItem) => {
           const unread = unreadSessionIds.has(session.session_id);
           return (
             <div
@@ -126,7 +124,11 @@ export function SessionHistory({
               )}
             </div>
           );
-        })}
+  };
+
+  return (
+    <div className="session-list">
+      {sessions.map(ligne)}
       {sessions.length === 0 && <p className="empty-label">Aucune session</p>}
     </div>
   );

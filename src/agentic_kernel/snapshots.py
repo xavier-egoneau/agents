@@ -32,7 +32,7 @@ class SnapshotStore:
                 os.replace(temporary, target)
             finally:
                 temporary.unlink(missing_ok=True)
-        return {
+        metadata = {
             "blob": str(target.relative_to(self.root.parent)),
             "sha256": digest,
             "bytes": len(raw),
@@ -40,6 +40,24 @@ class SnapshotStore:
             "message_count": len(messages),
             "estimated_tokens": max(1, round(len(raw) / 3.5)),
         }
+        # `ModelResponse.usage` porte l'usage de cette requête précise, à la
+        # différence de `RunResult.usage` qui cumule toutes les requêtes du run.
+        # Sauvegarder les deux côtés de cette paire comparable permet à la
+        # projection de calibrer l'estimateur sans confondre débit et fenêtre.
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if not isinstance(message, dict) or message.get("kind") != "response":
+                continue
+            usage = message.get("usage")
+            observed = usage.get("input_tokens") if isinstance(usage, dict) else None
+            if isinstance(observed, int) and observed > 0:
+                request_raw = json.dumps(
+                    messages[:index], ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
+                metadata["latest_request_input_tokens"] = observed
+                metadata["estimated_latest_request_tokens"] = max(1, round(len(request_raw) / 3.5))
+                break
+        return metadata
 
     def load(self, session_id: UUID, payload: dict[str, Any]) -> list[Any] | None:
         inline = payload.get("messages")

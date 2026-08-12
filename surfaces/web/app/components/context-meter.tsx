@@ -7,6 +7,7 @@ export type ContextStatus = {
   estimated_history_tokens: number;
   estimated_request_tokens?: number;
   observed_input_tokens?: number | null;
+  last_run_total_input_tokens?: number | null;
   estimated_ratio: number | null;
   compaction_threshold_ratio: number;
   compaction_count: number;
@@ -21,8 +22,7 @@ function compactTokens(value: number): string {
 export function ContextMeter({ status }: { status: ContextStatus | null }) {
   const threshold = status?.compaction_threshold_ratio ?? 0.7;
   const windowTokens = status?.context_window_tokens;
-  const displayedTokens = status?.observed_input_tokens
-    ?? status?.estimated_request_tokens
+  const displayedTokens = status?.estimated_request_tokens
     ?? status?.estimated_history_tokens
     ?? 0;
   // Trois états, et non deux. Une conversation vide n'a pas de ratio mesuré,

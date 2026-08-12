@@ -12,6 +12,12 @@ allowed-tools:
   - write
   - patch
   - command_run
+amk:
+  activation: on-demand
+  phases: [author]
+  positive_signals: [the requested deliverable is an AMK workflow]
+  negative_signals: [executing an existing workflow or ordinary project work]
+  retain_until: workflow-delivered
 ---
 
 # Workflow Creator

@@ -137,7 +137,7 @@ class SkillLoad(StrEnum):
     """Quand le corps d'une skill entre dans le prompt.
 
     `ON_DEMAND` — le prompt ne porte que le nom et la description; le modèle
-    charge le corps avec `load_skill` quand l'occasion se présente. C'est le
+    charge le corps avec `load_skills` quand l'occasion se présente. C'est le
     défaut, parce que la plupart des skills décrivent une procédure dont
     l'occasion s'annonce d'elle-même (« crée un workflow », `/plan`).
 

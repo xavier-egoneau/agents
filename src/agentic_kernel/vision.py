@@ -110,6 +110,11 @@ class LocalVisionService:
             ],
             "temperature": 0.1,
             "max_tokens": int(config.get("max_tokens", 2048)),
+            # Gemma 4 peut dépenser tout le budget en `reasoning_content` et
+            # rendre `content` vide. Pour un outil de perception, cette pensée
+            # longue n'apporte rien au parent : on demande directement
+            # l'observation finale, ce que llama.cpp transmet au template.
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         try:
             async with httpx.AsyncClient(

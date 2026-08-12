@@ -2397,6 +2397,10 @@
                 "minimum": 1,
                 "type": "integer"
               },
+              "refresh": {
+                "default": false,
+                "type": "boolean"
+              },
               "justification": {
                 "default": "",
                 "type": "string"
@@ -7208,6 +7212,19 @@
               "network": {
                 "default": false,
                 "type": "boolean"
+              },
+              "port": {
+                "anyOf": [
+                  {
+                    "maximum": 65535,
+                    "minimum": 1024,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "justification": {
                 "default": "",

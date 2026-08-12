@@ -575,6 +575,11 @@ button { color: inherit; }
 }
 .topbar-chip:hover { background: var(--ctx-hover); border-color: var(--ctx-border); }
 .topbar-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* La conversation ouverte n'écrit pas dans le projet sélectionné. */
+.topbar-chip-divergent {
+  border-color: var(--warning, var(--danger));
+  color: var(--warning, var(--danger));
+}
 .topbar-chip svg { color: var(--ctx-text-faint); }
 .topbar-chip:hover svg { color: var(--ctx-text-muted); }
 /* Séparateur discret entre les deux, sans élément supplémentaire. */

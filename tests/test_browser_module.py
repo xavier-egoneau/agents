@@ -20,7 +20,11 @@ def load_browser_module():
 async def test_playwright_browser_snapshot_and_screenshot(tmp_path: Path) -> None:
     async def serve(reader, writer):
         await reader.read(4096)
-        body = b"<html><title>AMK test</title><button>Bonjour</button></html>"
+        body = b"""<html><title>AMK test</title><button>Bonjour</button>
+        <canvas id='game' width='64' height='64'></canvas><script>
+        const c=document.querySelector('canvas').getContext('2d');
+        c.fillStyle='red';c.fillRect(0,0,32,64);c.fillStyle='blue';c.fillRect(32,0,32,64);
+        </script></html>"""
         writer.write(
             b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: "
             + str(len(body)).encode()
@@ -119,3 +123,34 @@ async def test_redirect_guard_requires_exact_browser_open_scope(monkeypatch) -> 
     await context.handler(wildcard_route)
     assert wildcard_route.continued is False
     assert wildcard_route.aborted == "blockedbyclient"
+
+
+async def test_browser_open_allows_workspace_file_and_local_assets(tmp_path: Path) -> None:
+    browser_module = load_browser_module()
+    (tmp_path / "style.css").write_text("body { background: rgb(1, 2, 3); }", encoding="utf-8")
+    page = tmp_path / "index.html"
+    page.write_text(
+        '<html><head><title>Local</title><link rel="stylesheet" href="style.css"></head>'
+        '<body><p id="ready">chargé</p></body></html>',
+        encoding="utf-8",
+    )
+    session_id, run_id = uuid4(), uuid4()
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            session_id=session_id,
+            root_run_id=run_id,
+            workspace=tmp_path,
+            events=JsonlEventStore(tmp_path / "sessions"),
+            approved_scopes=set(),
+        ),
+        tool_call_approved=False,
+    )
+    try:
+        opened = await browser_module.browser_open(ctx, page.as_uri())
+        snapshot = await browser_module.browser_snapshot(ctx, opened["data"]["page_id"])
+
+        assert opened["ok"] is True
+        assert opened["data"]["title"] == "Local"
+        assert snapshot["data"]["text"] == "chargé"
+    finally:
+        await browser_module.browser_close(ctx)

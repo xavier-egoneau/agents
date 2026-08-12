@@ -45,9 +45,10 @@ async def read(
     path: str,
     offset: Annotated[int, Field(ge=1)] = 1,
     limit: Annotated[int, Field(ge=1, le=MAX_READ_LINES)] = MAX_READ_LINES,
+    refresh: bool = False,
     justification: str = "",
 ) -> dict[str, Any]:
-    """Read text from a file. Offset is one-based and output is bounded."""
+    """Read text from a file. Set refresh only to repeat an unchanged prior read."""
     target = _target(ctx, path)
     if not target.is_file():
         raise ValueError(f"not a readable file: {target}")

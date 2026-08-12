@@ -10,7 +10,6 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
-    ThinkingPart,
     ToolCallPart,
     UserPromptPart,
 )
@@ -20,7 +19,6 @@ from pydantic_ai.models.test import TestModel
 from agentic_kernel.errors import ConfigurationError
 from agentic_kernel.kernel import (
     Kernel,
-    _last_model_text,
     _runtime_context_instruction,
     _without_images,
 )
@@ -661,40 +659,40 @@ Answer with concise prose.
                 "capabilities": ["tools"],
                 "enabled": True,
                 "tools": [
-                        {
-                            "name": "allow_a",
-                            "description": "First tool",
-                            "category": "test",
-                            "risk_tags": ["read"],
-                            "timeout_seconds": 5,
-                            "input_schema": {"type": "object", "properties": {}},
-                            "output_schema": {
-                                "type": "object",
-                                "properties": {
-                                    "ok": {"type": "boolean"},
-                                    "data": {},
-                                    "error": {},
-                                    "metadata": {"type": "object"},
-                                },
+                    {
+                        "name": "allow_a",
+                        "description": "First tool",
+                        "category": "test",
+                        "risk_tags": ["read"],
+                        "timeout_seconds": 5,
+                        "input_schema": {"type": "object", "properties": {}},
+                        "output_schema": {
+                            "type": "object",
+                            "properties": {
+                                "ok": {"type": "boolean"},
+                                "data": {},
+                                "error": {},
+                                "metadata": {"type": "object"},
                             },
                         },
-                        {
-                            "name": "allow_b",
-                            "description": "Second tool",
-                            "category": "test",
-                            "risk_tags": ["read"],
-                            "timeout_seconds": 5,
-                            "input_schema": {"type": "object", "properties": {}},
-                            "output_schema": {
-                                "type": "object",
-                                "properties": {
-                                    "ok": {"type": "boolean"},
-                                    "data": {},
-                                    "error": {},
-                                    "metadata": {"type": "object"},
-                                },
+                    },
+                    {
+                        "name": "allow_b",
+                        "description": "Second tool",
+                        "category": "test",
+                        "risk_tags": ["read"],
+                        "timeout_seconds": 5,
+                        "input_schema": {"type": "object", "properties": {}},
+                        "output_schema": {
+                            "type": "object",
+                            "properties": {
+                                "ok": {"type": "boolean"},
+                                "data": {},
+                                "error": {},
+                                "metadata": {"type": "object"},
                             },
                         },
+                    },
                 ],
             }
         ),
@@ -718,9 +716,7 @@ module = Module()
     observations: list[tuple[set[str], str]] = []
 
     def respond(_messages, info):
-        observations.append(
-            ({tool.name for tool in info.function_tools}, info.instructions or "")
-        )
+        observations.append(({tool.name for tool in info.function_tools}, info.instructions or ""))
         return ModelResponse(parts=[TextPart("done")])
 
     monkeypatch.setattr(ProviderFactory, "build", lambda *args, **kwargs: FunctionModel(respond))
@@ -862,56 +858,92 @@ Complete the delegated task.
     assert set() in observed_toolsets[1:]
 
 
-def test_thinking_is_recovered_when_no_text_was_produced() -> None:
-    """Le cas qui a coûté un run entier.
+def test_a_failed_run_reports_events_without_leaking_model_thinking(project: Path) -> None:
+    kernel = Kernel(project)
+    request = RunRequest(prompt="Construis le projet")
+    run_id = uuid4()
+    kernel.events.append(
+        Event(
+            session_id=request.session_id,
+            run_id=uuid4(),
+            parent_run_id=run_id,
+            agent_id="subagent",
+            type="agent.started",
+            payload={"role": "dev"},
+        )
+    )
+    kernel.events.append(
+        Event(
+            session_id=request.session_id,
+            run_id=uuid4(),
+            parent_run_id=run_id,
+            agent_id="subagent",
+            type="agent.failed",
+            payload={"role": "dev", "message": "limit"},
+        )
+    )
+    child_run = uuid4()
+    kernel.events.append(
+        Event(
+            session_id=request.session_id,
+            run_id=child_run,
+            parent_run_id=run_id,
+            agent_id="subagent",
+            type="tool.completed",
+            payload={
+                "tool": "patch",
+                "result": {"data": {"changed": True, "path": str(project / "app.js")}},
+            },
+        )
+    )
 
-    Quand la limite de tokens tombe pendant la phase de raisonnement, la réponse
-    ne contient que des `ThinkingPart`; pydantic-ai lève alors sans sortie
-    exploitable. Ce raisonnement représente le travail réel du modèle et doit
-    survivre à l'échec.
-    """
-    messages = [
-        ModelRequest(parts=[UserPromptPart(content="Crée l'application")]),
-        ModelResponse(parts=[ThinkingPart(content="Je décompose le problème…")]),
-    ]
+    result = kernel._failed(  # noqa: SLF001 - vérifie la sortie terminale publique
+        request,
+        run_id,
+        RunStatus.TIMEOUT,
+        TimeoutError(),
+        retryable=True,
+        messages=["Je dois trouver un contournement secret"],
+    )
 
-    texte, reflexion = _last_model_text(messages)
-
-    assert texte == ""
-    assert reflexion == "Je décompose le problème…"
-
-
-def test_text_wins_over_thinking() -> None:
-    """Un texte est une réponse; un raisonnement n'en est que la trace."""
-    messages = [
-        ModelResponse(parts=[ThinkingPart(content="hésitation"), TextPart("la réponse")]),
-    ]
-
-    texte, reflexion = _last_model_text(messages)
-
-    assert texte == "la réponse"
-    assert reflexion == "hésitation"
+    assert "Run interrompu — TimeoutError" in result.output
+    assert "1 délégation(s) démarrée(s), 1 en échec" in result.output
+    assert "app.js" in result.output
+    assert "contournement secret" not in result.output
 
 
-def test_the_last_response_is_the_one_that_failed() -> None:
-    """On lit à rebours : c'est la dernière réponse qui a buté."""
-    messages = [
-        ModelResponse(parts=[TextPart("un tour précédent")]),
-        ModelRequest(parts=[UserPromptPart(content="continue")]),
-        ModelResponse(parts=[ThinkingPart(content="le tour interrompu")]),
-    ]
+def test_context_overflow_failure_is_clear_and_reports_browser_progress(project: Path) -> None:
+    kernel = Kernel(project)
+    session_id, run_id = uuid4(), uuid4()
+    for tool in ("browser_open", "browser_screenshot", "image_inspect"):
+        kernel.events.append(
+            Event(
+                session_id=session_id,
+                run_id=run_id,
+                agent_id="main",
+                type="tool.completed",
+                payload={"tool": tool, "result": {"ok": True}},
+            )
+        )
 
-    assert _last_model_text(messages) == ("", "le tour interrompu")
+    output = kernel._failure_output(  # noqa: SLF001
+        session_id,
+        run_id,
+        "ModelHTTPError",
+        (
+            "status_code: 400, body: {'n_prompt_tokens': 66031, "
+            "'n_ctx': 65536, 'type': 'exceed_context_size_error'}"
+        ),
+    )
+
+    assert "fenêtre de contexte dépassée" in output
+    assert "495 de trop" in output
+    assert "page ouverte, capture réalisée, capture inspectée par la vision" in output
+    assert "status_code" not in output
+    assert "continue" in output
 
 
-def test_nothing_to_recover_is_not_an_error() -> None:
-    assert _last_model_text([]) == ("", "")
-    assert _last_model_text([ModelResponse(parts=[])]) == ("", "")
-
-
-async def test_the_run_model_overrides_every_agent_in_the_chain(
-    project: Path, monkeypatch
-) -> None:
+async def test_the_run_model_overrides_every_agent_in_the_chain(project: Path, monkeypatch) -> None:
     """Le modèle choisi pour le run vaut pour l'enfant comme pour le parent.
 
     Le champ `model` d'un agent n'est qu'un défaut. Basculer de modèle en cours
