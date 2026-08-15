@@ -25,6 +25,7 @@ from .routers.artifacts import create_artifact_router
 from .routers.crons import _validate_stored_workflow, create_cron_router
 from .routers.files import create_files_router
 from .routers.git import create_git_router
+from .routers.kanban import create_kanban_router
 from .routers.plans import create_plan_router
 from .routers.resources import create_resource_router
 from .routers.runs import create_run_router
@@ -648,6 +649,7 @@ def create_app(  # noqa: C901 - dette: factory montant tous les routers
         return project.commands(selected)
 
     app.include_router(create_plan_router(project.content_root / "state.db", kernel.events))
+    app.include_router(create_kanban_router(project.content_root / "state.db"))
 
     @app.get("/api/providers/{provider_id}/models")
     async def provider_models(provider_id: str) -> dict[str, object]:

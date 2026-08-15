@@ -3,7 +3,7 @@
 import { Icon } from "../theme/theme-context";
 import type { IconName } from "../theme/icons";
 
-export type ResourceSection = "projects" | "agents" | "skills" | "providers" | "settings" | "crons";
+export type ResourceSection = "projects" | "kanban" | "agents" | "skills" | "providers" | "settings" | "crons";
 
 type ResourceNavigationProps = {
   projectName?: string;

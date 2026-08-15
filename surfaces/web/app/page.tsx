@@ -38,6 +38,7 @@ import {
 } from "./components/current-plan-panel";
 import { RoutineEditor } from "./components/routine-editor";
 import { ProviderEditor } from "./components/provider-editor";
+import { KanbanBoard } from "./components/kanban-board";
 import { ResourceEditorForm } from "./components/resource-editor-form";
 import {
   GitChangeCard,
@@ -2073,6 +2074,7 @@ export default function Home() {
       onSelect: () => chooseWorkspace(""),
     },
     { id: "projects", icon: "project", label: "Projets", onSelect: () => openManagement("projects") },
+    { id: "kanban", icon: "plan", label: "Kanban", onSelect: () => openManagement("kanban") },
     { id: "agents", icon: "agent", label: "Agents", onSelect: () => openManagement("agents") },
     { id: "skills", icon: "skill", label: "Skills", onSelect: () => openManagement("skills") },
     { id: "providers", icon: "provider", label: "Providers", onSelect: () => openManagement("providers") },
@@ -2293,7 +2295,7 @@ export default function Home() {
       {managementModal && (
         <div className="management-backdrop" onMouseDown={closeManagement}>
           <section
-            className="management-modal"
+            className={`management-modal${managementModal === "kanban" ? " management-modal-kanban" : ""}`}
             role="dialog"
             aria-modal="true"
             aria-labelledby="management-title"
@@ -2304,6 +2306,7 @@ export default function Home() {
                 <p className="eyebrow">Configuration du contexte</p>
                 <h2 id="management-title">
                   {managementModal === "projects" && "Projets"}
+                  {managementModal === "kanban" && "Kanban du projet"}
                   {managementModal === "agents" && "Agents"}
                   {managementModal === "skills" && "Skills"}
                   {managementModal === "providers" && "Providers"}
@@ -2455,6 +2458,15 @@ export default function Home() {
                 removeAgentAvatar={removeAgentAvatar}
                 setResourceEditor={setResourceEditor}
                 onSave={() => void saveResource()}
+              />
+            ) : managementModal === "kanban" ? (
+              <KanbanBoard
+                workspace={activeWorkspace}
+                onUsePrompt={(value) => {
+                  setPrompt(value);
+                  closeManagement();
+                  requestAnimationFrame(() => textarea.current?.focus());
+                }}
               />
             ) : managementModal === "projects" ? (
               <div className="management-body">

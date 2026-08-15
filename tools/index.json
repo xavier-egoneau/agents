@@ -3861,6 +3861,622 @@
       "enabled": true
     },
     {
+      "schema_version": 1,
+      "id": "kanban",
+      "name": "Kanban",
+      "description": "Prépare, réserve et suit les tâches durables du projet courant.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools"
+      ],
+      "tools": [
+        {
+          "name": "kanban_list",
+          "description": "Lister les tâches Kanban du projet courant.",
+          "category": "general",
+          "risk_tags": [
+            "read"
+          ],
+          "path_parameters": [],
+          "url_parameters": [],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "backlog",
+                      "ready",
+                      "running",
+                      "review",
+                      "done",
+                      "blocked"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "automatic_only": {
+                "default": false,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "$defs": {
+              "ToolError": {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "title": "Type",
+                    "type": "string"
+                  },
+                  "message": {
+                    "title": "Message",
+                    "type": "string"
+                  },
+                  "retryable": {
+                    "default": false,
+                    "title": "Retryable",
+                    "type": "boolean"
+                  },
+                  "details": {
+                    "additionalProperties": true,
+                    "title": "Details",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
+                ],
+                "title": "ToolError",
+                "type": "object"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Framework-independent result contract shared by every executable tool.",
+            "properties": {
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "data": {
+                "default": null,
+                "title": "Data"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ToolError"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "metadata": {
+                "additionalProperties": true,
+                "title": "Metadata",
+                "type": "object"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "title": "ToolResult",
+            "type": "object"
+          },
+          "timeout_seconds": 5.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "kanban_create",
+          "description": "Créer une tâche Kanban dans le projet courant.",
+          "category": "general",
+          "risk_tags": [
+            "write"
+          ],
+          "path_parameters": [],
+          "url_parameters": [],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "title": {
+                "maxLength": 240,
+                "minLength": 1,
+                "type": "string"
+              },
+              "prompt": {
+                "default": "",
+                "type": "string"
+              },
+              "acceptance_criteria": {
+                "default": "",
+                "type": "string"
+              },
+              "status": {
+                "default": "backlog",
+                "enum": [
+                  "backlog",
+                  "ready"
+                ],
+                "type": "string"
+              },
+              "priority": {
+                "default": "medium",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "urgent"
+                ],
+                "type": "string"
+              },
+              "auto_run": {
+                "default": false,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "title"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "$defs": {
+              "ToolError": {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "title": "Type",
+                    "type": "string"
+                  },
+                  "message": {
+                    "title": "Message",
+                    "type": "string"
+                  },
+                  "retryable": {
+                    "default": false,
+                    "title": "Retryable",
+                    "type": "boolean"
+                  },
+                  "details": {
+                    "additionalProperties": true,
+                    "title": "Details",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
+                ],
+                "title": "ToolError",
+                "type": "object"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Framework-independent result contract shared by every executable tool.",
+            "properties": {
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "data": {
+                "default": null,
+                "title": "Data"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ToolError"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "metadata": {
+                "additionalProperties": true,
+                "title": "Metadata",
+                "type": "object"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "title": "ToolResult",
+            "type": "object"
+          },
+          "timeout_seconds": 5.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "kanban_update",
+          "description": "Modifier une tâche Kanban ou son état.",
+          "category": "general",
+          "risk_tags": [
+            "write"
+          ],
+          "path_parameters": [],
+          "url_parameters": [],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "task_id": {
+                "type": "string"
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "backlog",
+                      "ready",
+                      "running",
+                      "review",
+                      "done",
+                      "blocked"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "prompt": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "acceptance_criteria": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "auto_run": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "$defs": {
+              "ToolError": {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "title": "Type",
+                    "type": "string"
+                  },
+                  "message": {
+                    "title": "Message",
+                    "type": "string"
+                  },
+                  "retryable": {
+                    "default": false,
+                    "title": "Retryable",
+                    "type": "boolean"
+                  },
+                  "details": {
+                    "additionalProperties": true,
+                    "title": "Details",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
+                ],
+                "title": "ToolError",
+                "type": "object"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Framework-independent result contract shared by every executable tool.",
+            "properties": {
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "data": {
+                "default": null,
+                "title": "Data"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ToolError"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "metadata": {
+                "additionalProperties": true,
+                "title": "Metadata",
+                "type": "object"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "title": "ToolResult",
+            "type": "object"
+          },
+          "timeout_seconds": 5.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "kanban_claim_next",
+          "description": "Réserver atomiquement la prochaine tâche prête.",
+          "category": "general",
+          "risk_tags": [
+            "write"
+          ],
+          "path_parameters": [],
+          "url_parameters": [],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "worker_id": {
+                "default": "agent",
+                "type": "string"
+              },
+              "lease_seconds": {
+                "default": 1800,
+                "maximum": 86400,
+                "minimum": 30,
+                "type": "integer"
+              },
+              "automatic_only": {
+                "default": true,
+                "type": "boolean"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "$defs": {
+              "ToolError": {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "title": "Type",
+                    "type": "string"
+                  },
+                  "message": {
+                    "title": "Message",
+                    "type": "string"
+                  },
+                  "retryable": {
+                    "default": false,
+                    "title": "Retryable",
+                    "type": "boolean"
+                  },
+                  "details": {
+                    "additionalProperties": true,
+                    "title": "Details",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
+                ],
+                "title": "ToolError",
+                "type": "object"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Framework-independent result contract shared by every executable tool.",
+            "properties": {
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "data": {
+                "default": null,
+                "title": "Data"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ToolError"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "metadata": {
+                "additionalProperties": true,
+                "title": "Metadata",
+                "type": "object"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "title": "ToolResult",
+            "type": "object"
+          },
+          "timeout_seconds": 5.0,
+          "cancellable": false,
+          "persistent": false
+        },
+        {
+          "name": "kanban_finish",
+          "description": "Terminer ou bloquer une tâche réservée et enregistrer son résultat.",
+          "category": "general",
+          "risk_tags": [
+            "write"
+          ],
+          "path_parameters": [],
+          "url_parameters": [],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "task_id": {
+                "type": "string"
+              },
+              "status": {
+                "default": "review",
+                "enum": [
+                  "review",
+                  "done",
+                  "blocked"
+                ],
+                "type": "string"
+              },
+              "result": {
+                "default": "",
+                "type": "string"
+              },
+              "error": {
+                "default": "",
+                "type": "string"
+              },
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id"
+            ],
+            "type": "object"
+          },
+          "output_schema": {
+            "$defs": {
+              "ToolError": {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "title": "Type",
+                    "type": "string"
+                  },
+                  "message": {
+                    "title": "Message",
+                    "type": "string"
+                  },
+                  "retryable": {
+                    "default": false,
+                    "title": "Retryable",
+                    "type": "boolean"
+                  },
+                  "details": {
+                    "additionalProperties": true,
+                    "title": "Details",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
+                ],
+                "title": "ToolError",
+                "type": "object"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Framework-independent result contract shared by every executable tool.",
+            "properties": {
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "data": {
+                "default": null,
+                "title": "Data"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ToolError"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "metadata": {
+                "additionalProperties": true,
+                "title": "Metadata",
+                "type": "object"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "title": "ToolResult",
+            "type": "object"
+          },
+          "timeout_seconds": 5.0,
+          "cancellable": false,
+          "persistent": false
+        }
+      ],
+      "config": null,
+      "enabled": true
+    },
+    {
       "schema_version": 2,
       "id": "mcp",
       "name": "MCP",

@@ -6,6 +6,7 @@ model: deepseek-v4-pro
 modules:
   - datetime
   - icloud_calendar
+  - kanban
 skills:
   - dev
   - model-context

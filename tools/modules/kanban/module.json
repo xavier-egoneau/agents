@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "id": "kanban",
+  "name": "Kanban",
+  "description": "Prépare, réserve et suit les tâches durables du projet courant.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools"],
+  "tools": [
+    {
+      "name": "kanban_list",
+      "description": "Lister les tâches Kanban du projet courant.",
+      "risk_tags": ["read"],
+      "timeout_seconds": 5
+    },
+    {
+      "name": "kanban_create",
+      "description": "Créer une tâche Kanban dans le projet courant.",
+      "risk_tags": ["write"],
+      "timeout_seconds": 5
+    },
+    {
+      "name": "kanban_update",
+      "description": "Modifier une tâche Kanban ou son état.",
+      "risk_tags": ["write"],
+      "timeout_seconds": 5
+    },
+    {
+      "name": "kanban_claim_next",
+      "description": "Réserver atomiquement la prochaine tâche prête.",
+      "risk_tags": ["write"],
+      "timeout_seconds": 5
+    },
+    {
+      "name": "kanban_finish",
+      "description": "Terminer ou bloquer une tâche réservée et enregistrer son résultat.",
+      "risk_tags": ["write"],
+      "timeout_seconds": 5
+    }
+  ],
+  "enabled": true
+}
