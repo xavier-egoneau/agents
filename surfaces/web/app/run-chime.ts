@@ -50,9 +50,9 @@ export function primeRunChime(): void {
 
 const TIMBRES: Record<ChimeKind, { frequencies: number[]; gain: number }> = {
   // Deux notes montantes, brèves : « c'est fini », rien à faire.
-  done: { frequencies: [660, 880], gain: 0.05 },
+  done: { frequencies: [660, 880], gain: 0.20 },
   // Trois notes plus graves et plus lentes : « on t'attend ».
-  attention: { frequencies: [520, 415, 520], gain: 0.07 },
+  attention: { frequencies: [520, 415, 520], gain: 0.28 },
 };
 
 function emettre(actif: AudioContext, kind: ChimeKind): void {
@@ -67,8 +67,8 @@ function emettre(actif: AudioContext, kind: ChimeKind): void {
     const volume = actif.createGain();
     oscillateur.type = "sine";
     oscillateur.frequency.value = frequency;
-    const debut = depart + index * 0.13;
-    const fin = debut + 0.16;
+    const debut = depart + index * 0.18;
+    const fin = debut + 0.24;
     // Enveloppe douce : une onde coupée net produit un clic audible, plus
     // désagréable que la note elle-même.
     volume.gain.setValueAtTime(0.0001, debut);

@@ -127,6 +127,14 @@ class SchedulerError(ValueError):
     pass
 
 
+class CronNotFoundError(SchedulerError):
+    """La routine ou l'occurrence demandée n'existe pas dans la base."""
+
+
+class CronConflictError(SchedulerError):
+    """La routine est en cours d'exécution ou attend une autorisation."""
+
+
 class CronService:
     """Persistent cron definitions and runtime state.
 
@@ -482,7 +490,7 @@ class CronService:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM cron_jobs WHERE id = ?", (job_id,)).fetchone()
         if row is None:
-            raise SchedulerError(f"Cronjob introuvable : {job_id}")
+            raise CronNotFoundError(f"Cronjob introuvable : {job_id}")
         return self._row(row)
 
     def update(self, job_id: str, payload: CronJobInput) -> CronJob:
@@ -541,7 +549,7 @@ class CronService:
 
         job = self.get(job_id)
         if job.in_flight:
-            raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
+            raise CronConflictError("Impossible de modifier le workflow pendant une exécution")
         self.validate_schedule(payload.schedule)
         workspace = self._validated_workspace(payload, current=job.workspace)
         now = datetime.now(UTC)
@@ -589,7 +597,7 @@ class CronService:
                 ),
             )
         if not cursor.rowcount:
-            raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
+            raise CronConflictError("Impossible de modifier le workflow pendant une exécution")
         return self.get(job_id)
 
     def delete(self, job_id: str) -> None:
@@ -599,7 +607,7 @@ class CronService:
         with self._connect() as connection:
             cursor = connection.execute("DELETE FROM cron_jobs WHERE id=?", (job_id,))
         if cursor.rowcount == 0:
-            raise SchedulerError(f"Cronjob introuvable : {job_id}")
+            raise CronNotFoundError(f"Cronjob introuvable : {job_id}")
 
     def set_workflow(
         self,
@@ -609,7 +617,7 @@ class CronService:
     ) -> CronJob:
         job = self.get(job_id)
         if job.in_flight:
-            raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
+            raise CronConflictError("Impossible de modifier le workflow pendant une exécution")
         now = datetime.now(UTC)
         with self._connect() as connection:
             cursor = connection.execute(
@@ -626,13 +634,13 @@ class CronService:
                 ),
             )
         if not cursor.rowcount:
-            raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
+            raise CronConflictError("Impossible de modifier le workflow pendant une exécution")
         return self.get(job_id)
 
     def clear_workflow(self, job_id: str) -> CronJob:
         job = self.get(job_id)
         if job.in_flight:
-            raise SchedulerError("Impossible de supprimer le workflow pendant une exécution")
+            raise CronConflictError("Impossible de supprimer le workflow pendant une exécution")
         now = datetime.now(UTC)
         with self._connect() as connection:
             cursor = connection.execute(
@@ -643,7 +651,7 @@ class CronService:
                 (now.isoformat(), now.isoformat(), job_id),
             )
         if not cursor.rowcount:
-            raise SchedulerError("Impossible de supprimer le workflow pendant une exécution")
+            raise CronConflictError("Impossible de supprimer le workflow pendant une exécution")
         return self.get(job_id)
 
     def due(self, now: datetime | None = None) -> list[CronJob]:
@@ -854,7 +862,7 @@ class CronService:
                 (occurrence_id,),
             )
         if not cursor.rowcount:
-            raise SchedulerError(f"Occurrence cron introuvable : {occurrence_id}")
+            raise CronNotFoundError(f"Occurrence cron introuvable : {occurrence_id}")
         return next(item for item in self.list_runs(limit=500) if item.id == occurrence_id)
 
     def mark_session_runs_read(self, session_id: UUID) -> int:

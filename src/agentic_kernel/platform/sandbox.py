@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Protocol
@@ -32,6 +34,23 @@ _SAFE_ENV = {
     "USERPROFILE",
     "WINDIR",
 }
+
+# `review_tool_call` interroge les capacités à chaque outil d'exécution, et
+# `DockerSandbox.prepare` vérifie l'image à chaque commande : sans mémorisation,
+# chaque appel relançait un `docker version` (timeout 10 s) et un
+# `docker image inspect` (timeout 30 s). Le TTL court garde les diagnostics
+# honnêtes sans payer la latence à chaque requête.
+_CAPABILITIES_TTL = 15.0
+_IMAGE_CHECK_TTL = 60.0
+_capabilities_cache: tuple[float, SandboxCapabilities] | None = None
+_image_cache: dict[tuple[str, str], tuple[float, bool, str]] = {}
+
+
+def clear_sandbox_caches() -> None:
+    """Réinitialise les caches de découverte; utilisé par les tests."""
+    global _capabilities_cache
+    _capabilities_cache = None
+    _image_cache.clear()
 
 
 @dataclass(frozen=True)
@@ -197,6 +216,11 @@ class DockerSandbox:
         explains how to pull it. This avoids cryptic "executable not found"
         errors when the real issue is a missing image.
         """
+        key = (self.executable, self.image)
+        now = time.monotonic()
+        cached = _image_cache.get(key)
+        if cached is not None and now - cached[0] < _IMAGE_CHECK_TTL:
+            return cached[1], cached[2]
         try:
             probe = subprocess.run(  # noqa: S603 - commande fixe
                 [self.executable, "image", "inspect", self.image],
@@ -206,14 +230,18 @@ class DockerSandbox:
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            return False, f"cannot inspect image: {type(exc).__name__}"
-        if probe.returncode != 0:
-            return False, (
-                f"sandbox image not found: {self.image}\n"
-                f"Pull it with: docker pull {self.image}\n"
-                f"Or set AMK_SANDBOX_IMAGE to a lighter image (e.g. node:22-bookworm)"
-            )
-        return True, f"image {self.image} available"
+            available, message = False, f"cannot inspect image: {type(exc).__name__}"
+        else:
+            if probe.returncode != 0:
+                available, message = False, (
+                    f"sandbox image not found: {self.image}\n"
+                    f"Pull it with: docker pull {self.image}\n"
+                    f"Or set AMK_SANDBOX_IMAGE to a lighter image (e.g. node:22-bookworm)"
+                )
+            else:
+                available, message = True, f"image {self.image} available"
+        _image_cache[key] = (now, available, message)
+        return available, message
 
     def prepare(
         self,
@@ -239,6 +267,11 @@ class DockerSandbox:
         # inspecter et compiler, jamais modifier ce qu'il n'a pas le droit de
         # modifier.
         workspace_mode = "ro" if mode is SecurityMode.SAFE else "rw"
+        # Plafond mémoire du conteneur. Réglable : un gros build (Rust, bundler)
+        # peut dépasser les 2 Go par défaut sans que rien ne l'indique.
+        memory_limit = os.getenv("AMK_SANDBOX_MEMORY", "2g")
+        if not re.fullmatch(r"\d+[gmkb]?", memory_limit):
+            memory_limit = "2g"
         arguments = [
             self.executable,
             "run",
@@ -248,7 +281,7 @@ class DockerSandbox:
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
             "--pids-limit=512",
-            "--memory=2g",
+            f"--memory={memory_limit}",
             f"--network={'bridge' if allow_network else 'none'}",
             "--workdir=/workspace",
             f"--mount=type=bind,source={runtime.workspace},target=/workspace,"
@@ -259,9 +292,19 @@ class DockerSandbox:
             f"--mount=type=bind,source={runtime.temporary},target=/tmp",
             f"--mount=type=bind,source={runtime.cache},target=/cache",
         ]
+        if platform.system() == "Linux":
+            # Sous Linux natif, le conteneur tourne en root : les fichiers
+            # écrits dans le workspace monté appartiennent alors à root et
+            # l'utilisateur ne peut plus les effacer. L'uid/gid numériques de
+            # l'hôte existent tels quels dans le conteneur (même noyau, pas de
+            # remappage user-ns).
+            arguments.append(f"--user={os.getuid()}:{os.getgid()}")
         if allow_network and publish_ports:
             for port in publish_ports:
-                arguments.extend(["--publish", f"{port}:{port}"])
+                # Lier sur toutes les interfaces exposait un dev server
+                # « local » au LAN. Le loopback de l'hôte suffit : c'est là que
+                # l'agent ouvre la page.
+                arguments.extend(["--publish", f"127.0.0.1:{port}:{port}"])
         for key, value in sorted(_container_environment(runtime).items()):
             arguments.extend(["--env", f"{key}={value}"])
         arguments.append(self.image)
@@ -420,7 +463,13 @@ def selected_backend() -> SandboxBackend:
 
 
 def sandbox_capabilities() -> SandboxCapabilities:
-    return selected_backend().capabilities
+    global _capabilities_cache
+    now = time.monotonic()
+    if _capabilities_cache is not None and now - _capabilities_cache[0] < _CAPABILITIES_TTL:
+        return _capabilities_cache[1]
+    capabilities = selected_backend().capabilities
+    _capabilities_cache = (now, capabilities)
+    return capabilities
 
 
 def prepare_execution(

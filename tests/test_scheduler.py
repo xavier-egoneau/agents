@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sqlite3
@@ -19,6 +20,17 @@ from agentic_kernel.scheduler import (
     SchedulerError,
     agent_session_id,
 )
+
+
+def _operations_function(name: str):
+    """Charge le module operations comme le fait le registre, sans exiger
+    `tools` sur `sys.path` — le lancement direct de pytest ne l'ajoute pas."""
+    path = Path(__file__).parents[1] / "tools" / "modules" / "operations" / "module.py"
+    spec = importlib.util.spec_from_file_location("amk_operations_module", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, name)
 
 
 def payload(workspace: Path, **updates) -> CronJobInput:
@@ -82,6 +94,27 @@ def test_cron_crud_and_schedule_validation(tmp_path: Path) -> None:
     assert service.list() == []
     with pytest.raises(SchedulerError):
         service.create(payload(workspace, schedule="not a cron"))
+
+
+def test_typed_errors_carry_their_http_meaning(tmp_path: Path) -> None:
+    """« Introuvable », « pendant une exécution » : la distinction vit dans le
+    type, pas dans le libellé — le router la portait par sous-chaînes."""
+    from agentic_kernel.scheduler import CronConflictError, CronNotFoundError
+
+    service = CronService(tmp_path / "state.db")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    job = service.create(payload(workspace))
+
+    with pytest.raises(CronNotFoundError):
+        service.get("cron_absent")
+    with pytest.raises(CronNotFoundError):
+        service.delete("cron_absent")
+
+    with sqlite3.connect(tmp_path / "state.db") as connection:
+        connection.execute("UPDATE cron_jobs SET in_flight=1 WHERE id=?", (job.id,))
+    with pytest.raises(CronConflictError):
+        service.update_with_workflow(job.id, payload(workspace), workflow_definition(), "hash")
 
 
 def test_disappeared_workspace_still_allows_updating_the_routine(tmp_path: Path) -> None:
@@ -778,7 +811,7 @@ def test_a_prompt_that_ships_the_message_itself_is_refused() -> None:
     automatique. Chaque fois, l'utilisateur devait aller accorder une
     autorisation réseau pour un rappel de deux lignes.
     """
-    from tools.modules.operations.module import _refabrique_la_livraison
+    _refabrique_la_livraison = _operations_function("_refabrique_la_livraison")
 
     assert _refabrique_la_livraison(
         "Envoie un message Telegram : Médecin ! Utilise http_request avec "
@@ -789,7 +822,7 @@ def test_a_prompt_that_ships_the_message_itself_is_refused() -> None:
 
 def test_a_legitimate_outbound_call_stays_allowed() -> None:
     """On refuse l'auto-livraison, pas l'idée d'appeler une API."""
-    from tools.modules.operations.module import _refabrique_la_livraison
+    _refabrique_la_livraison = _operations_function("_refabrique_la_livraison")
 
     assert not _refabrique_la_livraison("Rendez-vous médecin à 13h40")
     assert not _refabrique_la_livraison(

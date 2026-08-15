@@ -155,6 +155,30 @@ def _redacted_command(command: list[str]) -> list[str]:
 _DEFAULT_DEV_PORTS = (3000, 5173, 8000, 8080, 8081, 4200, 4321, 5000, 9000)
 
 
+async def _remove_container(cid_path: Path | None) -> None:
+    """Force-remove a container whose Docker client wrapper was interrupted.
+
+    ``command_run`` n'utilisait pas de cidfile et ne faisait pas de
+    ``docker rm --force`` : le conteneur survivait à son timeout, avec ses
+    ports publiés, pour tous les runs suivants.
+    """
+    if cid_path is None or not cid_path.is_file():
+        return
+    try:
+        container_id = cid_path.read_text(errors="replace").strip()
+        docker = shutil.which("docker")
+        if docker and re.fullmatch(r"[0-9a-f]{12,64}", container_id):
+            await asyncio.to_thread(
+                subprocess.run,
+                [docker, "rm", "--force", container_id],
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+    except OSError:
+        return
+
+
 def _port_available(port: int) -> bool:
     """Return whether a loopback TCP port can safely be published."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
@@ -286,13 +310,13 @@ def _http_server_port(  # noqa: C901 - dette: détection de port multi-heuristiq
     return None
 
 
-async def command_run(
+async def command_run(  # noqa: C901 - dette: requête d'exécution multi-cas
     ctx: RunContext[Any],
     program: str,
     args: list[str] | str | None = None,
     cwd: str = ".",
     timeout_seconds: Annotated[float, Field(gt=0, le=300)] = 120,
-    network: bool = False,
+    network: bool | None = None,
     justification: str = "",
 ) -> dict[str, Any]:
     """Run a structured command without a shell and return bounded output."""
@@ -305,10 +329,12 @@ async def command_run(
             command=_redacted_command(command),
         )
     workdir = _cwd(ctx, cwd)
-    # Auto-enable network for HTTP server commands: without it the container
-    # starts the process but nothing can reach it (the #1 cause of "I can't
-    # show you the page" failures). Explicit ``network=False`` still wins.
-    effective_network = network or _is_http_server_command(command)
+    # La détection automatique ne vaut que lorsque l'appelant n'a pas tranché.
+    # `network=False` explicite est respecté : le Guardian a vu l'argument tel
+    # quel, et activer le réseau derrière son dos rendait sa décision fausse.
+    effective_network = (
+        network if network is not None else _is_http_server_command(command)
+    )
     publish_ports = None
     if effective_network:
         port = _http_server_port(command)
@@ -328,18 +354,42 @@ async def command_run(
             command=_redacted_command(command),
         )
     started = time.monotonic()
-    process = await asyncio.create_subprocess_exec(
-        *prepared.command,
-        cwd=workdir,
-        env=prepared.env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        **subprocess_group_kwargs(),
-    )
+    launch_command = list(prepared.command)
+    cid_path: Path | None = None
+    if prepared.backend == "docker" and len(launch_command) >= 2:
+        # Sans cidfile, un `docker run` interrompu au timeout laisse le
+        # conteneur — et ses ports publiés — vivre en arrière-plan.
+        cid_path = (
+            ctx.deps.events.directory
+            / "processes"
+            / str(ctx.deps.session_id)
+            / f"{uuid4().hex}.cid"
+        )
+        cid_path.parent.mkdir(parents=True, exist_ok=True)
+        launch_command[2:2] = ["--cidfile", str(cid_path)]
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *launch_command,
+            cwd=workdir,
+            env=prepared.env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **subprocess_group_kwargs(),
+        )
+    except Exception as exc:
+        # Le spawn est hors du try/finally précédent : un échec laissait le
+        # profil Seatbelt orphelin dans runtime/.
+        prepared.cleanup()
+        return _failure(
+            "execution",
+            f"command failed to start: {exc}",
+            command=_redacted_command(command),
+        )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout_seconds)
     except TimeoutError:
         await stop_async_process(process, 3)
+        await _remove_container(cid_path)
         return _failure(
             "timeout",
             f"command exceeded {timeout_seconds:g}s",
@@ -350,6 +400,8 @@ async def command_run(
         )
     finally:
         prepared.cleanup()
+        if cid_path is not None:
+            cid_path.unlink(missing_ok=True)
     stdout_truncated = len(stdout) > MAX_CAPTURE_BYTES
     stderr_truncated = len(stderr) > MAX_CAPTURE_BYTES
     stdout_text = stdout[:MAX_CAPTURE_BYTES].decode(errors="replace")
@@ -405,15 +457,18 @@ async def process_start(
     program: str,
     args: list[str] | str | None = None,
     cwd: str = ".",
-    network: bool = False,
+    network: bool | None = None,
     port: Annotated[int | None, Field(ge=1024, le=65535)] = None,
     justification: str = "",
 ) -> dict[str, Any]:
     """Start a persistent process; set port when an HTTP server must be reachable."""
     command = _command(program, _arguments(args))
     workdir = _cwd(ctx, cwd)
-    # Auto-enable network for HTTP server commands (same rationale as command_run).
-    effective_network = network or _is_http_server_command(command)
+    # Même contrat que command_run : la détection ne vaut qu'à défaut de choix
+    # explicite de l'appelant.
+    effective_network = (
+        network if network is not None else _is_http_server_command(command)
+    )
     publish_ports = None
     if effective_network:
         detected_port = port or _http_server_port(command)

@@ -24,12 +24,20 @@ def diagnose(layout: RuntimeLayout) -> list[Diagnostic]:
     capabilities = sandbox_capabilities()
     sandbox_detail = capabilities.backend
     if capabilities.backend == "docker":
-        sandbox_detail += "; conteneur jetable, workspace monté, réseau coupé sauf demande"
+        sandbox_detail += (
+            "; conteneur jetable, workspace monté, réseau coupé sauf demande, "
+            "ports publiés sur le loopback"
+        )
     elif not capabilities.execution_isolated:
         # Sans isolation, le Guardian réclame une autorisation pour chaque
         # commande. Nommer l'obstacle exact vaut mieux que constater l'absence :
         # « pas d'isolation » laisse chercher au mauvais endroit.
         sandbox_detail += f"; aucune isolation — {DockerSandbox.status()[1]}"
+    if capabilities.execution_isolated:
+        # Le sandbox ne couvre que le module process : les outils web, la
+        # perception et le navigateur s'exécutent hors conteneur. Le taire
+        # laisserait croire que tout le trafic de l'agent est borné.
+        sandbox_detail += "; couvre command_run/process_start uniquement"
     ketch = discovered_executable("ketch", "AMK_KETCH_BIN")
     codegraph = discovered_codegraph_executable()
     searxng = SearxngService()

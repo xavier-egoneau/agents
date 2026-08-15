@@ -375,9 +375,18 @@ class Kernel:
             response = self._failed(
                 request, run_id, RunStatus.FAILED, exc, retryable=False, messages=exchanged
             )
-        except Exception as exc:
+        except ModelAPIError as exc:
+            # Les retries internes sont épuisés : l'indisponibilité du provider
+            # reste retryable pour qu'une routine puisse reprendre plus tard.
             response = self._failed(
                 request, run_id, RunStatus.FAILED, exc, retryable=True, messages=exchanged
+            )
+        except Exception as exc:
+            # Toute exception inconnue est un bug, pas un incident transitoire :
+            # la marquer retryable faisait boucler indéfiniment une routine sur
+            # une erreur de programmation via l'auto-reprise du scheduler.
+            response = self._failed(
+                request, run_id, RunStatus.FAILED, exc, retryable=False, messages=exchanged
             )
         if not response.artifacts:
             response.artifacts = self._run_artifacts(request.session_id, run_id)
@@ -601,6 +610,13 @@ class Kernel:
             context_window_tokens=self._model_context_window(
                 active_provider_id, active_model, provider_config
             ),
+            # La reprise doit partir du même état que le run initial : sans ces
+            # trois champs, une routine reprise redemandait des approbations
+            # déjà couvertes par son workflow, retombait sur la bibliothèque de
+            # `main` pour ses sous-agents et recalibrait sa compaction à 1.0.
+            context_calibration=self._context_calibration(request.session_id),
+            orchestrator_id=request.agent_id,
+            workflow_grants=_workflow_grants(request.workflow),
         )
         deps.approved_scopes.update(prepared.approved_scopes)
         agent = self._build_agent(
@@ -1316,6 +1332,8 @@ def _runtime_context_instruction(
     compaction_threshold_ratio: float = 0.7,
     agent_id: str | None = None,
     agent_description: str | None = None,
+    application_root: Path | None = None,
+    content_root: Path | None = None,
 ) -> str:
     """Contexte d'exécution, identité de l'agent comprise.
 
@@ -1334,6 +1352,20 @@ def _runtime_context_instruction(
             " Never introduce yourself under another name, and never invent one: "
             "if the user asks who you are, answer with this identifier.\n"
         )
+    layout = ""
+    if application_root is not None and content_root is not None:
+        layout = (
+            "Runtime layout (these roots have different roles):\n"
+            f"- Application/harness: {application_root.resolve()} — source code, Python venv, "
+            "web surface and developer dependencies. Inspect this root when diagnosing or "
+            "modifying AMK itself.\n"
+            f"- AMK user data: {content_root.resolve()} — agents, sessions, models, runtime "
+            "artifacts and configuration. It is not the application source and never contains "
+            "the kernel Python venv.\n"
+            f"- Active project/workspace: {workspace.resolve()} — the user's project for this "
+            "run. Keep project investigation and changes here unless the task explicitly concerns "
+            "the AMK application or its user data.\n"
+        )
     return (
         "# Runtime context\n\n"
         f"{identite}"
@@ -1348,6 +1380,7 @@ def _runtime_context_instruction(
         "them.\n"
         f"Current local date and time: {current.isoformat(timespec='seconds')}\n"
         f"Timezone: {current.tzname() or current.strftime('%z')}\n"
+        f"{layout}"
         f"Workspace/CWD: {workspace.resolve()}\n"
         f"Security mode: {security_mode.value}\n"
         f"Active provider/model: {provider_id or 'unknown'}/{model_name or 'unknown'}\n"

@@ -257,6 +257,36 @@ def test_a_managed_server_always_publishes_its_metrics(tmp_path) -> None:
     assert "--metrics" in manager.server_args
 
 
+def test_managed_llama_applies_structured_reasoning_settings(tmp_path) -> None:
+    modeles = tmp_path / "models"
+    modeles.mkdir()
+    (modeles / "qwen.gguf").write_bytes(b"")
+    factory = ProviderFactory(
+        registry(
+            "local",
+            port=8125,
+            models_dir=str(modeles),
+            preserve_thinking=True,
+            reasoning_budget=16384,
+        ),
+        runtime_dir=tmp_path / "runtime",
+    )
+
+    manager = factory._managed_llama(factory.get_config("provider"))
+
+    assert manager is not None
+    position = manager.server_args.index("--chat-template-kwargs")
+    assert manager.server_args[position : position + 2] == [
+        "--chat-template-kwargs",
+        '{"preserve_thinking":true}',
+    ]
+    position = manager.server_args.index("--reasoning-budget")
+    assert manager.server_args[position : position + 2] == [
+        "--reasoning-budget",
+        "16384",
+    ]
+
+
 def test_a_remote_provider_reports_no_throughput() -> None:
     """DeepSeek ne distingue pas la lecture du prompt de l'écriture : on n'invente pas."""
     factory = ProviderFactory(registry("api_key", api_key="k"))

@@ -9,6 +9,11 @@ from pydantic import Field
 from pydantic_ai import FunctionToolset, RunContext
 
 from agentic_kernel.managed_tools import discovered_executable
+from agentic_kernel.network_policy import (
+    NetworkTargetError,
+    network_scope,
+    validate_http_target,
+)
 
 Action = Literal["search", "scrape", "code", "docs", "crawl"]
 MAX_OUTPUT_BYTES = 200_000
@@ -62,6 +67,20 @@ async def web(
         )
     except ValueError as exc:
         return {"ok": False, "error": {"type": "validation", "message": str(exc)}}
+
+    if url is not None:
+        # Ketch reçoit l'URL telle quelle : la classification du Guardian ne
+        # résout pas le DNS, un hôte intranet mono-label passerait donc pour
+        # public. La vérification au niveau du module est la vraie frontière.
+        tool_name = {"scrape": "web_scrape", "crawl": "web_crawl"}.get(action, "web")
+        blocked = await _validate_target(ctx, tool_name, url)
+        if blocked is not None:
+            return {
+                "ok": False,
+                "data": None,
+                "error": {"type": "ssrf_blocked", "message": blocked},
+                "metadata": {},
+            }
 
     process = await asyncio.create_subprocess_exec(
         *command,
@@ -185,6 +204,24 @@ async def web_crawl(
 ) -> dict[str, Any]:
     """Crawl a public site with bounded depth and concurrency."""
     return await web(ctx, "crawl", url=url, depth=depth, justification=justification)
+
+
+async def _validate_target(ctx: RunContext[Any], tool_name: str, url: str) -> str | None:
+    """Refuse les cibles privées non approuvées; retourne le motif, sinon None."""
+    scope = network_scope(url)
+    approved_scopes = getattr(ctx.deps, "approved_scopes", set())
+    allow_private = bool(
+        scope
+        and (
+            (tool_name, "network", scope) in approved_scopes
+            or (bool(getattr(ctx, "tool_call_approved", False)) and network_scope(url) == scope)
+        )
+    )
+    try:
+        await validate_http_target(url, allow_private=allow_private)
+    except (NetworkTargetError, OSError) as exc:
+        return str(exc)
+    return None
 
 
 def _resolve_binary() -> str | None:

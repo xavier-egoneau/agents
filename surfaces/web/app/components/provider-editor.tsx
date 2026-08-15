@@ -284,6 +284,34 @@ export function ProviderEditor({
                 }))}
               />
             </label>
+            <label>
+              Budget de raisonnement
+              <input
+                type="number"
+                min={-1}
+                value={providerEditor.reasoning_budget ?? ""}
+                placeholder="16384"
+                onChange={(event) => setProviderEditor((current) => current && ({
+                  ...current,
+                  reasoning_budget: event.target.value === ""
+                    ? undefined : Number(event.target.value),
+                }))}
+              />
+            </label>
+            <label>
+              Tokens de sortie maximum
+              <input
+                type="number"
+                min={1}
+                value={providerEditor.num_predict ?? ""}
+                placeholder="32768"
+                onChange={(event) => setProviderEditor((current) => current && ({
+                  ...current,
+                  num_predict: event.target.value === ""
+                    ? undefined : Number(event.target.value),
+                }))}
+              />
+            </label>
             <label className="provider-vision">
               <input
                 type="checkbox"
@@ -293,6 +321,16 @@ export function ProviderEditor({
                 }))}
               />
               Flash attention
+            </label>
+            <label className="provider-vision">
+              <input
+                type="checkbox"
+                checked={providerEditor.preserve_thinking ?? false}
+                onChange={(event) => setProviderEditor((current) => current && ({
+                  ...current, preserve_thinking: event.target.checked,
+                }))}
+              />
+              Conserver le raisonnement entre les tours
             </label>
             <label className="field-wide">
               Arguments llama-server (un par ligne)

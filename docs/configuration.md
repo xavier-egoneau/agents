@@ -51,6 +51,9 @@ Exemple minimal :
   "n_gpu_layers": 999,
   "num_ctx": 16384,
   "flash_attn": true,
+  "preserve_thinking": true,
+  "reasoning_budget": 16384,
+  "num_predict": 32768,
   "startup_timeout_seconds": 240
 }
 ```
@@ -60,6 +63,11 @@ regroupés automatiquement. `llama_args` reçoit une liste d’arguments bruts,
 un élément par token, par exemple `["--n-cpu-moe", "21"]`. Le serveur écoute
 uniquement sur `127.0.0.1`; son état et ses logs vivent sous
 `content-agents/runtime/providers/`.
+
+`preserve_thinking` conserve le raisonnement des réponses précédentes dans les
+tours suivants. `reasoning_budget` configure la limite llama.cpp (`-1` sans
+limite, `0` désactivé) et `num_predict` limite l'ensemble de la sortie, réflexion
+comprise. Le budget de raisonnement doit donc rester inférieur à `num_predict`.
 
 ```powershell
 uv run amk providers check --provider llama-local

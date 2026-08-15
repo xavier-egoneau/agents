@@ -183,3 +183,58 @@ async def test_ketch_timeout_follows_the_tool_contract(monkeypatch) -> None:
     assert validated.error.type == "cancelled"
     assert process.terminated is True
     assert process.waited is True
+
+
+async def test_private_scrape_target_is_blocked_before_ketch_runs(monkeypatch) -> None:
+    """La classification du Guardian ne résout pas le DNS : un hôte privé
+    mono-label passait pour public et partait tel quel vers Ketch. La
+    vérification au niveau du module est la vraie frontière."""
+    module = load_web_module()
+    monkeypatch.setattr(module, "_resolve_binary", lambda: "ketch")
+    spawned: list[list[str]] = []
+
+    async def create_process(*args, **kwargs):
+        spawned.append(list(args))
+        raise AssertionError("ketch must not be spawned for blocked targets")
+
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create_process)
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(workspace=Path.cwd(), approved_scopes=set()),
+        tool_call_approved=False,
+    )
+
+    result = await module.web_scrape(ctx, "http://127.0.0.1:8000/secret")
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "ssrf_blocked"
+    assert spawned == []
+
+
+async def test_approved_private_scope_lets_ketch_proceed(monkeypatch) -> None:
+    """Le même contrat que http_request : la portée exacte approuvée autorise."""
+    from agentic_kernel.models import ToolResult
+
+    module = load_web_module()
+    monkeypatch.setattr(module, "_resolve_binary", lambda: "ketch")
+
+    class QuietProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b'{"url":"http://127.0.0.1:8000"}', b""
+
+    async def create_process(*args, **kwargs):
+        return QuietProcess()
+
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create_process)
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            workspace=Path.cwd(),
+            approved_scopes={("web_scrape", "network", "http://127.0.0.1:8000")},
+        ),
+        tool_call_approved=False,
+    )
+
+    result = await module.web_scrape(ctx, "http://127.0.0.1:8000/")
+
+    assert ToolResult.model_validate(result).ok is True

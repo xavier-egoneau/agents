@@ -442,7 +442,14 @@ class SessionProjection:
                     estimated=estimated_request,
                 )
         elif event.type == "context.compacted":
-            self._upsert_context(db, session_id, timestamp, increment_compaction=True)
+            after = event.payload.get("estimated_tokens_after")
+            self._upsert_context(
+                db,
+                session_id,
+                timestamp,
+                estimated=after if isinstance(after, int) else None,
+                increment_compaction=True,
+            )
         if event.type == "artifact.created":
             db.execute(
                 """INSERT OR REPLACE INTO projected_artifacts

@@ -23,6 +23,39 @@ def _isolate_user_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AMK_HOME", str(tmp_path))
 
 
+@pytest.fixture(autouse=True)
+def _fresh_sandbox_caches() -> None:
+    """Les caches de découverte du sandbox sont mémorisés sur TTL court.
+
+    Sans remise à zéro, un test qui désactive le backend (`AMK_DOCKER_SANDBOX=0`)
+    laisserait les capacités précédentes visibles au test suivant, et
+    l'assertion de cohérence `prepare_execution`/`sandbox_capabilities`
+    échouerait pour une raison d'ordre d'exécution.
+    """
+    from agentic_kernel.platform.sandbox import clear_sandbox_caches
+
+    clear_sandbox_caches()
+
+
+@pytest.fixture(autouse=True)
+def _no_api_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La suite doit être déterministe même sur un poste protégé par jeton."""
+    monkeypatch.delenv("AMK_API_TOKEN", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_platform_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Le réglage `content_home` vit dans le répertoire de données de l'OS.
+
+    Sans isolation, un test qui supprime `AMK_HOME` — comme celui qui vérifie
+    le repli sur un `content-agents` hérité — retombe sur le réglage réel de la
+    machine et lit les données de l'utilisateur.
+    """
+    from agentic_kernel import paths
+
+    monkeypatch.setattr(paths, "settings_path", lambda: tmp_path / "settings.json")
+
+
 @pytest.fixture
 def project(tmp_path: Path) -> Path:
     content = tmp_path / "content-agents"

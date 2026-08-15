@@ -223,6 +223,8 @@ export type ManagedProvider = {
   n_gpu_layers?: number;
   num_ctx?: number;
   flash_attn?: boolean;
+  preserve_thinking?: boolean;
+  reasoning_budget?: number;
   startup_timeout_seconds?: number;
   llama_args?: string[];
   temperature?: number;

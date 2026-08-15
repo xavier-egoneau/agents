@@ -96,6 +96,7 @@ import {
   parseMarkdownResource,
   buildMarkdownResource,
   resourceList,
+  RunArtifact,
   SessionSummary,
   gitSnapshotForRun,
 } from "./lib/model";
@@ -1273,6 +1274,7 @@ export default function Home() {
           n_gpu_layers: current.n_gpu_layers ?? 999,
           num_ctx: current.num_ctx || 16384,
           flash_attn: current.flash_attn ?? true,
+          preserve_thinking: current.preserve_thinking ?? false,
           startup_timeout_seconds: current.startup_timeout_seconds || 240,
           llama_args: current.llama_args || [],
         };
@@ -1506,11 +1508,14 @@ export default function Home() {
       .sort((left, right) =>
         String(right.created_at || "").localeCompare(String(left.created_at || "")),
       )[0]?.run_id;
-    setApprovals(
-      latestRunId
-        ? sessionPending.filter((item) => item.run_id === latestRunId)
-        : sessionPending,
-    );
+    const nextApprovals = latestRunId
+      ? sessionPending.filter((item) => item.run_id === latestRunId)
+      : sessionPending;
+    // `setApprovals` ne devient visible qu'au rendu React suivant. Le carillon
+    // est pourtant joué dans le `finally` du run courant : garder la référence
+    // synchrone évite qu'un ASK tout juste reçu soit annoncé comme une fin.
+    approvalsRef.current = nextApprovals.length;
+    setApprovals(nextApprovals);
   }
 
   async function openSession(sessionId: string) {
@@ -1613,6 +1618,12 @@ export default function Home() {
         // récupérer après une reconnexion qui aurait manqué le début du run.
         setActiveRunId((current) => current || event.run_id);
       }
+      if (event.type.startsWith("context.")) {
+        // La projection backend est mise à jour dans la même écriture que
+        // l'événement. Rafraîchir immédiatement rend visibles les compactages
+        // et évite d'attendre le prochain tick de cinq secondes.
+        void refreshContextStatus();
+      }
       setTraceEvents((current) => {
         const key = event.sequence
           ? `sequence:${event.sequence}`
@@ -1666,21 +1677,18 @@ export default function Home() {
     const path = workspaceInput.trim();
     if (!path) return;
     setWorkspaceError("");
-    const response = await fetch("/api/kernel/workspaces/validate", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path }),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      setWorkspaceError(
-        response.status === 404 && data.detail === "Not Found"
-          ? "API workspace indisponible — redémarre `amk serve`."
-          : data.detail || "Dossier invalide",
-      );
-      return;
+    try {
+      const response = await fetch("/api/kernel/workspaces/validate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      // `response.json()` brut transformait un 502 HTML en erreur JSON illisible.
+      const data = await readApiPayload<Workspace>(response);
+      registerWorkspace(data);
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "Dossier invalide");
     }
-    registerWorkspace(data as Workspace);
   }
 
   async function openKnowledge() {
@@ -1814,6 +1822,7 @@ export default function Home() {
     setPrompt("");
     setComposerImages([]);
     setAttachmentError("");
+    approvalsRef.current = 0;
     primeRunChime();
     setRunning(true);
     const eventSource = startEventStream(sessionId, eventCursor);
@@ -1842,8 +1851,16 @@ export default function Home() {
           })),
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Le kernel a refusé la requête.");
+      // `response.json()` brut masquait les refus du kernel derrière des
+      // erreurs JSON illisibles quand la réponse n'était pas du JSON.
+      const data = await readApiPayload<{
+        status: string;
+        output: string | null;
+        errors?: { message: string }[];
+        session_id: string;
+        run_id: string;
+        artifacts?: RunArtifact[];
+      }>(response);
       const failed = data.status === "failed" || data.status === "timeout";
       const answer =
         data.output ||

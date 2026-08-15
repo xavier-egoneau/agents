@@ -1,4 +1,5 @@
 const kernelUrl = process.env.AMK_KERNEL_URL || "http://127.0.0.1:8765";
+const apiToken = process.env.AMK_API_TOKEN || "";
 
 async function proxy(request: Request, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
@@ -8,7 +9,10 @@ async function proxy(request: Request, context: { params: Promise<{ path: string
   try {
     const response = await fetch(target, {
       method: request.method,
-      headers: body ? { "content-type": "application/json" } : undefined,
+      headers: {
+        ...(body ? { "content-type": "application/json" } : {}),
+        ...(apiToken ? { "x-amk-token": apiToken } : {}),
+      },
       body,
     });
     return new Response(response.body, {

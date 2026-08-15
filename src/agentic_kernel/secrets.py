@@ -12,6 +12,11 @@ from .platform.secure_files import secure_file
 
 SECRET_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 
+# Un secret plus court (« x », « test ») se substituerait dans tous les textes
+# ordinaires qui traversent `redact` et corromprait les sorties d'outils sans
+# protéger grand-chose : les valeurs trop courtes ne sont pas redactées.
+REDACTION_MIN_LENGTH = 6
+
 
 class SecretStore:
     """Local JSON secret storage whose values are never returned by its API."""
@@ -57,7 +62,11 @@ class SecretStore:
         """Remove every known secret value, regardless of the surrounding key."""
         with self._lock:
             secrets = sorted(
-                (secret for secret in self._read().values() if secret),
+                {
+                    secret
+                    for secret in self._read().values()
+                    if secret and len(secret) >= REDACTION_MIN_LENGTH
+                },
                 key=len,
                 reverse=True,
             )

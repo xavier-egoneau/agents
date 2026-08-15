@@ -69,6 +69,24 @@ def test_seatbelt_profile_preserves_existing_macos_policy(tmp_path: Path) -> Non
         prepared.cleanup()
 
 
+def test_published_ports_are_bound_to_loopback_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--publish 8137:8137` lie sur toutes les interfaces : un dev server
+    « local » devenait visible du LAN. Le loopback de l'hôte suffit."""
+    deps = _deps(tmp_path, SecurityMode.LIMITED)
+    runtime = runtime_directories(deps)
+
+    bac = DockerSandbox("docker", image="image:test")
+    monkeypatch.setattr(bac, "image_available", lambda: (True, ""))
+    prepared = bac.prepare(
+        ["example"], deps, runtime, allow_network=True, publish_ports=[8137]
+    )
+
+    assert "--publish" in prepared.command
+    assert prepared.command[prepared.command.index("--publish") + 1] == "127.0.0.1:8137:8137"
+
+
 def test_the_container_is_offline_and_stripped_of_capabilities(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

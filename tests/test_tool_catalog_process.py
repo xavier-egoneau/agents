@@ -64,6 +64,15 @@ def test_command_guardian_modes(tmp_path: Path) -> None:
         mode=SecurityMode.LIMITED,
         workspace=tmp_path,
     )
+    power = review_tool_call(
+        tool_name="process_start",
+        tool_call_id="4",
+        agent_id="main",
+        arguments=arguments,
+        risks=[ToolRisk.EXECUTE],
+        mode=SecurityMode.POWER,
+        workspace=tmp_path,
+    )
     install = review_tool_call(
         tool_name="command_run",
         tool_call_id="3",
@@ -74,10 +83,12 @@ def test_command_guardian_modes(tmp_path: Path) -> None:
         workspace=tmp_path,
     )
     assert safe.verdict is GuardianVerdict.ASK
-    expected = (
-        GuardianVerdict.ALLOW if sandbox_capabilities().execution_isolated else GuardianVerdict.ASK
-    )
-    assert limited.verdict is expected
+    assert limited.verdict is GuardianVerdict.ASK
+    # Un serveur sans `network` tranché obtient le réseau automatiquement :
+    # le Guardian demande confirmation même en power, sinon l'egress et le
+    # port publié passeraient sans approbation.
+    assert power.verdict is GuardianVerdict.ASK
+    assert "network" in power.reason.casefold()
     assert install.verdict is GuardianVerdict.ASK
 
 
@@ -132,7 +143,7 @@ async def test_command_and_persistent_process_lifecycle(tmp_path: Path) -> None:
 
     if not shutil.which("npm") or not shutil.which("node"):
         pytest.skip("Node.js toolchain is unavailable")
-    if sandbox_capabilities().backend == "codex-windows-sandbox":
+    if sandbox_capabilities().backend == "windows-native":
         pytest.skip("Node cannot canonicalize pytest's restricted nested temp workspace")
     (tmp_path / "package.json").write_text(
         json.dumps(
@@ -396,3 +407,122 @@ async def test_process_start_refuses_an_occupied_port(tmp_path: Path) -> None:
     assert result["ok"] is False
     assert result["error"]["type"] == "port_in_use"
     assert result["metadata"]["suggested_port"] != port
+
+
+async def test_command_run_timeout_tracks_and_removes_the_docker_container(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Un `docker run` interrompu laissait le conteneur — et ses ports publiés —
+    vivre en arrière-plan : pas de cidfile, pas de `docker rm --force`."""
+    from unittest.mock import AsyncMock
+
+    from agentic_kernel.platform.sandbox import PreparedExecution
+
+    module = _process_module()
+    content = tmp_path / "content-agents"
+    events = JsonlEventStore(content / "sessions")
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            workspace=tmp_path,
+            state_db=content / "state.db",
+            events=events,
+            session_id=uuid4(),
+            security_mode=SecurityMode.POWER,
+        )
+    )
+    prepared = PreparedExecution(
+        command=["docker", "run", "--rm", "image:test", "sleep", "30"],
+        env={},
+        profile_path=None,
+        sandboxed=True,
+        backend="docker",
+    )
+    monkeypatch.setattr(
+        module.ExecutionSandbox, "prepare", lambda *args, **kwargs: prepared
+    )
+    removed: list[Path | None] = []
+
+    async def fake_remove(path: Path | None) -> None:
+        removed.append(path)
+
+    monkeypatch.setattr(module, "_remove_container", fake_remove)
+    monkeypatch.setattr(module, "stop_async_process", AsyncMock())
+
+    class SlowProcess:
+        returncode = None
+
+        async def communicate(self):
+            raise TimeoutError
+
+    async def create_process(*args, **kwargs):
+        return SlowProcess()
+
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create_process)
+
+    result = await module.command_run(ctx, "sleep", ["30"], timeout_seconds=0.1)
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "timeout"
+    assert len(removed) == 1
+    assert removed[0] is not None
+    assert not removed[0].exists()
+
+
+async def test_explicit_network_false_wins_over_server_detection(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`network=False` explicite doit l'emporter : l'ancien `or` activait le
+    réseau derrière le dos du Guardian, qui avait examiné l'argument tel quel."""
+    module = _process_module()
+    content = tmp_path / "content-agents"
+    events = JsonlEventStore(content / "sessions")
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            workspace=tmp_path,
+            state_db=content / "state.db",
+            events=events,
+            session_id=uuid4(),
+            security_mode=SecurityMode.POWER,
+        )
+    )
+    captured: dict[str, object] = {}
+
+    class FakePrepared:
+        backend = "docker"
+        sandboxed = True
+        profile_path = None
+
+        def __init__(self, command: list[str], env: dict) -> None:
+            self.command = command
+            self.env = env
+
+        def cleanup(self) -> None:
+            pass
+
+    def fake_prepare(command, deps, *, allow_network=False, publish_ports=None):
+        captured["allow_network"] = allow_network
+        captured["publish_ports"] = publish_ports
+        return FakePrepared(command, {})
+
+    class FakePopen:
+        pid = 4242
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(module.ExecutionSandbox, "prepare", fake_prepare)
+    monkeypatch.setattr(module, "_port_available", lambda port: True)
+    monkeypatch.setattr(module.subprocess, "Popen", FakePopen)
+
+    refused = await module.process_start(ctx, "npm", ["run", "dev"], network=False)
+
+    assert refused["ok"] is True
+    assert captured == {"allow_network": False, "publish_ports": None}
+
+    automatic = await module.process_start(ctx, "python", ["-m", "http.server", "8137"])
+
+    assert automatic["ok"] is True
+    assert captured == {"allow_network": True, "publish_ports": [8137]}

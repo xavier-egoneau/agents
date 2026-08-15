@@ -153,7 +153,10 @@ class OAuthManager:
     ) -> OAuthCredential:
         spec = self._spec(provider_id)
         verifier, challenge = _pkce()
-        state = verifier if provider_id == "claude" else secrets.token_hex(16)
+        # `state` protège le callback contre le CSRF, `verifier` porte le PKCE :
+        # les coupler (state = verifier) exposait le secret PKCE dès que l'URL
+        # d'autorisation fuit — historique du navigateur, referrer, logs.
+        state = secrets.token_hex(16)
         redirect = urlparse(spec.redirect_uri)
         params = {
             "client_id": spec.client_id,
@@ -183,10 +186,15 @@ class OAuthManager:
         result: dict[str, str] | None = None
         try:
             server = HTTPServer(("127.0.0.1", redirect.port or 80), handler)
-            server.timeout = timeout_seconds
+            server.timeout = 1.0
             print(f"Open this URL to authenticate:\n{url}")
             webbrowser.open(url)
-            server.handle_request()
+            # `handle_request()` unique était consommé par n'importe quelle
+            # requête parasite (favicon, double GET du provider) : on écoute
+            # jusqu'au callback valide ou au délai global.
+            deadline = time.monotonic() + timeout_seconds
+            while handler.result is None and time.monotonic() < deadline:
+                server.handle_request()
             result = handler.result
             server.server_close()
         except OSError:

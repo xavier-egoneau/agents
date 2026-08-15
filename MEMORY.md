@@ -58,9 +58,18 @@
   `content-agents/workspaces/<agent_id>/`.
 - Le manifeste `.amk-defaults.json` met à jour uniquement les fichiers livrés
   que l'utilisateur n'a pas modifiés.
-- `amk doctor` expose le backend réellement applicable. AMK réutilise le helper
-  sandbox de Codex CLI lorsqu'il peut appliquer le profil complet; sous Windows,
-  `elevated` est requis et `unelevated` est refusé sans fallback silencieux.
+- `amk doctor` expose le backend réellement applicable. AMK exécute les
+  commandes dans un conteneur Docker jetable (`--cap-drop=ALL`,
+  `no-new-privileges`, réseau coupé par défaut); sur macOS sans démon Docker,
+  le backend Seatbelt prend le relais. Sans backend, `safe` et `limited`
+  refusent l'exécution native et `power` exécute sans confinement, gardé par
+  les seules heuristiques du Guardian.
+- Le sandbox ne couvre que le module `process` : Ketch, `pdftotext`, le
+  navigateur et `git` tournent sur l'hôte. Les ports publiés sont liés au
+  loopback; sous Linux natif le conteneur tourne sous l'uid de l'utilisateur;
+  `AMK_SANDBOX_MEMORY` relève le plafond mémoire. Une commande serveur sans
+  `network` tranché reçoit le réseau automatiquement, et le Guardian demande
+  alors confirmation dans tous les modes.
 - Une routine dont le workspace n'existe pas sur cette machine reste visible et
   modifiable; elle est signalée au démarrage et par `amk crons list`.
 - `.venv/` est l'environnement Windows du dépôt. Un `uv run` ou `uv sync` lancé
@@ -103,9 +112,9 @@ complétude des scopes de contexte.
 - Le RAG n'a jamais été exécuté : aucun document indexé à ce jour.
 - La surface web distribuée dépend encore de Node/npm; elle n'est pas encore
   livrée comme un artefact runtime autonome dans le wheel Python.
-- La distribution n'embarque pas encore son propre helper sandbox. Sans Codex
-  CLI compatible (ou Seatbelt sur macOS), les modes safe/limited refusent
-  l’exécution native.
+- La distribution n'embarque pas de helper sandbox propre : elle dépend de
+  Docker (ou de Seatbelt sur macOS). Sans backend complet, les modes
+  safe/limited refusent l'exécution native.
 - Un provider `llama-cpp` doté de `models_dir` est géré par AMK : démarrage au
   premier usage, réutilisation persistante, changement de GGUF par redémarrage,
   état et logs sous `content-agents/runtime/providers/`. Sans `models_dir`, il
@@ -121,7 +130,5 @@ complétude des scopes de contexte.
   workspace effectif, celui de l’agent lorsque la valeur logique reste `null`.
   Les approvals sont résolus par boutons inline avec reprise du run et contrôle
   strict du même utilisateur; `/clear` purge nativement la session Telegram.
-- `page.tsx` dépasse 4 000 lignes.
+- `page.tsx` dépasse 3 000 lignes.
 - `rag.py` utilise le chemin absolu du workspace comme identifiant de projet.
-- `api.py` construit un `Kernel` à l'import, ce qui rend les tests sensibles au
-  répertoire courant.

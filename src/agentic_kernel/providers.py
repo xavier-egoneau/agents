@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -241,6 +242,14 @@ class ProviderFactory:
             server_args.extend(["--flash-attn", "on"])
         elif config.flash_attn is False:
             server_args.extend(["--flash-attn", "off"])
+        if config.preserve_thinking is not None:
+            template_kwargs = json.dumps(
+                {"preserve_thinking": config.preserve_thinking},
+                separators=(",", ":"),
+            )
+            server_args.extend(["--chat-template-kwargs", template_kwargs])
+        if config.reasoning_budget is not None:
+            server_args.extend(["--reasoning-budget", str(config.reasoning_budget)])
         # Sans cet indicateur, `/metrics` répond 501 et la vitesse réelle
         # d'écriture reste invisible : l'interface ne peut alors qu'afficher des
         # tokens divisés par une durée, ce qui n'est pas une vitesse.

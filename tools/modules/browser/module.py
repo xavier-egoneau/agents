@@ -16,6 +16,7 @@ from agentic_kernel.network_policy import (
     validate_file_target,
     validate_http_target,
 )
+from agentic_kernel.platform.secure_files import long_path
 
 MAX_TEXT = 50_000
 MAX_ELEMENTS = 200
@@ -72,9 +73,13 @@ async def _session(ctx: RunContext[Any]) -> BrowserSession:
                         headless=True,
                         args=["--disable-background-networking"],
                     )
-            except Exception:
+            except Exception as error:
                 await playwright.stop()
-                raise
+                raise RuntimeError(
+                    "Browser runtime unavailable. Run `uv run playwright install chromium` "
+                    "from the AMK installation, then restart AMK. Do not inspect AMK source "
+                    "files or the user's workspace to recover from this infrastructure error."
+                ) from error
             current = BrowserSession(playwright=playwright, browser=browser)
             _sessions[key] = current
         current.touched_at = time.monotonic()
@@ -289,7 +294,11 @@ async def browser_screenshot(
     )
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / f"{artifact_id}-{safe_name}"
-    await page.screenshot(path=str(target), full_page=full_page, type="png")
+    # Le chemin complet — deux uuid de session, deux uuid de fichier sous un
+    # dossier profond — dépasse vite MAX_PATH sous Windows : sans le préfixe
+    # `\\?\`, Playwright répond « No such file or directory » alors que le
+    # dossier vient d'être créé.
+    await page.screenshot(path=str(long_path(target)), full_page=full_page, type="png")
     payload = {
         "artifact_id": artifact_id,
         "name": safe_name,
@@ -301,7 +310,7 @@ async def browser_screenshot(
         # trace de l'endroit où le fichier a été produit.
         "relative_path": f"{ctx.deps.root_run_id}/{artifact_id}-{safe_name}",
         "path": str(target),
-        "bytes": target.stat().st_size,
+        "bytes": long_path(target).stat().st_size,
         "url": page.url,
     }
     ctx.deps.events.append(
@@ -357,6 +366,10 @@ class BrowserModule:
     def instructions(self):
         return [
             "Use browser tools when JavaScript rendering or interaction is required. "
+            "Call browser_open directly; the module owns Playwright and its executable, so do "
+            "not search the application source for browser launch instructions. If the tool "
+            "reports that its runtime is unavailable, report that infrastructure error instead "
+            "of reading files outside the active workspace. "
             "Prefer browser_snapshot over browser_screenshot: the snapshot returns visible "
             "text and interactive element refs without producing an image file. "
             "Only use browser_screenshot when the visual layout is essential; then "

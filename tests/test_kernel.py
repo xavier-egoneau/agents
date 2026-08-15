@@ -44,6 +44,24 @@ def test_runtime_context_contains_timestamp_timezone_and_workspace(tmp_path: Pat
     assert "Security mode: limited" in instruction
 
 
+def test_runtime_context_distinguishes_harness_data_and_project(tmp_path: Path) -> None:
+    application = tmp_path / "application"
+    content = tmp_path / "content-agents"
+    workspace = tmp_path / "project"
+
+    instruction = _runtime_context_instruction(
+        workspace,
+        SecurityMode.POWER,
+        application_root=application,
+        content_root=content,
+    )
+
+    assert f"Application/harness: {application.resolve()}" in instruction
+    assert f"AMK user data: {content.resolve()}" in instruction
+    assert f"Active project/workspace: {workspace.resolve()}" in instruction
+    assert "never contains the kernel Python venv" in instruction
+
+
 def test_the_runtime_clock_states_that_it_needs_no_confirmation(tmp_path: Path) -> None:
     """Sans cette phrase, l'agent revérifiait l'heure qu'il avait déjà.
 

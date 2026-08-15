@@ -13,7 +13,15 @@ from ..errors import KernelError
 from ..guardian import guardian_parameters_schema
 from ..kernel import Kernel
 from ..models import Event, RunResult
-from ..scheduler import CronJob, CronJobInput, CronScheduler, CronService, SchedulerError
+from ..scheduler import (
+    CronConflictError,
+    CronJob,
+    CronJobInput,
+    CronNotFoundError,
+    CronScheduler,
+    CronService,
+    SchedulerError,
+)
 from ..skills import render_skill
 from ..workflows import (
     AcceptedWorkflow,
@@ -262,15 +270,15 @@ def create_cron_router(  # noqa: C901 - dette: factory à plusieurs endpoints
             return response
         except StaleWorkflowError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except CronNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CronConflictError as exc:
+            # Le mapping par sous-chaînes françaises (« introuvable », « pendant
+            # une exécution »…) cassait au moindre reformatage de message : les
+            # exceptions typées portent la distinction.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except SchedulerError as exc:
-            conflict = any(
-                marker in str(exc)
-                for marker in ("pendant une exécution", "autorisation en attente")
-            )
-            raise HTTPException(
-                status_code=404 if "introuvable" in str(exc) else 409 if conflict else 422,
-                detail=str(exc),
-            ) from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except (WorkflowValidationError, KernelError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -278,16 +286,20 @@ def create_cron_router(  # noqa: C901 - dette: factory à plusieurs endpoints
     async def delete_cron(job_id: str) -> dict[str, str]:
         try:
             service.delete(job_id)
-        except SchedulerError as exc:
+        except CronNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except SchedulerError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"id": job_id, "status": "deleted"}
 
     @router.get("/{job_id}/workflow")
     async def get_cron_workflow(job_id: str) -> dict[str, object]:
         try:
             return _workflow_response(service.get(job_id))
-        except SchedulerError as exc:
+        except CronNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except SchedulerError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.put("/{job_id}/workflow")
     async def replace_cron_workflow(
@@ -323,9 +335,12 @@ def create_cron_router(  # noqa: C901 - dette: factory à plusieurs endpoints
             }
         except StaleWorkflowError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except CronNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CronConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except SchedulerError as exc:
-            status = 404 if "introuvable" in str(exc) else 409
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except (WorkflowValidationError, KernelError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -347,9 +362,12 @@ def create_cron_router(  # noqa: C901 - dette: factory à plusieurs endpoints
                 "status": "deleted",
                 **_workflow_response(updated),
             }
+        except CronNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CronConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except SchedulerError as exc:
-            status = 404 if "introuvable" in str(exc) else 409
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.post("/{job_id}/run")
     async def run_cron_now(job_id: str) -> dict[str, str]:
@@ -360,8 +378,10 @@ def create_cron_router(  # noqa: C901 - dette: factory à plusieurs endpoints
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (WorkflowValidationError, KernelError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except SchedulerError as exc:
+        except CronNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except SchedulerError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if job.in_flight or job.blocked:
             detail = (
                 "Cette routine attend une autorisation"
@@ -398,9 +418,12 @@ def create_cron_router(  # noqa: C901 - dette: factory à plusieurs endpoints
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (WorkflowValidationError, KernelError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except CronNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CronConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except SchedulerError as exc:
-            status = 404 if "introuvable" in str(exc) else 409
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return router
 
@@ -514,9 +537,9 @@ def _validate_stored_workflow(job: CronJob, kernel: Kernel) -> None:
 
 def _ensure_workflow_mutable(job: CronJob, kernel: Kernel) -> None:
     if job.in_flight:
-        raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
+        raise CronConflictError("Impossible de modifier le workflow pendant une exécution")
     if any(item.session_id == job.session_id for item in kernel.list_approvals()):
-        raise SchedulerError(
+        raise CronConflictError(
             "Impossible de modifier le workflow pendant une autorisation en attente"
         )
 
@@ -528,17 +551,17 @@ def _prepare_workflow_supersession(
     """Allow explicit acceptance to replace only this routine's preflight test."""
 
     if job.in_flight:
-        raise SchedulerError("Impossible de modifier le workflow pendant une exécution")
+        raise CronConflictError("Impossible de modifier le workflow pendant une exécution")
     if not any(item.session_id == job.session_id for item in kernel.list_approvals()):
         return None
     try:
         batch = kernel.inspect_pending_cron_test(job.session_id, job.id)
     except KernelError as exc:
-        raise SchedulerError(
+        raise CronConflictError(
             "Impossible de modifier le workflow pendant une autorisation en attente"
         ) from exc
     if batch is None:
-        raise SchedulerError(
+        raise CronConflictError(
             "Impossible de modifier le workflow pendant une autorisation en attente"
         )
     return batch
@@ -558,7 +581,9 @@ def _complete_workflow_supersession(
             workflow_revision=job.workflow_revision,
         )
     except KernelError as exc:
-        raise SchedulerError("La prévalidation a changé pendant l'acceptation du workflow") from exc
+        raise CronConflictError(
+            "La prévalidation a changé pendant l'acceptation du workflow"
+        ) from exc
     service.record_test_result(job.id, result)
     return {
         "run_id": str(result.run_id),

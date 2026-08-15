@@ -9,6 +9,12 @@ import httpx
 from pydantic import Field
 from pydantic_ai import FunctionToolset, RunContext
 
+from agentic_kernel.network_policy import (
+    NetworkTargetError,
+    network_scope,
+    validate_http_target,
+)
+
 
 def _config(ctx: RunContext[Any]) -> dict[str, dict[str, Any]]:
     path = ctx.deps.events.directory.parent / "mcp.json"
@@ -36,6 +42,26 @@ async def _rpc(
     url = server.get("url")
     if not isinstance(url, str) or not url.startswith(("http://", "https://")):
         raise ValueError("MCP server URL must be configured as HTTP(S)")
+    # La configuration mcp.json est locale mais l'agent la lit : rien n'empêche
+    # une URL intranet d'y figurer. La vérification au niveau du module couvre ce
+    # que la classification de chaînes du Guardian ne voit pas (DNS non résolu).
+    scope = network_scope(url)
+    approved_scopes = getattr(ctx.deps, "approved_scopes", set())
+    allow_private = bool(
+        scope
+        and (
+            any((name, "network", scope) in approved_scopes for name in (
+                "mcp_search",
+                "mcp_describe",
+                "mcp_call",
+            ))
+            or bool(getattr(ctx, "tool_call_approved", False))
+        )
+    )
+    try:
+        await validate_http_target(url, allow_private=allow_private)
+    except (NetworkTargetError, OSError) as exc:
+        raise ValueError(f"MCP server target blocked: {exc}") from exc
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",

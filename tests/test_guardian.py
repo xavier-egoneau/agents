@@ -100,6 +100,41 @@ def test_kernel_owned_session_artifact_is_readable_without_ask(tmp_path: Path) -
     assert decision.verdict == GuardianVerdict.ALLOW
 
 
+def test_power_can_read_user_data_but_not_sensitive_configuration(tmp_path: Path) -> None:
+    workspace = tmp_path / "project"
+    content = tmp_path / "content-agents"
+    runtime = content / "runtime"
+    workspace.mkdir()
+    runtime.mkdir(parents=True)
+
+    allowed = review_tool_call(
+        tool_name="list",
+        tool_call_id="call-runtime",
+        agent_id="main",
+        arguments={"path": str(runtime), "justification": "Inspect AMK runtime."},
+        risks=[ToolRisk.READ],
+        mode=SecurityMode.POWER,
+        workspace=workspace,
+        trusted_read_roots=(content,),
+    )
+    denied = review_tool_call(
+        tool_name="read",
+        tool_call_id="call-provider",
+        agent_id="main",
+        arguments={
+            "path": str(content / "providers.json"),
+            "justification": "Inspect provider configuration.",
+        },
+        risks=[ToolRisk.READ],
+        mode=SecurityMode.POWER,
+        workspace=workspace,
+        trusted_read_roots=(content,),
+    )
+
+    assert allowed.verdict == GuardianVerdict.ALLOW
+    assert denied.verdict == GuardianVerdict.DENY
+
+
 def test_missing_justification_is_denied(tmp_path: Path) -> None:
     decision = review_tool_call(
         tool_name="read",
@@ -481,6 +516,55 @@ def test_an_orchestrator_still_keeps_its_own_files(tmp_path: Path) -> None:
     assert decision.verdict is not GuardianVerdict.DENY
 
 
+def test_an_orchestrator_does_not_own_the_whole_kernel_data_root(tmp_path: Path) -> None:
+    """Le parent de `state.db` entier exempterait les définitions d'agents, les
+    journaux de session et la mémoire d'autres agents après une seule
+    approbation générique. Les exemptions sont construites racine par racine,
+    comme dans `GuardianToolset.call_tool`."""
+    donnees = tmp_path / "content-agents"
+    personnel = donnees / "workspaces" / "main"
+    personnel.mkdir(parents=True)
+    (donnees / "agents").mkdir(parents=True)
+    exemptions = (
+        personnel,
+        donnees / "knowledge",
+        donnees / "runtime",
+        donnees / "sessions" / "artifacts" / "session-1",
+    )
+
+    hors_perimetre = review_tool_call(
+        tool_name="write",
+        tool_call_id="call-3",
+        agent_id="main",
+        arguments={
+            "path": str(donnees / "agents" / "dev.md"),
+            "justification": "Ajuster la définition d'un enfant.",
+        },
+        risks=[ToolRisk.WRITE],
+        mode=SecurityMode.POWER,
+        workspace=personnel,
+        delegates=("dev", "reviewer"),
+        delegated_write_exemptions=exemptions,
+    )
+    dans_son_perimetre = review_tool_call(
+        tool_name="write",
+        tool_call_id="call-4",
+        agent_id="main",
+        arguments={
+            "path": str(personnel / "notes" / "jour.md"),
+            "justification": "Consigner ce qui a été appris.",
+        },
+        risks=[ToolRisk.WRITE],
+        mode=SecurityMode.POWER,
+        workspace=personnel,
+        delegates=("dev", "reviewer"),
+        delegated_write_exemptions=exemptions,
+    )
+
+    assert hors_perimetre.verdict is GuardianVerdict.DENY
+    assert dans_son_perimetre.verdict is not GuardianVerdict.DENY
+
+
 def test_an_agent_without_children_writes_as_before(tmp_path: Path) -> None:
     """Refuser l'écriture à qui n'a personne à qui la confier ne mènerait nulle part."""
     projet = tmp_path / "projets" / "test8"
@@ -499,6 +583,78 @@ def test_an_agent_without_children_writes_as_before(tmp_path: Path) -> None:
     )
 
     assert decision.verdict is not GuardianVerdict.DENY
+
+
+def test_a_server_like_command_without_a_network_decision_asks_even_in_power(
+    tmp_path: Path,
+) -> None:
+    """`network` absent + commande de serveur = réseau automatique côté module.
+
+    Avant ce contrôle, un `npm run dev` en mode power obtenait l'egress et un
+    port publié sans que personne ne l'ait vu : le module décidait derrière le
+    dos du Guardian.
+    """
+    decision = review_tool_call(
+        tool_name="process_start",
+        tool_call_id="call-1",
+        agent_id="main",
+        arguments={
+            "program": "npm",
+            "args": ["run", "dev"],
+            "justification": "Lancer le serveur de développement.",
+        },
+        risks=[ToolRisk.EXECUTE],
+        mode=SecurityMode.POWER,
+        workspace=tmp_path,
+    )
+
+    assert decision.verdict is GuardianVerdict.ASK
+    assert "network" in decision.reason.casefold()
+
+
+def test_an_explicit_network_choice_skips_the_auto_detection_question(
+    tmp_path: Path,
+) -> None:
+    """`network` tranché (`True` ou `False`) ne déclenche pas le contrôle
+    d'auto-réseau : le module respecte le choix, il n'y a rien à signaler."""
+    from agentic_kernel.platform.sandbox import sandbox_capabilities
+
+    with_network = review_tool_call(
+        tool_name="process_start",
+        tool_call_id="call-1",
+        agent_id="main",
+        arguments={
+            "program": "npm",
+            "args": ["run", "dev"],
+            "network": True,
+            "justification": "Lancer le serveur de développement.",
+        },
+        risks=[ToolRisk.EXECUTE],
+        mode=SecurityMode.POWER,
+        workspace=tmp_path,
+    )
+    without_network = review_tool_call(
+        tool_name="process_start",
+        tool_call_id="call-2",
+        agent_id="main",
+        arguments={
+            "program": "npm",
+            "args": ["run", "dev"],
+            "network": False,
+            "justification": "Lancer le serveur hors ligne.",
+        },
+        risks=[ToolRisk.EXECUTE],
+        mode=SecurityMode.POWER,
+        workspace=tmp_path,
+    )
+
+    expected = (
+        GuardianVerdict.ALLOW
+        if sandbox_capabilities().execution_isolated
+        else GuardianVerdict.ASK
+    )
+    assert with_network.verdict is expected
+    assert without_network.verdict is expected
 
 
 def test_a_bulky_tool_result_is_summarized_and_kept_aside(tmp_path: Path) -> None:

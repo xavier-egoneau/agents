@@ -8,3 +8,9 @@ __pycache__/
 .DS_Store
 dist/
 .vscode/
+node_modules/
+*.tsbuildinfo
+surfaces/web/test-results/
+surfaces/web/.wrangler/
+surfaces/web/.vinext/
+surfaces/web/.openai/

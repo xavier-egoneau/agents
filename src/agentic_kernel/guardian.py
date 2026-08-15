@@ -388,6 +388,45 @@ def _hors_du_perimetre_d_orchestrateur(
     )
 
 
+_SERVER_COMMAND_PATTERNS = (
+    "http.server",
+    "vite",
+    "webpack serve",
+    "webpack-dev-server",
+    "next dev",
+    "nuxt dev",
+    "astro dev",
+    "svelte-kit dev",
+    "ng serve",
+    "ember serve",
+    "react-scripts start",
+    "npm run dev",
+    "npm run start",
+    "yarn dev",
+    "yarn start",
+    "pnpm dev",
+    "pnpm start",
+    "bun run dev",
+    "bun run start",
+    " serve ",
+    " http-server ",
+    "live-server",
+    "browser-sync",
+)
+
+
+def _looks_like_server(executable: str, args: list[str]) -> bool:
+    """Miroir volontairement approximatif de la détection du module process.
+
+    Elle ne décide rien sur le fond : elle sert uniquement à signaler qu'un
+    appel non tranché (`network` absent) recevra le réseau automatiquement.
+    Un faux positif coûte une approbation, un faux négatif laisse passer un
+    serveur sans réseau — ce que la détection du module rendrait muet.
+    """
+    command = " ".join([executable, *(value.casefold() for value in args)]).casefold()
+    return any(pattern in command for pattern in _SERVER_COMMAND_PATTERNS)
+
+
 def _review_execution(arguments: dict[str, Any], mode: SecurityMode) -> tuple[GuardianVerdict, str]:
     program = str(arguments.get("program", "")).strip()
     executable = Path(program).name.casefold()
@@ -434,6 +473,16 @@ def _review_execution(arguments: dict[str, Any], mode: SecurityMode) -> tuple[Gu
     sandbox_available = sandbox_capabilities().execution_isolated
     if destructive:
         return GuardianVerdict.ASK, "Potentially destructive command requires approval."
+    if _looks_like_server(executable, args) and arguments.get("network") is None:
+        # Le module accorde le réseau automatiquement aux commandes qui
+        # ressemblent à un serveur quand l'appelant n'a pas tranché. Le
+        # Guardian doit trancher *lui* : sinon un `npm run dev` en mode power
+        # obtenait l'egress et un port publié sans aucune approbation.
+        return (
+            GuardianVerdict.ASK,
+            "A server-like command will receive network access automatically; "
+            "approval is required.",
+        )
     if mode is SecurityMode.SAFE:
         return GuardianVerdict.ASK, "Command execution requires approval in safe mode."
     if mode is SecurityMode.LIMITED and (
@@ -679,7 +728,14 @@ class GuardianToolset(WrapperToolset[Any]):
             mode=deps.security_mode,
             workspace=deps.workspace,
             trusted_read_roots=(
-                (deps.state_db.parent / "sessions" / "artifacts" / str(deps.session_id)),
+                (
+                    deps.state_db.parent,
+                    deps.state_db.parent / "sessions" / "artifacts" / str(deps.session_id),
+                )
+                if deps.security_mode is SecurityMode.POWER
+                else (
+                    deps.state_db.parent / "sessions" / "artifacts" / str(deps.session_id),
+                )
             )
             if deps.state_db is not None
             else (),
@@ -692,12 +748,21 @@ class GuardianToolset(WrapperToolset[Any]):
             path_parameters=tuple(self.path_parameters.get(name, ())),
             url_parameters=tuple(self.url_parameters.get(name, ())),
             delegates=self.delegates,
-            # `state_db` vit à la racine des données du kernel : son parent
-            # couvre d'un coup l'espace personnel de l'agent, sa bibliothèque,
-            # ses routines et les artefacts de session. Tout ce qu'un
-            # orchestrateur tient lui-même est là-dedans.
+            # `state_db` vit à la racine des données du kernel : exempter son
+            # parent entier ouvrait à un orchestrateur les définitions d'agents,
+            # les journaux de session et la mémoire d'autres agents après une
+            # seule approbation générique. Restent ouverts ce qui lui appartient
+            # réellement : son espace personnel, la bibliothèque partagée, le
+            # runtime et les artefacts de sa session.
             delegated_write_exemptions=(
-                (deps.state_db.parent,) if deps.state_db is not None else ()
+                (
+                    deps.state_db.parent / "workspaces" / self.agent_id,
+                    deps.state_db.parent / "knowledge",
+                    deps.state_db.parent / "runtime",
+                    deps.state_db.parent / "sessions" / "artifacts" / str(deps.session_id),
+                )
+                if deps.state_db is not None
+                else ()
             ),
         )
         deps.events.append(

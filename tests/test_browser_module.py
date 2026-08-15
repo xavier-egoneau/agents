@@ -58,7 +58,11 @@ async def test_playwright_browser_snapshot_and_screenshot(tmp_path: Path) -> Non
         screenshot = await browser_module.browser_screenshot(ctx, page_id)
         assert snapshot["data"]["title"] == "AMK test"
         assert snapshot["data"]["elements"][0]["text"] == "Bonjour"
-        assert Path(screenshot["data"]["path"]).is_file()
+        # Le chemin complet dépasse MAX_PATH sous Windows : un `is_file()` nu
+        # répond False alors que le fichier existe, faute de préfixe `\\?\`.
+        from agentic_kernel.platform.secure_files import long_path
+
+        assert long_path(Path(screenshot["data"]["path"])).is_file()
         artifact = next(
             event for event in events.read(session_id) if event.type == "artifact.created"
         )

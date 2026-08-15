@@ -173,35 +173,53 @@ de ceux qui le sont, et le fichier déposé reste intact.
 `scope` distingue les deux corpus à l'indexation comme à la recherche : sans
 lui, ni l'agent ni le lecteur de ses citations ne saurait lequel a répondu.
 
-### 28. Sandbox Codex réutilisé, politique AMK conservée
+### 28. Sandbox Docker, politique AMK conservée *(remplace l'ancien backend Codex CLI)*
 Le Guardian et le sandbox répondent à deux questions distinctes : le premier
 décide si une action est autorisée, le second borne techniquement ce qu'un
 processus autorisé peut atteindre. Une approbation ne désactive jamais le
 sandbox.
 
-Lorsqu'il est installé et capable d'appliquer tout le profil, le helper de Codex
-CLI devient le backend OS d'AMK. `safe` étend `:read-only`; `limited` et `power`
-étendent `:workspace`. Le runtime et les artefacts de session sont les seules
-racines ajoutées en écriture, les fichiers providers/secrets et les dossiers de
-credentials sont interdits, et le réseau est désactivé par défaut. Un appel de
-processus doit le demander explicitement.
+Le backend OS d'AMK est Docker : le même profil de sécurité sur les trois
+systèmes, écrit une seule fois. Chaque commande part dans un conteneur Linux
+jetable (`--rm`) avec `--cap-drop=ALL`, `--security-opt=no-new-privileges`,
+`--pids-limit` et `--memory=2g`; le réseau est coupé par défaut et rouvert
+uniquement sur demande. Le workspace est monté en lecture seule en mode `safe`,
+en lecture-écriture sinon; le runtime, le cache et les artefacts de session sont
+les seules racines ajoutées en écriture. Sur macOS sans démon Docker, le backend
+Seatbelt (`sandbox-exec`) applique le profil équivalent en fichier de règles. Le
+noyau reste partagé sur Linux natif : c'est une barrière solide contre un agent
+qui se trompe ou qu'on a détourné par injection, pas contre un exploit noyau — les
+capacités exposées le disent plutôt que de laisser croire à une VM.
 
-Ici, `:workspace` décrit d'abord la frontière d'écriture des processus. AMK
-ajoute `:root = deny` et `:minimal = read` pour éviter la lecture générale du
-poste, puis réouvre seulement l'interpréteur nécessaire. Le workspace du web
-n'est plus implicitement la racine applicative : il est choisi par le run,
-fourni avec `amk web -w`, repris du dépôt Git courant ou remplacé par un dossier
-personnel sous `content-agents/workspaces/` si le lancement vient d'un CWD trop
-large.
+`AMK_SANDBOX_IMAGE` choisit une image plus légère, `AMK_SANDBOX_MEMORY` relève
+le plafond (2 Go par défaut) pour les gros builds, `AMK_DOCKER_SANDBOX=0`
+désactive le backend. Les ports publiés sont liés au loopback de l'hôte
+(`127.0.0.1:port:port`) : un dev server « local » ne doit pas devenir visible
+du LAN. Sous Linux natif, le conteneur tourne avec l'uid/gid de l'utilisateur —
+sans cela, les fichiers écrits dans le workspace monté appartenaient à root.
 
-Le backend Windows `unelevated` refuse les exclusions de lecture fines. AMK ne
-retire pas ces exclusions pour obtenir artificiellement un statut vert : seul
-`elevated` est accepté. Si aucun backend complet n'est disponible, `safe` et
-`limited` refusent l'exécution et `doctor` expose la cause. À terme, le helper
-devra être livré avec AMK plutôt que dépendre d'une installation Codex voisine.
-Sur Windows, le compte hors ligne bloque bien l'egress public mais pas le
-loopback brut; cette limite reste annoncée et les URL locales sont contrôlées
-par le Guardian.
+La couverture du sandbox est volontairement bornée au module `process`
+(`command_run`, `process_start`). Ketch (web), `pdftotext`/`tesseract`
+(perception), le navigateur Playwright et `git` s'exécutent hors sandbox, sur
+l'hôte : `doctor` le signale, et ces chemins restent gardés par le Guardian
+et la validation de cibles réseau. Le réseau du conteneur, lui, reste binaire
+(`none`/`bridge`) : une commande approuvée avec réseau dispose de l'egress
+complet, y compris le LAN. Le module n'active plus ce réseau dans le dos du
+Guardian : quand `network` n'est pas tranché par l'appelant, une commande qui
+ressemble à un serveur reçoit le réseau automatiquement, et le Guardian
+demande confirmation dans tous les modes — y compris power.
+
+Si aucun backend complet n'est disponible, `safe` et
+`limited` refusent l'exécution et `doctor` expose la cause; `power` exécute
+nativement, gardé par les seules heuristiques du Guardian — un état annoncé, pas
+un repli silencieux. Le workspace du web n'est pas implicitement la racine
+applicative : il est choisi par le run, fourni avec `amk web -w`, repris du
+dépôt Git courant ou remplacé par un dossier personnel sous
+`content-agents/workspaces/` si le lancement vient d'un CWD trop large.
+
+Les URL locales restent contrôlées par le Guardian, et les modules réseau
+valident leurs cibles au niveau du module (`validate_http_target`), pas
+seulement par classification de chaînes.
 
 ### 29. `workspace: null` désigne l’espace personnel de l’agent
 Une session détachée d’un projet ne s’exécute plus dans la racine de

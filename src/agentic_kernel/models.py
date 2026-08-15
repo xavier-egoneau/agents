@@ -60,6 +60,10 @@ class ProviderConfig(BaseModel):
     batch_size: int | None = Field(default=None, gt=0)
     ubatch_size: int | None = Field(default=None, gt=0)
     flash_attn: bool | None = None
+    preserve_thinking: bool | None = None
+    # llama.cpp: -1 leaves reasoning unlimited, 0 disables it, a positive
+    # value caps the reasoning tokens generated for one response.
+    reasoning_budget: int | None = Field(default=None, ge=-1)
     startup_timeout_seconds: int | None = Field(default=None, gt=0, le=1800)
     llama_args: list[str] = Field(default_factory=list)
     temperature: float | None = Field(default=None, ge=0)

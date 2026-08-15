@@ -94,6 +94,23 @@ export function traceDetail(event: TraceEvent): string {
     const texte = lisible(event.payload[cle]);
     if (texte) return texte;
   }
+  const arguments_ = event.payload.arguments;
+  if (arguments_ && typeof arguments_ === "object") {
+    const values = arguments_ as Record<string, unknown>;
+    const justification = lisible(values.justification);
+    if (justification) return justification;
+    for (const cle of ["path", "query", "program", "url"]) {
+      const value = lisible(values[cle]);
+      if (value) return value;
+    }
+  }
+  if (event.type === "context.compacted") {
+    const before = Number(event.payload.estimated_tokens_before);
+    const after = Number(event.payload.estimated_tokens_after);
+    if (Number.isFinite(before) && Number.isFinite(after)) {
+      return `Contexte réduit de ${before.toLocaleString("fr-FR")} à ${after.toLocaleString("fr-FR")} tokens estimés.`;
+    }
+  }
   return "";
 }
 

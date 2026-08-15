@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException
@@ -27,6 +27,11 @@ class WebRunRequest(BaseModel):
     model: str | None = None
     reasoning: str | None = Field(default=None, pattern=r"^(minimal|low|medium|high|xhigh)$")
     images: list[ImageAttachment] = Field(default_factory=list, max_length=4)
+    # Sans ces champs, Pydantic ignorait silencieusement la sélection de
+    # bibliothèque envoyée par la surface : le mode restait `off` quoi qu'on
+    # coche, sans aucune trace.
+    knowledge_mode: Literal["off", "auto", "manual"] = "off"
+    knowledge_pages: list[str] = Field(default_factory=list)
 
 
 class ResumeRunBody(BaseModel):
@@ -59,6 +64,8 @@ def create_run_router(  # noqa: C901 - dette: factory à plusieurs endpoints
                     model=payload.model,
                     reasoning=payload.reasoning,
                     images=payload.images,
+                    knowledge_mode=payload.knowledge_mode,
+                    knowledge_pages=payload.knowledge_pages,
                 )
             )
         except SchedulerError as exc:
@@ -82,7 +89,16 @@ def create_run_router(  # noqa: C901 - dette: factory à plusieurs endpoints
                 status_code=409,
                 detail="Seules les sessions interrompues peuvent être reprises",
             )
-        started = next(event for event in reversed(events) if event.type == "session.started")
+        started = next(
+            (event for event in reversed(events) if event.type == "session.started"), None
+        )
+        if started is None:
+            # Un canal sans événement de démarrage (session construite hors run)
+            # faisait lever StopIteration et répondait 500 sans diagnostic.
+            raise HTTPException(
+                status_code=409,
+                detail="Cette session ne contient pas d'événement de démarrage à reprendre",
+            )
         session = kernel.events.projection.session(session_id)
         logical_workspace = started.payload.get("workspace")
         if session and session.get("trigger") == "agent_channel":

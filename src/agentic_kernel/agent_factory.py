@@ -128,6 +128,8 @@ class AgentFactory:
                 compaction_threshold_ratio=trigger_ratio,
                 agent_id=config.id,
                 agent_description=config.description,
+                application_root=self.config.root,
+                content_root=self.config.content_root,
             ),
             self.workspace_maps.build(active_workspace).render(),
             self.context.secret_catalog_instruction(),
@@ -268,6 +270,8 @@ class AgentFactory:
                     # Le sous-agent neutre tient son rôle du prompt : lui donner
                     # l'identité du parent le ferait répondre à sa place.
                     agent_id=f"{config.id}_subagent",
+                    application_root=self.config.root,
+                    content_root=self.config.content_root,
                 ),
                 self.workspace_maps.build(active_workspace).render(),
                 self.context.secret_catalog_instruction(),

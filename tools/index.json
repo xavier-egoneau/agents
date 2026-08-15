@@ -7090,8 +7090,15 @@
                 "type": "number"
               },
               "network": {
-                "default": false,
-                "type": "boolean"
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "justification": {
                 "default": "",
@@ -7210,8 +7217,15 @@
                 "type": "string"
               },
               "network": {
-                "default": false,
-                "type": "boolean"
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "port": {
                 "anyOf": [

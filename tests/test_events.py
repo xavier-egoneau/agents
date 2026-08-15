@@ -139,6 +139,36 @@ def test_projection_calibrates_only_from_one_comparable_request(tmp_path: Path) 
     assert context["calibration_version"] == 2
 
 
+def test_compaction_updates_live_estimated_context(tmp_path: Path) -> None:
+    store = JsonlEventStore(tmp_path / "sessions")
+    session_id = uuid4()
+    run_id = uuid4()
+    store.append(
+        Event(
+            session_id=session_id,
+            run_id=run_id,
+            agent_id="main",
+            type="messages.snapshot",
+            payload={"estimated_tokens": 60_000},
+        )
+    )
+    store.append(
+        Event(
+            session_id=session_id,
+            run_id=run_id,
+            agent_id="main",
+            type="context.compacted",
+            payload={"estimated_tokens_before": 60_000, "estimated_tokens_after": 24_000},
+        )
+    )
+
+    context = store.projection.context(session_id)
+
+    assert context is not None
+    assert context["estimated_history_tokens"] == 24_000
+    assert context["compaction_count"] == 1
+
+
 def test_projection_can_correct_a_large_token_overestimate(tmp_path: Path) -> None:
     store = JsonlEventStore(tmp_path / "sessions")
     session_id = uuid4()

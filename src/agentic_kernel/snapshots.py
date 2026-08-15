@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from .errors import ConfigurationError
+from .platform.secure_files import long_path
 
 
 class SnapshotStore:
@@ -27,9 +28,9 @@ class SnapshotStore:
         if not target.exists():
             temporary = directory / f".{digest}.{uuid4().hex}.tmp"
             try:
-                with gzip.open(temporary, "wb", compresslevel=6) as stream:
+                with gzip.open(long_path(temporary), "wb", compresslevel=6) as stream:
                     stream.write(raw)
-                os.replace(temporary, target)
+                os.replace(long_path(temporary), long_path(target))
             finally:
                 temporary.unlink(missing_ok=True)
         metadata = {
@@ -74,7 +75,7 @@ class SnapshotStore:
         except ValueError as exc:
             raise ConfigurationError("snapshot blob is outside its session") from exc
         try:
-            with gzip.open(candidate, "rb") as stream:
+            with gzip.open(long_path(candidate), "rb") as stream:
                 raw = stream.read()
         except OSError as exc:
             raise ConfigurationError(f"unreadable snapshot blob: {candidate}") from exc

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from secrets import compare_digest
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -111,12 +113,53 @@ def _session_messages(events: list) -> list[dict[str, object]]:
     return visible
 
 
+class ApiTokenGate:
+    """Protection optionnelle de l'API locale par jeton unique.
+
+    Quand `AMK_API_TOKEN` est défini, toute requête `/api/` doit porter la
+    valeur dans l'en-tête `X-AMK-Token`. Sans elle, n'importe quel processus ou
+    page servie en localhost peut piloter des runs en mode power, lire des
+    fichiers et purger des sessions — l'API n'a aucune autre authentification.
+
+    La surface web continue de fonctionner : sa route de proxy injecte le jeton
+    depuis le même environnement, sans que le navigateur n'y accède jamais.
+    Implémentation ASGI pure (pas de BaseHTTPMiddleware) pour ne pas casser le
+    flux SSE des sessions.
+    """
+
+    def __init__(self, app: FastAPI, token: str) -> None:
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if not path.startswith("/api/"):
+            await self.app(scope, receive, send)
+            return
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        provided = headers.get("x-amk-token", "")
+        if not provided or not compare_digest(provided, self.token):
+            response = JSONResponse(
+                {"detail": "Jeton d'API manquant ou invalide"},
+                status_code=401,
+            )
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 def create_app(  # noqa: C901 - dette: factory montant tous les routers
     root: Path | str = ".",
     default_workspace: Path | str | None = None,
     *,
     local_services: bool = False,
-) -> FastAPI:
+) -> FastAPI | ApiTokenGate:
     project = ProjectConfig(root)
     workspace_root = Path(default_workspace or project.root).expanduser().resolve()
     kernel = Kernel(root)
@@ -659,6 +702,10 @@ def create_app(  # noqa: C901 - dette: factory montant tous les routers
             validate_cron_request,
         )
     )
+
+    api_token = os.environ.get("AMK_API_TOKEN")
+    if api_token:
+        app = ApiTokenGate(app, api_token)
 
     return app
 
