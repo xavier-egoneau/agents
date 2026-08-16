@@ -25,8 +25,10 @@ class BudgetConfig(BaseModel):
     # model/tool round trips. This limit applies to one run, not to the number
     # of messages that a durable session may contain.
     max_requests_per_agent: int = Field(default=100, ge=1, le=500)
-    session_timeout_seconds: float = Field(default=1800, gt=0, le=86400)
-    child_timeout_seconds: float = Field(default=600, gt=0, le=86400)
+    # Local reasoning models need more wall-clock time than fast API models.
+    # Two legitimate child runs used to consume the entire 30-minute session.
+    session_timeout_seconds: float = Field(default=3600, gt=0, le=86400)
+    child_timeout_seconds: float = Field(default=900, gt=0, le=86400)
     retries: int = Field(default=2, ge=0, le=10)
 
 

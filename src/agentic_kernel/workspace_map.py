@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import subprocess
 import time
@@ -90,18 +91,7 @@ class WorkspaceMapService:
         if gitignore.is_file():
             patterns.extend(gitignore.read_text(encoding="utf-8", errors="replace").splitlines())
         spec = pathspec.GitIgnoreSpec.from_lines(patterns)
-        files: list[Path] = []
-        truncated = False
-        for path in sorted(resolved.rglob("*")):
-            if len(files) >= MAX_INDEXED_PATHS:
-                truncated = True
-                break
-            if not path.is_file():
-                continue
-            relative = path.relative_to(resolved).as_posix()
-            if spec.match_file(relative):
-                continue
-            files.append(path)
+        files, truncated = _walk_files(resolved, spec)
         relative_files = [path.relative_to(resolved).as_posix() for path in files]
         suffixes = {path.suffix.lower() for path in files}
         languages = []
@@ -173,6 +163,40 @@ class WorkspaceMapService:
         )
         self._cache[resolved] = (time.monotonic(), result)
         return result
+
+
+def _walk_files(resolved: Path, spec: pathspec.GitIgnoreSpec) -> tuple[list[Path], bool]:
+    """Walk safely without entering ignored or inaccessible directory links."""
+    files: list[Path] = []
+    # ``Path.rglob`` aborts the whole iterator when Windows encounters an
+    # inaccessible npm shim/symlink (notably node_modules/.bin/acorn with
+    # WinError 1920). Top-down pruning avoids opening that tree at all.
+    for current, directories, names in os.walk(
+        resolved, topdown=True, onerror=lambda _error: None, followlinks=False
+    ):
+        current_path = Path(current)
+        kept_directories: list[str] = []
+        for name in sorted(directories, key=str.casefold):
+            candidate = current_path / name
+            try:
+                relative = candidate.relative_to(resolved).as_posix() + "/"
+                if not spec.match_file(relative) and not candidate.is_symlink():
+                    kept_directories.append(name)
+            except (OSError, ValueError):
+                continue
+        directories[:] = kept_directories
+        for name in sorted(names, key=str.casefold):
+            path = current_path / name
+            try:
+                relative = path.relative_to(resolved).as_posix()
+                if spec.match_file(relative) or not path.is_file():
+                    continue
+            except (OSError, ValueError):
+                continue
+            files.append(path)
+            if len(files) >= MAX_INDEXED_PATHS:
+                return files, True
+    return files, False
 
 
 def _commands(root: Path) -> list[str]:

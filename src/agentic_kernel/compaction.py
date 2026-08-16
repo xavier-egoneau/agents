@@ -299,12 +299,11 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
     ) -> bool:
         if self.force or self._last_noop_tokens is None:
             return False
-        if context_window is not None and self._calibrated_tokens(
-            estimated, calibration
-        ) >= math.floor(context_window * 0.85):
-            # The cooldown saves repeated no-op passes, but it must never
-            # suppress the last safety barrier before the provider's hard cap.
-            return False
+        # A no-op is a circuit-breaker condition, including above the emergency
+        # threshold. Retrying the exact same deterministic pipeline after every
+        # tool call cannot free space; in production that produced 29 snapshots
+        # and 29 identical ``before == after`` events in one run. Retry only
+        # after material growth (or after a new run creates a fresh capability).
         retry_growth = max(
             4_000,
             math.ceil((context_window or estimated) * 0.05 / calibration),
@@ -422,6 +421,32 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
             sans_resumes_perimes(list(request_context.messages)), ctx
         )
         after = self._tokens(request_context.messages)
+        if after >= before and not self.force:
+            # The conservative tiers can preserve everything when the active
+            # turn is mostly protected tool evidence. The exact material is
+            # already recoverable from the append-only snapshot above, so an
+            # emergency pass may reclaim old results from every tool.
+            emergency = TieredCompaction(
+                tiers=[
+                    ClearToolResults(
+                        max_tokens=1,
+                        keep_pairs=2,
+                        exclude_tools=frozenset(),
+                        min_clear_tokens=1,
+                        tokenizer=self._estimate_text,
+                    ),
+                    ClampOversizedMessages(
+                        max_part_tokens=per_part_limit,
+                        tokenizer=self._estimate_text,
+                    ),
+                ],
+                target_tokens=target,
+                tokenizer=self._estimate_text,
+            )
+            request_context.messages = await emergency.compact(
+                list(request_context.messages), ctx
+            )
+            after = self._tokens(request_context.messages)
         self._last_noop_tokens = after if after >= before else None
         ctx.deps.events.append(
             Event(

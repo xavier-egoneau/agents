@@ -43,6 +43,12 @@ $downloads = @(
         Name = "qwen3.8-27b-ud-q4kxl.gguf"
         Size = 17923394624
         Url = "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+    },
+    @{
+        Directory = "qwen-27b"
+        Name = "qwen3.8-27b-ud-q3kxl.gguf"
+        Size = 13441059904
+        Url = "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q3_K_XL.gguf"
     }
 )
 

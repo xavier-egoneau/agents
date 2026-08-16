@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import time
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from playwright.async_api import Browser, Page, Playwright, async_playwright
@@ -108,6 +110,19 @@ def _private_approved(ctx: RunContext[Any], url: str, initial_scope: str) -> boo
     scope = network_scope(url)
     if scope is None:
         return False
+    # Le Guardian autorise explicitement la boucle locale en mode power. Le
+    # module Browser doit honorer cette décision pour la cible exacte au lieu
+    # de la rebloquer dans sa seconde défense SSRF. Cette exception reste
+    # limitée à localhost/une IP loopback et ne couvre jamais le LAN.
+    security_mode = getattr(ctx.deps, "security_mode", None)
+    mode_value = getattr(security_mode, "value", security_mode)
+    hostname = urlparse(url).hostname or ""
+    try:
+        is_loopback = ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        is_loopback = hostname.casefold() == "localhost"
+    if mode_value == "power" and scope == initial_scope and is_loopback:
+        return True
     if bool(getattr(ctx, "tool_call_approved", False)) and scope == initial_scope:
         return True
     scopes = getattr(ctx.deps, "approved_scopes", set())

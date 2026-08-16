@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from agentic_kernel.workspace_map import WorkspaceMapService
@@ -38,3 +39,24 @@ def test_workspace_map_reads_package_scripts(tmp_path: Path) -> None:
     assert result.package_managers == ("npm",)
     assert result.commands == ("npm run dev", "npm run test")
     assert "src/main.tsx" in result.entrypoints
+
+
+def test_workspace_map_never_enters_node_modules(tmp_path: Path, monkeypatch) -> None:
+    """An inaccessible npm shim must not abort map construction on Windows."""
+    shim = tmp_path / "node_modules" / ".bin" / "acorn"
+    shim.parent.mkdir(parents=True)
+    shim.write_text("ignored", encoding="utf-8")
+    (tmp_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    real_walk = os.walk
+
+    def guarded_walk(*args, **kwargs):
+        for current, directories, names in real_walk(*args, **kwargs):
+            assert "node_modules" not in Path(current).parts
+            yield current, directories, names
+
+    monkeypatch.setattr("agentic_kernel.workspace_map.os.walk", guarded_walk)
+
+    result = WorkspaceMapService(ttl_seconds=0).build(tmp_path)
+
+    assert result.file_count == 1
+    assert result.languages == ("python",)

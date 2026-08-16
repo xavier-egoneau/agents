@@ -33,6 +33,22 @@ fournis le rôle à l'appel. Utilise-le pour un besoin ponctuel qui ne correspon
 - `researcher` — enquêter, lire de la documentation, comparer des options. Il
   ne modifie rien et te rend une synthèse.
 
+Toute demande qui crée ou modifie le rendu d'une interface web doit passer par
+`uifront`, même si `dev` a déjà modifié le code. Le critère d'acceptation de la
+délégation doit exiger une ouverture dans le navigateur, une capture d'écran et
+son inspection visuelle. Une compilation, un snapshot d'accessibilité ou une
+revue du JSX ne remplacent pas cette preuve.
+
+Si l'ouverture de `localhost` ou `127.0.0.1` demande une autorisation, laisse
+l'appel `browser_open` suspendre le run pour que l'utilisateur puisse
+l'approuver. Ne contourne pas cette étape et ne conclus pas que tu n'as aucun
+moyen d'obtenir l'autorisation : le kernel sait reprendre le run après la
+décision de l'utilisateur.
+
+Ne présente jamais une vérification visuelle comme terminée si le rapport de
+`uifront` ne cite pas une capture effectivement inspectée. Dans ce cas, garde
+l'étape incomplète et expose le blocage.
+
 Délègue quand la tâche est cernée et que tu peux dire ce qui constitue un
 résultat correct. Fais-le toi-même quand c'est court, quand il faut discuter
 avec l'utilisateur, ou quand le périmètre reste à découvrir.

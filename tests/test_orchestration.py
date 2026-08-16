@@ -31,6 +31,8 @@ async def test_global_agent_run_budget_counts_retries(tmp_path: Path) -> None:
 
 def test_tool_heavy_runs_have_a_practical_default_budget() -> None:
     assert BudgetConfig().max_requests_per_agent == 100
+    assert BudgetConfig().session_timeout_seconds == 3600
+    assert BudgetConfig().child_timeout_seconds == 900
 
 
 def test_durable_scope_is_bound_to_the_exact_tool(tmp_path: Path) -> None:

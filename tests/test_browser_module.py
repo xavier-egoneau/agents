@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from agentic_kernel.events import JsonlEventStore
+from agentic_kernel.models import SecurityMode
 
 
 def load_browser_module():
@@ -15,6 +16,46 @@ def load_browser_module():
     browser_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(browser_module)
     return browser_module
+
+
+async def test_power_mode_honors_guardian_allow_for_exact_loopback(tmp_path: Path) -> None:
+    async def serve(reader, writer):
+        await reader.read(4096)
+        body = b"<html><title>Power loopback</title><p>ready</p></html>"
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\nConnection: close\r\n\r\n"
+            + body
+        )
+        await writer.drain()
+        writer.close()
+
+    import asyncio
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    browser_module = load_browser_module()
+    session_id, run_id = uuid4(), uuid4()
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            session_id=session_id,
+            root_run_id=run_id,
+            workspace=tmp_path,
+            events=JsonlEventStore(tmp_path / "sessions"),
+            approved_scopes=set(),
+            security_mode=SecurityMode.POWER,
+        ),
+        tool_call_approved=False,
+    )
+    try:
+        opened = await browser_module.browser_open(ctx, f"http://127.0.0.1:{port}")
+        assert opened["ok"] is True
+        assert opened["data"]["title"] == "Power loopback"
+    finally:
+        await browser_module.browser_close(ctx)
+        server.close()
+        await server.wait_closed()
 
 
 async def test_playwright_browser_snapshot_and_screenshot(tmp_path: Path) -> None:

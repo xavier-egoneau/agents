@@ -251,14 +251,7 @@ async def search_text(
     if not query:
         raise ValueError("query must not be empty")
     root = _target(ctx, path)
-    candidates = (
-        [root]
-        if root.is_file()
-        else sorted(
-            (item for item in root.rglob("*") if item.is_file() and not _is_sensitive_path(item)),
-            key=lambda item: str(item).casefold(),
-        )
-    )
+    candidates = [root] if root.is_file() else _search_candidates(root)
     candidates = [item for item in candidates if not _is_sensitive_path(item)]
     matches: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -288,6 +281,31 @@ async def search_text(
             "truncated": len(matches) >= limit,
         }
     )
+
+
+def _search_candidates(root: Path) -> list[Path]:
+    """Enumerate searchable files without following or failing on npm shims."""
+    candidates: list[Path] = []
+    excluded_directories = {
+        ".git", ".codex", ".venv", "node_modules", "__pycache__",
+        ".ssh", ".gnupg", ".aws", ".kube",
+    }
+    for current, directories, names in os.walk(
+        root, topdown=True, onerror=lambda _error: None, followlinks=False
+    ):
+        directories[:] = sorted(
+            (name for name in directories if name not in excluded_directories),
+            key=str.casefold,
+        )
+        current_path = Path(current)
+        for name in sorted(names, key=str.casefold):
+            candidate = current_path / name
+            try:
+                if candidate.is_file() and not _is_sensitive_path(candidate):
+                    candidates.append(candidate)
+            except OSError:
+                continue
+    return candidates
 
 
 def _is_sensitive_path(path: Path) -> bool:

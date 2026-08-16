@@ -195,6 +195,31 @@ class TracedSubAgentToolset(HarnessSubAgentToolset[RuntimeDeps]):
                     )
                 )
                 raise
+        timed_out = (
+            isinstance(output, str)
+            and "exceeded its " in output
+            and " time budget" in output
+        )
+        if timed_out:
+            # The harness contains child timeouts and returns them as ordinary
+            # text. Recording that as ``agent.completed`` made the summary say
+            # "0 failures" although no delegated task produced a result.
+            deps.events.append(
+                Event(
+                    session_id=deps.session_id,
+                    run_id=child_run_id,
+                    agent_id=agent_name,
+                    parent_run_id=parent_run_id,
+                    type="agent.failed",
+                    attempt=attempt,
+                    payload={
+                        "error_type": "TimeoutError",
+                        "message": output,
+                        "recoverable": True,
+                    },
+                )
+            )
+            return output
         deps.events.append(
             Event(
                 session_id=deps.session_id,

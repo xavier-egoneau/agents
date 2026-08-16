@@ -74,8 +74,23 @@ Les icônes passent par le registre `app/theme/icons.ts`. N'importe pas
 
 `npm run verify` couvre lint, types et contraste. Lance-le avant de rendre.
 
+Pour toute modification qui affecte le rendu, la boucle minimale est
+obligatoire : `browser_open`, `browser_snapshot`, `browser_screenshot`, puis
+`image_inspect` sur la capture. Corrige les défauts observés et recommence la
+capture jusqu'à ce que le rendu soit acceptable. Une capture créée mais jamais
+passée à `image_inspect` n'est pas une vérification visuelle.
+
+Si `browser_open` sur `localhost` ou `127.0.0.1` requiert une autorisation,
+effectue quand même l'appel avec une justification claire. Le run doit se
+suspendre et sera repris après la décision de l'utilisateur. Ne remplace pas la
+capture par une inspection du code et ne marque pas l'étape comme terminée.
+
 # Rendre compte
 
 Dis ce que tu as changé, ce que tu as regardé dans le navigateur, et ce que tu
 n'as pas pu vérifier. Si tu n'as pas ouvert la page, dis-le — l'orchestrateur
 doit savoir que le rendu reste à confirmer.
+
+Cite le chemin de chaque capture inspectée dans ton rapport. Sans chemin de
+capture et sans résultat de `image_inspect`, rapporte explicitement la
+vérification visuelle comme incomplète.

@@ -211,11 +211,11 @@ def test_a_noop_compaction_has_a_growth_cooldown() -> None:
     assert capacite.in_noop_cooldown(44_000, 65_536, 1.0) is False
 
 
-def test_noop_cooldown_never_suppresses_emergency_compaction() -> None:
+def test_noop_cooldown_stops_an_emergency_retry_loop() -> None:
     capacite = _capacite(65_536)
     capacite._last_noop_tokens = 57_000  # noqa: SLF001
 
-    assert capacite.in_noop_cooldown(58_000, 65_536, 1.0) is False
+    assert capacite.in_noop_cooldown(58_000, 65_536, 1.0) is True
 
 
 def test_an_unknown_window_cannot_trigger_a_threshold() -> None:
