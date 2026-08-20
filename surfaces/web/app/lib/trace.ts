@@ -17,6 +17,7 @@ export const visibleTraceTypes = new Set([
   "tool.started", "tool.completed", "tool.failed", "tool.trashed", "session.completed",
   "tool.cache_hit",
   "security.changed", "context.pre_compaction_snapshot", "context.compacted",
+  "context.compaction_noop",
   "context.inspected", "context.window_updated", "context.window_update_failed",
 ]);
 
@@ -43,6 +44,9 @@ export function traceLabel(event: TraceEvent) {
     "context.compacted": event.payload.manual
       ? "Compaction manuelle terminée"
       : "Compaction automatique terminée",
+    "context.compaction_noop": event.payload.manual
+      ? "Compaction manuelle sans effet"
+      : "Compaction automatique sans effet",
     "context.inspected": "Mesure du contexte",
     "context.window_updated": "Fenêtre de contexte enregistrée",
     "context.window_update_failed": "Fenêtre de contexte invalide",
@@ -109,6 +113,12 @@ export function traceDetail(event: TraceEvent): string {
     const after = Number(event.payload.estimated_tokens_after);
     if (Number.isFinite(before) && Number.isFinite(after)) {
       return `Contexte réduit de ${before.toLocaleString("fr-FR")} à ${after.toLocaleString("fr-FR")} tokens estimés.`;
+    }
+  }
+  if (event.type === "context.compaction_noop") {
+    const before = Number(event.payload.estimated_tokens_before);
+    if (Number.isFinite(before)) {
+      return `Aucun contenu réductible (${before.toLocaleString("fr-FR")} tokens estimés).`;
     }
   }
   return "";

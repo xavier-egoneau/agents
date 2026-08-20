@@ -7,8 +7,8 @@
   "entrypoint": "module.py:module",
   "capabilities": ["tools"],
   "tools": [
-    {"name": "command_run", "description": "Run a non-interactive command in the OS sandbox and wait for completion. Network is disabled unless explicitly requested.", "category": "execution", "risk_tags": ["execute"], "timeout_seconds": 300, "cancellable": true, "persistent": false},
-    {"name": "process_start", "description": "Start a persistent non-interactive process in the OS sandbox. Network is disabled unless explicitly requested.", "category": "execution", "risk_tags": ["execute"], "timeout_seconds": 10, "cancellable": true, "persistent": true},
+    {"name": "command_run", "description": "Run a non-interactive command in the OS sandbox and wait for completion. Docker is used in every security mode when enabled; power changes authorization, not the execution backend. Network is disabled unless explicitly requested.", "category": "execution", "risk_tags": ["execute"], "timeout_seconds": 300, "cancellable": true, "persistent": false},
+    {"name": "process_start", "description": "Start a persistent non-interactive process in the OS sandbox. Docker is used in every security mode when enabled; power changes authorization, not the execution backend. Publish the server port explicitly so it is reachable from the host.", "category": "execution", "risk_tags": ["execute"], "timeout_seconds": 10, "cancellable": true, "persistent": true},
     {"name": "process_status", "description": "Inspect a process started by AMK.", "category": "execution", "risk_tags": ["read"], "timeout_seconds": 5, "cancellable": false, "persistent": true},
     {"name": "process_output", "description": "Read bounded output from a process started by AMK.", "category": "execution", "risk_tags": ["read"], "timeout_seconds": 5, "cancellable": false, "persistent": true},
     {"name": "process_stop", "description": "Stop a process started by AMK.", "category": "execution", "risk_tags": ["execute"], "timeout_seconds": 15, "cancellable": true, "persistent": true}

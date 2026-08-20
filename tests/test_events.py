@@ -169,6 +169,24 @@ def test_compaction_updates_live_estimated_context(tmp_path: Path) -> None:
     assert context["compaction_count"] == 1
 
 
+def test_noop_compaction_does_not_increment_the_projection(tmp_path: Path) -> None:
+    store = JsonlEventStore(tmp_path / "sessions")
+    session_id = uuid4()
+    store.append(
+        Event(
+            session_id=session_id,
+            run_id=uuid4(),
+            agent_id="main",
+            type="context.compaction_noop",
+            payload={"estimated_tokens_before": 60_000, "estimated_tokens_after": 60_000},
+        )
+    )
+
+    context = store.projection.context(session_id)
+
+    assert context is None or context["compaction_count"] == 0
+
+
 def test_projection_can_correct_a_large_token_overestimate(tmp_path: Path) -> None:
     store = JsonlEventStore(tmp_path / "sessions")
     session_id = uuid4()

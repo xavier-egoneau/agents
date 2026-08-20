@@ -12,10 +12,10 @@ from agentic_kernel.models import SecurityMode
 from agentic_kernel.platform.sandbox import (
     DockerSandbox,
     MacOSSeatbeltSandbox,
+    ensure_docker_ready,
     prepare_execution,
     runtime_directories,
     runtime_environment,
-    sandbox_capabilities,
 )
 
 
@@ -42,13 +42,76 @@ def test_runtime_environment_uses_session_owned_directories(tmp_path: Path) -> N
         assert env["TMP"] == str(runtime.temporary)
 
 
-def test_native_backend_reports_isolation_truthfully(tmp_path: Path) -> None:
-    prepared = prepare_execution(["example"], _deps(tmp_path))
-    capabilities = sandbox_capabilities()
-    assert prepared.sandboxed is capabilities.execution_isolated
-    assert prepared.backend == capabilities.backend
-    if capabilities.execution_isolated:
-        assert capabilities.filesystem_isolation is True
+def test_power_mode_still_uses_docker_when_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(DockerSandbox, "discover", staticmethod(lambda: "docker"))
+    monkeypatch.setattr(DockerSandbox, "image_available", lambda self: (True, "available"))
+
+    prepared = prepare_execution(["example"], _deps(tmp_path, SecurityMode.POWER))
+
+    assert prepared.sandboxed is True
+    assert prepared.backend == "docker"
+    assert prepared.command[0] == "docker"
+
+
+def test_limited_mode_still_uses_docker_when_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(DockerSandbox, "discover", staticmethod(lambda: "docker"))
+    monkeypatch.setattr(DockerSandbox, "image_available", lambda self: (True, "available"))
+
+    prepared = prepare_execution(["example"], _deps(tmp_path, SecurityMode.LIMITED))
+
+    assert prepared.sandboxed is True
+    assert prepared.backend == "docker"
+    assert prepared.command[0] == "docker"
+
+
+def test_power_mode_never_falls_back_to_native_when_docker_is_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AMK_DOCKER_SANDBOX", raising=False)
+    monkeypatch.setattr(DockerSandbox, "discover", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        DockerSandbox,
+        "status",
+        staticmethod(lambda: (None, "Docker daemon is not ready")),
+    )
+
+    with pytest.raises(RuntimeError, match="Docker sandbox unavailable"):
+        prepare_execution(["example"], _deps(tmp_path, SecurityMode.POWER))
+
+
+def test_application_start_launches_docker_desktop_and_waits_for_the_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statuses = iter(
+        [
+            (None, "daemon stopped"),
+            (None, "daemon starting"),
+            ("docker.exe", "docker 28.0"),
+        ]
+    )
+    launched: list[list[str]] = []
+    monkeypatch.delenv("AMK_DOCKER_SANDBOX", raising=False)
+    monkeypatch.setattr(DockerSandbox, "status", staticmethod(lambda: next(statuses)))
+    monkeypatch.setattr(sandbox_module, "_docker_client_path", lambda: "docker.exe")
+    monkeypatch.setattr(
+        sandbox_module, "_docker_desktop_command", lambda: ["Docker Desktop.exe"]
+    )
+    monkeypatch.setattr(
+        sandbox_module.subprocess,
+        "Popen",
+        lambda command, **kwargs: launched.append(command),
+    )
+    monkeypatch.setattr(sandbox_module.time, "sleep", lambda seconds: None)
+
+    ready, started, detail = ensure_docker_ready(timeout_seconds=5)
+
+    assert (ready, started) == (True, True)
+    assert detail == "docker 28.0"
+    assert launched == [["Docker Desktop.exe"]]
 
 
 def test_seatbelt_profile_preserves_existing_macos_policy(tmp_path: Path) -> None:
@@ -165,11 +228,11 @@ def test_a_missing_client_and_a_stopped_daemon_are_told_apart(
     chercher au mauvais endroit — c'est ce qui s'est produit.
     """
     monkeypatch.delenv("AMK_DOCKER_SANDBOX", raising=False)
-    monkeypatch.setattr(sandbox_module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(sandbox_module, "_docker_client_path", lambda: None)
 
     assert "PATH" in DockerSandbox.status()[1]
 
-    monkeypatch.setattr(sandbox_module.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(sandbox_module, "_docker_client_path", lambda: "/usr/bin/docker")
     monkeypatch.setattr(
         sandbox_module.subprocess,
         "run",

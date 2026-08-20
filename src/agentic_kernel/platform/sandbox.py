@@ -132,6 +132,30 @@ class UnavailableSandbox:
         )
 
 
+class RequiredDockerUnavailable:
+    """Refuse a native fallback while the Docker sandbox is enabled."""
+
+    capabilities = SandboxCapabilities(backend="docker-unavailable")
+
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+
+    def prepare(
+        self,
+        command: list[str],
+        deps: Any,
+        runtime: RuntimeDirectories,
+        *,
+        allow_network: bool,
+        publish_ports: list[int] | None = None,
+    ) -> PreparedExecution:
+        del command, deps, runtime, allow_network, publish_ports
+        raise RuntimeError(
+            "Docker sandbox unavailable: "
+            f"{self.detail}. Restart AMK so it can start Docker Desktop."
+        )
+
+
 class DockerSandbox:
     """Exécute les commandes dans un conteneur Linux jetable.
 
@@ -185,7 +209,7 @@ class DockerSandbox:
         """
         if os.getenv("AMK_DOCKER_SANDBOX", "1").casefold() in {"0", "false", "no", "off"}:
             return None, "désactivé par AMK_DOCKER_SANDBOX"
-        executable = shutil.which("docker")
+        executable = _docker_client_path()
         if executable is None:
             return None, (
                 "client `docker` introuvable dans le PATH — rouvrir le terminal "
@@ -323,6 +347,111 @@ class DockerSandbox:
         )
 
 
+def docker_sandbox_enabled() -> bool:
+    return os.getenv("AMK_DOCKER_SANDBOX", "1").casefold() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _docker_client_path() -> str | None:
+    configured = os.getenv("DOCKER_CLI_PATH")
+    discovered = shutil.which("docker")
+    if discovered:
+        return discovered
+    if platform.system() != "Windows":
+        return configured if configured and Path(configured).is_file() else None
+    local = Path(os.getenv("LOCALAPPDATA", ""))
+    program_files = Path(os.getenv("PROGRAMFILES", r"C:\Program Files"))
+    candidates = [
+        Path(configured) if configured else None,
+        program_files / "Docker" / "Docker" / "resources" / "bin" / "docker.exe",
+        local / "Programs" / "DockerDesktop" / "resources" / "bin" / "docker.exe",
+        local / "Docker" / "resources" / "bin" / "docker.exe",
+    ]
+    for candidate in candidates:
+        if candidate is not None and candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _docker_desktop_command() -> list[str] | None:
+    """Return the platform launcher for Docker Desktop, without starting it."""
+
+    system = platform.system()
+    if system == "Windows":
+        configured = os.getenv("DOCKER_DESKTOP_PATH")
+        candidates = [
+            Path(configured) if configured else None,
+            Path(os.getenv("PROGRAMFILES", r"C:\Program Files"))
+            / "Docker"
+            / "Docker"
+            / "Docker Desktop.exe",
+            Path(os.getenv("LOCALAPPDATA", "")) / "Docker" / "Docker Desktop.exe",
+            Path(os.getenv("LOCALAPPDATA", ""))
+            / "Programs"
+            / "DockerDesktop"
+            / "Docker Desktop.exe",
+            Path(os.getenv("LOCALAPPDATA", ""))
+            / "Programs"
+            / "DockerDesktop"
+            / "frontend"
+            / "Docker Desktop.exe",
+        ]
+        for candidate in candidates:
+            if candidate is not None and candidate.is_file():
+                return [str(candidate)]
+        return None
+    if system == "Darwin" and Path("/Applications/Docker.app").is_dir():
+        return ["/usr/bin/open", "-g", "-a", "Docker"]
+    return None
+
+
+def ensure_docker_ready(timeout_seconds: float = 120.0) -> tuple[bool, bool, str]:
+    """Start Docker Desktop when needed and wait for its daemon.
+
+    Returns ``(ready, started, detail)``. This is called by the application
+    bootstrap, before agents can execute commands, so ``power`` cannot silently
+    fall back to the host merely because Docker Desktop was still starting.
+    """
+
+    if not docker_sandbox_enabled():
+        return True, False, "Docker sandbox disabled by AMK_DOCKER_SANDBOX"
+    executable, detail = DockerSandbox.status()
+    if executable is not None:
+        return True, False, detail
+    if _docker_client_path() is None:
+        return False, False, detail
+    command = _docker_desktop_command()
+    if command is None:
+        return False, False, f"{detail}; Docker Desktop launcher not found"
+    kwargs: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if platform.system() == "Windows":
+        kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        )
+    try:
+        subprocess.Popen(command, **kwargs)  # noqa: S603 - fixed platform launcher
+    except OSError as exc:
+        return False, False, f"unable to start Docker Desktop: {exc}"
+    deadline = time.monotonic() + max(1.0, timeout_seconds)
+    latest = detail
+    while time.monotonic() < deadline:
+        executable, latest = DockerSandbox.status()
+        if executable is not None:
+            clear_sandbox_caches()
+            return True, True, latest
+        time.sleep(min(2.0, max(0.05, deadline - time.monotonic())))
+    return False, True, f"Docker Desktop did not become ready: {latest}"
+
+
 def _container_command(command: list[str], *, expose_network: bool = False) -> list[str]:
     """Translate host-resolved Windows launchers to commands inside Linux.
 
@@ -457,6 +586,8 @@ def selected_backend() -> SandboxBackend:
     """
     if docker := DockerSandbox.discover():
         return DockerSandbox(docker)
+    if docker_sandbox_enabled():
+        return RequiredDockerUnavailable(DockerSandbox.status()[1])
     if MacOSSeatbeltSandbox.available():
         return MacOSSeatbeltSandbox()
     return UnavailableSandbox(platform.system())

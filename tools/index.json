@@ -7665,7 +7665,7 @@
       "tools": [
         {
           "name": "command_run",
-          "description": "Run a non-interactive command in the OS sandbox and wait for completion. Network is disabled unless explicitly requested.",
+          "description": "Run a non-interactive command in the OS sandbox and wait for completion. Docker is used in every security mode when enabled; power changes authorization, not the execution backend. Network is disabled unless explicitly requested.",
           "category": "execution",
           "risk_tags": [
             "execute"
@@ -7798,7 +7798,7 @@
         },
         {
           "name": "process_start",
-          "description": "Start a persistent non-interactive process in the OS sandbox. Network is disabled unless explicitly requested.",
+          "description": "Start a persistent non-interactive process in the OS sandbox. Docker is used in every security mode when enabled; power changes authorization, not the execution backend. Publish the server port explicitly so it is reachable from the host.",
           "category": "execution",
           "risk_tags": [
             "execute"

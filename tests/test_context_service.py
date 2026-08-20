@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,7 +9,7 @@ from agentic_kernel.context_service import (
     ModelContextRegistry,
     without_ephemeral_skill_loads,
 )
-from agentic_kernel.errors import ConfigurationError
+from agentic_kernel.errors import ConfigurationError, ContextCompactionError
 from agentic_kernel.models import Event
 
 
@@ -209,6 +210,105 @@ def test_a_noop_compaction_has_a_growth_cooldown() -> None:
 
     assert capacite.in_noop_cooldown(42_000, 65_536, 1.0) is True
     assert capacite.in_noop_cooldown(44_000, 65_536, 1.0) is False
+
+
+def test_harness_summary_target_is_translated_from_serialized_units() -> None:
+    """The two estimators must not make Harness stop before its first tier.
+
+    Production case: the full serialized history measured 779,750 while
+    Harness's visible-text counter was already below the 261,714 serialized
+    target.  The target passed to the summarizer must preserve the requested
+    ratio instead of mixing those units.
+    """
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    capacite = _capacite(100_000)
+    messages = [ModelRequest(parts=[UserPromptPart(content="x" * 35_000)])]
+    visible = capacite._estimate_text("x" * 35_000)  # noqa: SLF001
+
+    translated = capacite._harness_target(  # noqa: SLF001
+        messages,
+        serialized_history=100_000,
+        target=25_000,
+    )
+
+    assert translated == math.floor(visible * 0.25)
+    assert translated < 25_000
+
+
+async def test_tiers_use_the_kernel_estimator_to_decide_when_to_stop() -> None:
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    capacite = _capacite(100_000)
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content="first")]),
+        ModelRequest(parts=[UserPromptPart(content="second")]),
+    ]
+
+    class Tier:
+        called = False
+
+        async def compact(self, current, _ctx):
+            self.called = True
+            return current[-1:]
+
+    tier = Tier()
+    compacted = await capacite._compact_to_target(  # noqa: SLF001
+        messages,
+        object(),
+        [tier],
+        capacite._tokens(messages) - 1,  # noqa: SLF001
+    )
+
+    assert tier.called is True
+    assert compacted == messages[-1:]
+
+
+async def test_oversized_request_stops_after_compaction(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A deterministic compaction no-op must fail before calling the provider."""
+    from types import SimpleNamespace
+
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from agentic_kernel.compaction import ContextWindowCompaction
+    from agentic_kernel.events import JsonlEventStore
+
+    session_id = uuid4()
+    run_id = uuid4()
+    events = JsonlEventStore(tmp_path / "sessions")
+    capacite = ContextWindowCompaction(
+        agent_id="main",
+        context_window_tokens=100,
+        all_tool_names=set(),
+    )
+    messages = [ModelRequest(parts=[UserPromptPart(content="x" * 5_000)])]
+
+    async def keep_everything(current, _ctx, _tiers, _target):
+        return current
+
+    monkeypatch.setattr(capacite, "_compact_to_target", keep_everything)
+    deps = SimpleNamespace(
+        session_id=session_id,
+        root_run_id=run_id,
+        context_window_tokens=100,
+        context_calibration=1.0,
+        snapshot_store=None,
+        events=events,
+    )
+    request_context = SimpleNamespace(messages=messages)
+
+    with pytest.raises(ContextCompactionError, match="could not fit"):
+        await capacite.before_model_request(
+            SimpleNamespace(deps=deps), request_context
+        )
+
+    recorded = events.read(session_id)
+    assert any(event.type == "context.compaction_noop" for event in recorded)
+    failed = next(event for event in recorded if event.type == "context.compaction_failed")
+    assert failed.payload["calibrated_tokens_after"] > 100
+    assert failed.payload["excess_tokens"] > 0
 
 
 def test_noop_cooldown_stops_an_emergency_retry_loop() -> None:

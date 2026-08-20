@@ -20,12 +20,14 @@ from pydantic_ai import (
     capture_run_messages,
 )
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UsageLimitExceeded
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.usage import UsageLimits
 
 from .agent_factory import AgentFactory
 from .approval_service import ApprovalResume, ApprovalService, CronTestApprovalBatch
 from .approvals import ApprovalStore
+from .compaction import ContextWindowCompaction
 from .config import ProjectConfig
 from .context_service import (
     ContextService,
@@ -263,6 +265,74 @@ class Kernel:
                 request = await self.vision_preparation.prepare_with_local_vision(
                     request, run_id, archived_images
                 )
+            message_history = self._latest_message_history(
+                request.session_id,
+                run_id,
+                request.agent_id,
+                context_window_tokens=context_window_tokens,
+                compaction_threshold_ratio=compaction_trigger_ratio(provider_config),
+                overhead_tokens=self._context_overhead_tokens(
+                    agent_config, skills, request.prompt, workspace
+                ),
+                supports_vision=supports_vision,
+            )
+            if command and command["command"] == "/compact":
+                # This is a native kernel operation, never a normal agent run.
+                # The former path exposed tools and delegates after producing
+                # the summary, so stale history could silently resume old work.
+                tool_names = {
+                    str(item["name"])
+                    for item in self._tool_catalog()
+                    if item.get("name")
+                }
+                compactor = ContextWindowCompaction(
+                    agent_id=request.agent_id,
+                    context_window_tokens=context_window_tokens,
+                    all_tool_names=tool_names,
+                    overhead_tokens=self._context_overhead_tokens(
+                        agent_config, skills, request.prompt, workspace
+                    ),
+                    trigger_ratio=compaction_trigger_ratio(provider_config),
+                    force=True,
+                )
+                async with asyncio.timeout(budgets.session_timeout_seconds):
+                    compacted_history = await compactor.compact_now(
+                        message_history,
+                        deps,
+                        provider_factory.build(active_provider_id, active_model),
+                    )
+                output = self._manual_compaction_output(request.session_id, run_id)
+                compacted_history.extend(
+                    [
+                        ModelRequest(parts=[UserPromptPart(content=display_prompt)]),
+                        ModelResponse(parts=[TextPart(content=output)]),
+                    ]
+                )
+                messages = ModelMessagesTypeAdapter.dump_python(
+                    compacted_history, mode="json"
+                )
+                snapshot_payload = self.snapshots.save(request.session_id, messages)
+                self.events.append(
+                    Event(
+                        session_id=request.session_id,
+                        run_id=run_id,
+                        agent_id=request.agent_id,
+                        type="messages.snapshot",
+                        payload=snapshot_payload,
+                    )
+                )
+                response = RunResult(
+                    session_id=request.session_id,
+                    run_id=run_id,
+                    agent_id=request.agent_id,
+                    status=RunStatus.SUCCESS,
+                    output=output,
+                    artifacts=self._run_artifacts(request.session_id, run_id),
+                )
+                self._capture_git_snapshot(request, run_id, workspace, git_baseline)
+                self.executor.terminal(response)
+                self.active_runs.pop(request.session_id, None)
+                return response
             root_agent = self._build_agent(
                 request.agent_id,
                 agents,
@@ -278,18 +348,7 @@ class Kernel:
                 security_mode=request.security_mode,
                 provider_override=request.provider_id,
                 model_override=request.model,
-                force_compaction=bool(command and command["command"] == "/compact"),
-            )
-            message_history = self._latest_message_history(
-                request.session_id,
-                run_id,
-                request.agent_id,
-                context_window_tokens=context_window_tokens,
-                compaction_threshold_ratio=compaction_trigger_ratio(provider_config),
-                overhead_tokens=self._context_overhead_tokens(
-                    agent_config, skills, request.prompt, workspace
-                ),
-                supports_vision=supports_vision,
+                force_compaction=False,
             )
             # Relevé pris après la construction de l'agent, donc après le
             # démarrage éventuel du serveur local : le débit du run se lira
@@ -327,9 +386,6 @@ class Kernel:
             )
             messages = json.loads(result.all_messages_json())
             output = str(result.output)
-            if command and command["command"] == "/compact":
-                output = self._manual_compaction_output(request.session_id, run_id)
-                self._replace_latest_model_text(messages, output)
             snapshot_payload = self.snapshots.save(request.session_id, messages)
             self.events.append(
                 Event(
@@ -400,7 +456,8 @@ class Kernel:
             (
                 item
                 for item in reversed(self.events.read(session_id))
-                if item.run_id == run_id and item.type == "context.compacted"
+                if item.run_id == run_id
+                and item.type in {"context.compacted", "context.compaction_noop"}
             ),
             None,
         )

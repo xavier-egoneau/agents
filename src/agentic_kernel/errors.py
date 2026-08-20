@@ -16,3 +16,7 @@ class ModuleError(KernelError):
 
 class BudgetExceeded(KernelError):
     """A kernel-level orchestration budget was exhausted."""
+
+
+class ContextCompactionError(KernelError):
+    """The live request still exceeds the model window after compaction."""

@@ -398,6 +398,14 @@ async def command_run(  # noqa: C901 - dette: requête d'exécution multi-cas
             sandboxed=prepared.sandboxed,
             sandbox_backend=prepared.backend,
         )
+    except asyncio.CancelledError:
+        # The root session deadline cancels the tool coroutine rather than
+        # raising its internal TimeoutError.  Without symmetric cleanup the
+        # child process (and a Docker container with published ports) survives
+        # the run that launched it.
+        await stop_async_process(process, 3)
+        await _remove_container(cid_path)
+        raise
     finally:
         prepared.cleanup()
         if cid_path is not None:

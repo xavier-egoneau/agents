@@ -384,10 +384,17 @@ def test_image_history_is_sanitized_for_text_only_models() -> None:
 
 async def test_compact_command_forces_manual_compaction(project: Path, monkeypatch) -> None:
     ModuleRegistry(project / "tools").build_index()
+    provider_requests = 0
+
+    def respond(_messages, _info):
+        nonlocal provider_requests
+        provider_requests += 1
+        return ModelResponse(parts=[TextPart("incorrect model reply")])
+
     monkeypatch.setattr(
         ProviderFactory,
         "build",
-        lambda *args, **kwargs: TestModel(custom_output_text="incorrect model reply"),
+        lambda *args, **kwargs: FunctionModel(respond),
     )
     kernel = Kernel(project)
     first = await kernel.run(RunRequest(prompt="Keep this decision: alpha."))
@@ -395,10 +402,16 @@ async def test_compact_command_forces_manual_compaction(project: Path, monkeypat
     assert compacted.status == RunStatus.SUCCESS
     assert compacted.output.startswith("Compaction manuelle terminée :")
     assert "incorrect model reply" not in compacted.output
+    # One request answered the first turn; /compact makes only its summary
+    # request and does not ask the full agent for another response afterward.
+    assert provider_requests == 2
     events = kernel.events.read(first.session_id)
     compact_event = next(event for event in events if event.type == "context.compacted")
     assert compact_event.payload["manual"] is True
     assert any(event.type == "context.pre_compaction_snapshot" for event in events)
+    compact_run_events = [event for event in events if event.run_id == compacted.run_id]
+    assert not any(event.type.startswith("tool.") for event in compact_run_events)
+    assert not any(event.type == "agent.queued" for event in compact_run_events)
     snapshot_event = next(event for event in reversed(events) if event.type == "messages.snapshot")
     snapshot = kernel.snapshots.load(first.session_id, snapshot_event.payload)
     assert any(

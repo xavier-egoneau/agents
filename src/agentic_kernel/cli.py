@@ -24,6 +24,7 @@ from .managed_tools import (
 from .models import RunRequest, RunStatus, SecurityMode
 from .modules import ModuleRegistry
 from .paths import application_root, runtime_layout
+from .platform.sandbox import docker_sandbox_enabled, ensure_docker_ready
 from .providers import ProviderFactory
 from .scheduler import CronService
 from .searxng import SearxngService
@@ -463,6 +464,14 @@ def _bootstrap_on_start() -> None:
     depuis `create_app` : instancier le kernel dans un test ne doit pas écrire
     dans le système de fichiers.
     """
+    if docker_sandbox_enabled():
+        ready, started, detail = ensure_docker_ready()
+        if not ready:
+            raise KernelError(
+                "Docker est requis pour le sandbox mais n’a pas pu démarrer : " + detail
+            )
+        if started:
+            typer.echo(f"Docker Desktop démarré : {detail}", err=True)
     content_root = ProjectConfig(_root()).content_root
     report = ensure_content_root(content_root)
     if report.initialized:

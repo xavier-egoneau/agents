@@ -468,6 +468,74 @@ async def test_command_run_timeout_tracks_and_removes_the_docker_container(
     assert not removed[0].exists()
 
 
+async def test_command_run_cancellation_stops_process_and_container(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The root run deadline cancels the tool and must not orphan its process."""
+    from unittest.mock import AsyncMock
+
+    from agentic_kernel.platform.sandbox import PreparedExecution
+
+    module = _process_module()
+    content = tmp_path / "content-agents"
+    events = JsonlEventStore(content / "sessions")
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            workspace=tmp_path,
+            state_db=content / "state.db",
+            events=events,
+            session_id=uuid4(),
+            security_mode=SecurityMode.POWER,
+        )
+    )
+    prepared = PreparedExecution(
+        command=["docker", "run", "--rm", "image:test", "sleep", "30"],
+        env={},
+        profile_path=None,
+        sandboxed=True,
+        backend="docker",
+    )
+    monkeypatch.setattr(
+        module.ExecutionSandbox, "prepare", lambda *args, **kwargs: prepared
+    )
+    removed: list[Path | None] = []
+
+    async def fake_remove(path: Path | None) -> None:
+        removed.append(path)
+
+    stopped = AsyncMock()
+    monkeypatch.setattr(module, "_remove_container", fake_remove)
+    monkeypatch.setattr(module, "stop_async_process", stopped)
+    communicating = asyncio.Event()
+
+    class SlowProcess:
+        returncode = None
+
+        async def communicate(self):
+            communicating.set()
+            await asyncio.Event().wait()
+
+    process = SlowProcess()
+
+    async def create_process(*args, **kwargs):
+        return process
+
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create_process)
+
+    task = asyncio.create_task(
+        module.command_run(ctx, "sleep", ["30"], timeout_seconds=30)
+    )
+    await communicating.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    stopped.assert_awaited_once_with(process, 3)
+    assert len(removed) == 1
+    assert removed[0] is not None
+    assert not removed[0].exists()
+
+
 async def test_explicit_network_false_wins_over_server_detection(
     tmp_path: Path, monkeypatch
 ) -> None:

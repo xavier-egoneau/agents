@@ -402,7 +402,7 @@ export default function Home() {
     if (!running) return false;
     for (let index = traceEvents.length - 1; index >= 0; index -= 1) {
       const { type } = traceEvents[index];
-      if (type === "context.compacted") return false;
+      if (type === "context.compacted" || type === "context.compaction_noop") return false;
       if (type === "context.pre_compaction_snapshot") return true;
     }
     return false;

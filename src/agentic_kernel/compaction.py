@@ -19,9 +19,10 @@ from pydantic_ai_harness.compaction import (
     ClearToolResults,
     DeduplicateFileReads,
     SummarizingCompaction,
-    TieredCompaction,
 )
+from pydantic_ai_harness.compaction._shared import estimate_token_count
 
+from .errors import ContextCompactionError
 from .models import Event
 from .orchestration import RuntimeDeps
 
@@ -208,7 +209,7 @@ def _file_read_key(call: ToolCallPart) -> str | None:
 
 
 class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
-    """Run Harness tiered compaction at 70%, targeting 50%."""
+    """Run Harness tiered compaction at the configured trigger and target."""
 
     def __init__(
         self,
@@ -251,6 +252,44 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
             ensure_ascii=False,
         )
         return self.overhead_tokens + self._estimate_text(encoded)
+
+    async def compact_now(self, messages: list[Any], deps: RuntimeDeps, model: Any) -> list[Any]:
+        """Run compaction directly, without starting an agent/tool loop."""
+
+        class _Context:
+            def __init__(self) -> None:
+                self.deps = deps
+                self.model = model
+
+        class _RequestContext:
+            def __init__(self) -> None:
+                self.messages = messages
+
+        request_context = _RequestContext()
+        await self.before_model_request(_Context(), request_context)  # type: ignore[arg-type]
+        return request_context.messages
+
+    async def _compact_to_target(self, messages, ctx, tiers, target_tokens: int):
+        """Apply Harness tiers using the kernel's full-message estimator.
+
+        Harness only counts visible text fields when deciding whether to stop a
+        tiered pass.  The kernel deliberately estimates the serialized request,
+        including message structure and provider metadata.  On a real 169-message
+        history that mismatch was 779,750 versus less than the 261,714 target:
+        Harness stopped before running its first tier and we reported a no-op as
+        a successful compaction.  Keep the useful Harness transforms, but make
+        the escalation decision in the same unit used by our trigger and trace.
+        """
+        for tier in tiers:
+            if self._tokens(messages) <= target_tokens:
+                break
+            messages = await tier.compact(messages, ctx)
+        return messages
+
+    def _harness_target(self, messages, serialized_history: int, target: int) -> int:
+        """Translate a serialized-history budget for the summarizer's text counter."""
+        visible = estimate_token_count(messages, self._estimate_text)
+        return max(1, math.floor(target * visible / max(1, serialized_history)))
 
     @staticmethod
     def calibration_of(deps: Any) -> float:
@@ -310,6 +349,51 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
         )
         return estimated < self._last_noop_tokens + retry_growth
 
+    def _ensure_request_fits(
+        self,
+        *,
+        estimated: int,
+        context_window: int | None,
+        calibration: float,
+        deps: RuntimeDeps,
+    ) -> None:
+        """Stop before the provider when deterministic compaction cannot fit.
+
+        Retrying a request that is already larger than the advertised window
+        can only produce another provider overflow.  Report the terminal cause
+        in the append-only trace and let the kernel finish the run as a
+        non-retryable failure instead of entering another tool/compaction loop.
+        """
+        if context_window is None:
+            return
+        calibrated = self._calibrated_tokens(estimated, calibration)
+        if calibrated <= context_window:
+            return
+        excess = calibrated - context_window
+        deps.events.append(
+            Event(
+                session_id=deps.session_id,
+                run_id=deps.root_run_id,
+                agent_id=self.agent_id,
+                type="context.compaction_failed",
+                payload={
+                    "reason": "request_still_exceeds_context_window",
+                    "estimated_tokens_after": estimated,
+                    "calibrated_tokens_after": calibrated,
+                    "context_window_tokens": context_window,
+                    "excess_tokens": excess,
+                    "calibration_factor": calibration,
+                    "threshold_ratio": self.trigger_ratio,
+                    "manual": self.force,
+                },
+            )
+        )
+        raise ContextCompactionError(
+            "compaction could not fit the next request into the model context "
+            f"window: {calibrated:,} estimated tokens after compaction for a "
+            f"{context_window:,}-token window ({excess:,} over)"
+        )
+
     async def before_model_request(
         self,
         ctx: RunContext[RuntimeDeps],
@@ -327,6 +411,12 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
             # suivante par magie. Attendre une croissance matérielle évite la
             # boucle « outil → compaction identique → outil » observée 270 fois
             # sur test9, tout en réessayant si le contexte grossit réellement.
+            self._ensure_request_fits(
+                estimated=before,
+                context_window=context_window,
+                calibration=calibration,
+                deps=ctx.deps,
+            )
             return request_context
 
         if self.force:
@@ -371,8 +461,13 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
                 },
             )
         )
-        tiered = TieredCompaction(
-            tiers=[
+        initial_messages = sans_resumes_perimes(list(request_context.messages))
+        harness_target = self._harness_target(
+            initial_messages,
+            max(1, before - self.overhead_tokens),
+            target,
+        )
+        tiers = [
                 DeduplicateFileReads(
                     file_key=_file_read_key,
                     tokenizer=self._estimate_text,
@@ -392,7 +487,7 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
                     # d'outil pèse un fichier entier. Le seuil était alors
                     # atteint sans qu'il reste quoi que ce soit à résumer.
                     # Mesurée en tokens, la queue s'adapte à ce qu'elle contient.
-                    keep_tokens=max(1, math.floor(target * 0.6)),
+                    keep_tokens=max(1, math.floor(harness_target * 0.6)),
                     # Le premier message de la session était réinjecté tel quel,
                     # comme un vrai tour utilisateur. Dans une session canonique
                     # qui vit des semaines et change vingt fois de sujet, l'agent
@@ -413,21 +508,20 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
                     max_part_tokens=per_part_limit,
                     tokenizer=self._estimate_text,
                 ),
-            ],
-            target_tokens=target,
-            tokenizer=self._estimate_text,
-        )
-        request_context.messages = await tiered.compact(
-            sans_resumes_perimes(list(request_context.messages)), ctx
+            ]
+        request_context.messages = await self._compact_to_target(
+            initial_messages,
+            ctx,
+            tiers,
+            target + self.overhead_tokens,
         )
         after = self._tokens(request_context.messages)
-        if after >= before and not self.force:
+        if after >= before:
             # The conservative tiers can preserve everything when the active
             # turn is mostly protected tool evidence. The exact material is
             # already recoverable from the append-only snapshot above, so an
             # emergency pass may reclaim old results from every tool.
-            emergency = TieredCompaction(
-                tiers=[
+            emergency_tiers = [
                     ClearToolResults(
                         max_tokens=1,
                         keep_pairs=2,
@@ -439,21 +533,22 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
                         max_part_tokens=per_part_limit,
                         tokenizer=self._estimate_text,
                     ),
-                ],
-                target_tokens=target,
-                tokenizer=self._estimate_text,
-            )
-            request_context.messages = await emergency.compact(
-                list(request_context.messages), ctx
+                ]
+            request_context.messages = await self._compact_to_target(
+                list(request_context.messages),
+                ctx,
+                emergency_tiers,
+                target + self.overhead_tokens,
             )
             after = self._tokens(request_context.messages)
         self._last_noop_tokens = after if after >= before else None
+        event_type = "context.compacted" if after < before else "context.compaction_noop"
         ctx.deps.events.append(
             Event(
                 session_id=ctx.deps.session_id,
                 run_id=ctx.deps.root_run_id,
                 agent_id=self.agent_id,
-                type="context.compacted",
+                type=event_type,
                 payload={
                     "scope": "active_run",
                     "strategy": "tiered_harness",
@@ -478,5 +573,11 @@ class ContextWindowCompaction(AbstractCapability[RuntimeDeps]):
                     "estimator": "utf8_bytes/3.5",
                 },
             )
+        )
+        self._ensure_request_fits(
+            estimated=after,
+            context_window=context_window,
+            calibration=calibration,
+            deps=ctx.deps,
         )
         return request_context
