@@ -14,3 +14,4 @@ surfaces/web/test-results/
 surfaces/web/.wrangler/
 surfaces/web/.vinext/
 surfaces/web/.openai/
+.local/
