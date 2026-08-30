@@ -31,6 +31,7 @@ tools:
   - web_docs
   - web_code_search
   - utc_now
+  - doctor
   - tool_search
   - tool_describe
 skills:

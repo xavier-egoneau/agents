@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import dataclass
 
 from .managed_tools import discovered_codegraph_executable, discovered_executable
+from .models import ProviderRegistry
 from .modules import ModuleRegistry
 from .paths import RuntimeLayout
 from .platform.sandbox import DockerSandbox, sandbox_capabilities
@@ -17,6 +19,19 @@ class Diagnostic:
     status: str
     detail: str
     required: bool = False
+
+
+def _providers_diagnostic(content) -> Diagnostic:
+    path = content / "providers.json"
+    if not path.is_file():
+        return Diagnostic("providers", "configure", str(path), True)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        registry = ProviderRegistry.model_validate(document)
+    except (OSError, ValueError) as exc:
+        return Diagnostic("providers", "error", f"{path}: {exc}", True)
+    configured = ", ".join(provider.id for provider in registry.providers)
+    return Diagnostic("providers", "ok", configured or str(path), True)
 
 
 def diagnose(layout: RuntimeLayout) -> list[Diagnostic]:
@@ -55,11 +70,7 @@ def diagnose(layout: RuntimeLayout) -> list[Diagnostic]:
             str(content / "system.md"),
             True,
         ),
-        Diagnostic(
-            "providers",
-            "ok" if (content / "providers.json").is_file() else "configure",
-            str(content / "providers.json"),
-        ),
+        _providers_diagnostic(content),
         Diagnostic(
             "sandbox",
             "ok" if capabilities.execution_isolated else "limited",

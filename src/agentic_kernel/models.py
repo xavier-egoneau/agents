@@ -84,6 +84,31 @@ class ProviderConfig(BaseModel):
                 self.connection_type = ConnectionType.API_KEY
         return self
 
+    @model_validator(mode="after")
+    def reserve_tokens_for_actionable_output(self) -> ProviderConfig:
+        """A reasoning cap must leave room for a tool call or final answer.
+
+        When both limits were 8192, a local Qwen model legitimately consumed
+        the entire generation in thinking and the SDK received no actionable
+        part. Keep at least 25% of a finite generation budget outside the
+        reasoning allowance so a capped thought can still become an action.
+        """
+        if (
+            self.num_predict is None
+            or self.reasoning_budget is None
+            or self.reasoning_budget <= 0
+        ):
+            return self
+        output_reserve = max(256, (self.num_predict + 3) // 4)
+        largest_reasoning_budget = self.num_predict - output_reserve
+        if self.reasoning_budget > largest_reasoning_budget:
+            raise ValueError(
+                "reasoning_budget must leave at least 25% of num_predict for "
+                f"tool calls and final output (maximum {largest_reasoning_budget} "
+                f"for num_predict={self.num_predict})"
+            )
+        return self
+
 
 class ProviderRegistry(BaseModel):
     model_config = ConfigDict(extra="allow")

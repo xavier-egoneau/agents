@@ -62,6 +62,27 @@ def test_settings_left_unset_are_omitted(monkeypatch) -> None:
     assert "temperature" not in model.settings
 
 
+def test_reasoning_budget_must_leave_room_for_actionable_output() -> None:
+    with pytest.raises(ValueError, match="leave at least 25%"):
+        registry(
+            "local",
+            port=8123,
+            num_predict=8192,
+            reasoning_budget=8192,
+        )
+
+
+def test_reasoning_budget_accepts_a_bounded_half_of_the_output() -> None:
+    configured = registry(
+        "local",
+        port=8123,
+        num_predict=8192,
+        reasoning_budget=4096,
+    )
+
+    assert configured.providers[0].reasoning_budget == 4096
+
+
 def test_api_key_is_read_from_environment(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "secret-from-environment")
     model = ProviderFactory(registry("api_key")).build("provider")

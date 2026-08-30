@@ -23,6 +23,7 @@ tools:
   - ocr_extract
   - http_request
   - utc_now
+  - doctor
   - tool_search
   - tool_describe
   - mcp_search

@@ -5,6 +5,7 @@ provider: deepseek
 model: deepseek-v4-pro
 modules:
   - datetime
+  - doctor
   - icloud_calendar
   - kanban
 skills:

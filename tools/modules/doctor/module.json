@@ -1,0 +1,20 @@
+{
+  "schema_version": 2,
+  "id": "doctor",
+  "name": "Doctor",
+  "description": "Diagnostic en lecture seule de l'installation AMK et de ses capacités locales.",
+  "version": "1.0.0",
+  "entrypoint": "module.py:module",
+  "capabilities": ["tools", "instructions"],
+  "tools": [
+    {
+      "name": "doctor",
+      "description": "Diagnostiquer l'installation, le catalogue d'outils, le sandbox et les capacités locales, puis distinguer pannes, avertissements et composants optionnels.",
+      "category": "diagnostics",
+      "risk_tags": ["read"],
+      "timeout_seconds": 60,
+      "cancellable": true
+    }
+  ],
+  "enabled": true
+}

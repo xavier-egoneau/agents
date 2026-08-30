@@ -2362,6 +2362,111 @@
     },
     {
       "schema_version": 2,
+      "id": "doctor",
+      "name": "Doctor",
+      "description": "Diagnostic en lecture seule de l'installation AMK et de ses capacités locales.",
+      "version": "1.0.0",
+      "entrypoint": "module.py:module",
+      "capabilities": [
+        "tools",
+        "instructions"
+      ],
+      "tools": [
+        {
+          "name": "doctor",
+          "description": "Diagnostiquer l'installation, le catalogue d'outils, le sandbox et les capacités locales, puis distinguer pannes, avertissements et composants optionnels.",
+          "category": "diagnostics",
+          "risk_tags": [
+            "read"
+          ],
+          "path_parameters": [],
+          "url_parameters": [],
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "justification": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "output_schema": {
+            "$defs": {
+              "ToolError": {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "title": "Type",
+                    "type": "string"
+                  },
+                  "message": {
+                    "title": "Message",
+                    "type": "string"
+                  },
+                  "retryable": {
+                    "default": false,
+                    "title": "Retryable",
+                    "type": "boolean"
+                  },
+                  "details": {
+                    "additionalProperties": true,
+                    "title": "Details",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
+                ],
+                "title": "ToolError",
+                "type": "object"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Framework-independent result contract shared by every executable tool.",
+            "properties": {
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "data": {
+                "default": null,
+                "title": "Data"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ToolError"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "metadata": {
+                "additionalProperties": true,
+                "title": "Metadata",
+                "type": "object"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "title": "ToolResult",
+            "type": "object"
+          },
+          "timeout_seconds": 60.0,
+          "cancellable": true,
+          "persistent": false
+        }
+      ],
+      "config": null,
+      "enabled": true
+    },
+    {
+      "schema_version": 2,
       "id": "filesystem",
       "name": "Filesystem",
       "description": "Opérations filesystem autonomes, bornées et récupérables.",

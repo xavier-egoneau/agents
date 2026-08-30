@@ -19,6 +19,7 @@ tools:
   - knowledge_search
   - web_docs
   - utc_now
+  - doctor
   - tool_search
   - tool_describe
   - command_run
